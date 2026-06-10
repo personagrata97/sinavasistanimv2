@@ -881,7 +881,7 @@ ${chunkIndex === chunkCount - 1 ? `
       result.includes("🧪") ||
       result.includes("🔑")
     if (!hasClosingSection && result.length > 2000) {
-      console.warn(`[AI_ENGINE] [WARNING] NOT KESİLME UYARISI: "${sectionTitle}" — Not kapanış bölümlerini (Test Et / Özet) içermiyor. maxOutputTokens yetersiz olabilir! (${result.length} karakter)`)
+      console.warn("[AI_ENGINE] [WARNING] NOT KESILME UYARISI: " + sectionTitle + " - Not kapanis bolumlerini (Test Et / Ozet) icermiyor. maxOutputTokens yetersiz olabilir! (" + result.length + " karakter)");
     }
   }
 
