@@ -269,7 +269,7 @@ function detectSections(pageTexts: string[], totalPages: number) {
 }
 
 async function main() {
-  const slug = "masak-uyum-gorevlisi";
+  const slug = "bd-bilgi-sistemleri-guvenligi";
   const course = await prisma.course.findUnique({
     where: { slug },
     include: { program: true }

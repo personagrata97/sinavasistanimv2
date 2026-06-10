@@ -144,6 +144,81 @@ export function checkPdfQuality(pageTexts: string[], totalPages: number): {
   return { isNonSearchable: false, isPartiallySearchable: false, message: null }
 }
 
+// 🚀 TEK SEFERDE TÜM PDF'İ MARKDOWN'A ÇEVİRİCİ (PARALEL VE ÇOKLU ANAHTAR)
+export async function convertPdfToMarkdown(pageTexts: string[], apiKeys: string[]): Promise<string> {
+  if (!apiKeys || apiKeys.length === 0) {
+    throw new Error("API anahtarı bulunamadı.");
+  }
+  
+  if (pageTexts.length === 0 || pageTexts[0] === "__ENCRYPTED__") {
+    throw new Error("PDF okunamadı veya şifreli.");
+  }
+
+  // 10 sayfalık chunklara böl
+  const CHUNK_SIZE = 10;
+  const chunks: string[] = [];
+  
+  for (let i = 0; i < pageTexts.length; i += CHUNK_SIZE) {
+    const chunkPages = pageTexts.slice(i, i + CHUNK_SIZE);
+    const chunkText = chunkPages.map((text, idx) => `--- SAYFA ${i + idx + 1} ---\n${text}`).join("\n\n");
+    chunks.push(chunkText);
+  }
+
+  console.log(`[PDF_ENGINE] Toplam ${chunks.length} chunk oluşturuldu. ${apiKeys.length} anahtar ile paralel işleme başlanıyor...`);
+
+  // Paralel işleme: Her chunk için sıradaki API anahtarını kullanarak promise oluştur
+  const promises = chunks.map(async (chunkText, i) => {
+    const apiKey = apiKeys[i % apiKeys.length]; // Anahtarları sırayla döndür
+    
+    // API rate limitine takılmamak için hafif bir gecikme ekle (her anahtar için 500ms * kendi sırası)
+    await new Promise(r => setTimeout(r, (i % apiKeys.length) * 500));
+
+    console.log(`[PDF_ENGINE] Markdown dönüşümü: Chunk ${i + 1}/${chunks.length} işleniyor... (Gemini 3.5 Flash)`);
+
+    const body = {
+      contents: [
+        {
+          parts: [
+            {
+              text: `Aşağıda bir kitabın/ders notunun ${i * CHUNK_SIZE + 1} ile ${Math.min((i + 1) * CHUNK_SIZE, pageTexts.length)} arası sayfalarının ham metin dökümü bulunmaktadır.
+Görev: Bu ham metni okuyup, YAPISINI VE BİLGİLERİNİ HİÇ BOZMADAN, EKSİKSİZ BİR ŞEKİLDE profesyonel bir Markdown formatına dönüştürmek.
+Kurallar:
+1. Hiçbir cümleyi, kelimeyi, tabloyu veya listeyi atlama. Her detayı koru.
+2. Gereksiz üstbilgi/altbilgi (sayfa no, kitap adı vb. tekrarlayan yazılar) varsa temizleyebilirsin, ancak asıl içeriğe ve paragraflara DOKUNMA.
+3. Uygun Markdown başlıkları (#, ##, ###), listeler (- veya 1.), kalınlaştırmalar (**kelime**) kullan. Tablo benzeri veriler varsa Markdown tablolarına çevir.
+4. Sadece çevrilmiş markdown metnini ver, giriş veya kapanış cümlesi (ör: "İşte metin", "Tamamdır") KESİNLİKLE YAZMA.
+\n\nHAM METİN:\n${chunkText}`
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.1
+      }
+    };
+
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
+        body,
+        { headers: { "Content-Type": "application/json" }, timeout: 300000 }
+      );
+      
+      const markdownChunk = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return markdownChunk.trim();
+    } catch (e: any) {
+      console.error(`[PDF_ENGINE] Chunk ${i + 1} dönüşüm hatası:`, e.response?.data || e.message);
+      // Hata durumunda veri kaybını önlemek için ham metni markdown formatında ekle
+      return chunkText;
+    }
+  });
+
+  // Tüm chunkların tamamlanmasını bekle
+  const markdownResults = await Promise.all(promises);
+
+  return markdownResults.join("\n\n---\n\n");
+}
+
 // 👁️ GÖRSEL MULTIMODAL BÖLÜMLEYİCİ: PDF'i görsel olarak inceleyip bölümleri sıfır hata ile gruplar
 export async function detectSectionsMultimodal(
   fileUri: string,

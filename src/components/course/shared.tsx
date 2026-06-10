@@ -216,14 +216,16 @@ export const formatTitle = (title: string, index?: number, notes?: string, modul
     formatted = index !== undefined ? `Ünite ${index + 1}` : "Ders Notu";
   }
 
-  // Append module name inside parentheses
-  if (moduleName) {
+  // Sadece MASAK gibi gerçek Modül sistemlerinde parantez içi ekini göster (Bilgi Sistemleri Güvenliği gibi derslerde çirkin mükerrerliği önler)
+  if (moduleName && (moduleName === "Modül 1" || moduleName === "Modül 2")) {
     const suffix = moduleName === "Modül 1"
       ? " (Modül 1: Hukuki Çerçeve)"
-      : moduleName === "Modül 2"
-        ? " (Modül 2: Uyum Yönetimi)"
-        : ` (${moduleName})`;
-    if (!formatted.endsWith(suffix)) {
+      : " (Modül 2: Uyum Yönetimi)";
+        
+    const formattedLower = formatted.toLocaleLowerCase('tr-TR');
+    const moduleLower = moduleName.toLocaleLowerCase('tr-TR');
+    
+    if (!formatted.endsWith(suffix) && !formattedLower.includes(moduleLower) && !moduleLower.includes(formattedLower)) {
       formatted += suffix;
     }
   }

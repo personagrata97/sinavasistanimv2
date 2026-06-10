@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { COURSE_PAGE_OVERRIDES } from "@/lib/course-configs"
 
-import { extractAllText, detectSectionsMultimodal, detectSectionsTextAI, checkPdfQuality, extractSectionsRegex } from "@/lib/pdf-engine"
+import { extractAllText, detectSectionsMultimodal, detectSectionsTextAI, checkPdfQuality, extractSectionsRegex, convertPdfToMarkdown } from "@/lib/pdf-engine"
 import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver } from "@/lib/ai-service"
 import { generateStudySchedule } from "@/lib/schedule-engine"
 import { getServerSession } from "next-auth"
@@ -25,6 +25,7 @@ interface DetectedSection {
   pageStart: number
   pageEnd: number
   content: string
+  module?: string
 }
 
 // ==================== KARAKTER BAZLI CHUNK BOYUTU ====================
@@ -219,16 +220,8 @@ export async function POST(req: NextRequest) {
           // >>> AHMET/MEHMET/SAYFA KAYMASI KESİN ÇÖZÜMÜ <<<
           // Yapay zeka ve Global Zırh tamamen devre dışı! Sayfalar %100 fiziksel ve elle onaylanmış sayfalara sabitlendi.
           const overrides = COURSE_PAGE_OVERRIDES[slug];
-          if (overrides) {
-            sections = overrides.map((rs: any) => ({
-              title: rs.title,
-              pageStart: rs.pageStart,
-              pageEnd: rs.pageEnd,
-              content: pageTexts.slice(Math.max(0, rs.pageStart - 1), rs.pageEnd).join("\n\n")
-            }));
-            console.log(`[PROCESS] 🛡️ YAPAY ZEKA VE GLOBAL ZIRH İPTAL EDİLDİ! ${slug} İÇİNDEKİ SAYFALAR SABİT (OVERRIDE) OLARAK YÜKLENDİ.`);
-          } else {
-            // Standart İşleme
+          // Standart İşleme: AI'nin böldüğü 28 küçük parça korunur. Sadece sayfa numaraları düzeltilir.
+          // Ve her parçanın hangi modüle (klasöre) ait olduğu UI'da gösterilmek üzere overrides dizisine bakılarak atanır.
             for (let i = 0; i < sections.length; i++) {
               let cleanTitle = sections[i].title.replace(/^(Bölüm|Ünite|Kısım)?\s*\d+[\.\-\:]?\s*/i, "").trim()
               if (!cleanTitle || cleanTitle.length < 3) {
@@ -300,7 +293,18 @@ export async function POST(req: NextRequest) {
               // 3. İçeriği (content) doğru sayfalara göre yeniden kes
               sections[i].content = pageTexts.slice(Math.max(0, sections[i].pageStart - 1), sections[i].pageEnd).join("\n\n")
             }
-        }
+
+            if (overrides) {
+              console.log(`[PROCESS] 🛡️ UI için Klasör Modül İsimleri Atanıyor...`);
+              for (let i = 0; i < sections.length; i++) {
+                const sec = sections[i];
+                const parentModule = overrides.find((o: any) => sec.pageStart >= o.pageStart && sec.pageStart <= o.pageEnd);
+                if (parentModule) {
+                  sec.module = parentModule.title;
+                }
+              }
+            }
+
         console.log(`[PROCESS] 🛡️ Global Zırh İşlemi Tamamlandı.`)
       }
     }
@@ -356,6 +360,7 @@ export async function POST(req: NextRequest) {
           pageStart: sections[i].pageStart,
           pageEnd: sections[i].pageEnd,
           rawContent: sections[i].content,
+          module: sections[i].module || "Genel",
           processed: false,
           notes: null,
         }
@@ -468,6 +473,26 @@ async function processInBackground(slug: string, course: any) {
           let attemptHistory: any[] = []
           let quotaFailures = 0 // FIX #4: Kota hatalarını ayrı say, gerçek deneme hakkını yemesin
           const MAX_QUOTA_FAILURES = 5 // Toplam kota hatası limiti (sonsuz döngü koruması)
+
+          // ==================== PRISTINE MARKDOWN OCR (YENİ GÖZCÜ KATMANI) ====================
+          // PDF'in kirli metnini (pdf2json ile çekilen) çöpe atıp, Gemini 3.5 Flash ile bölümün ilgili sayfalarını okuyarak
+          // KUSURSUZ bir Markdown çıkarıp kalıcı olarak rawContent üzerine yazıyoruz.
+          if (course.geminiFileUri && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
+            console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için kusursuz markdown çıkarılıyor...`);
+            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Metne Çevriliyor (Markdown OCR)` }) } }) } catch { }
+            
+            const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
+            try {
+              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUri, section.pageStart, section.pageEnd);
+              if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
+                section.rawContent = pristineMarkdown;
+                await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
+                console.log(`[BG] ✅ Markdown OCR: Kirli PDF metni kusursuz Markdown ile değiştirildi.`);
+              }
+            } catch (ocrErr: any) {
+              console.log(`[BG] ⚠️ Markdown OCR Hatası: ${ocrErr.message} - Kirli PDF metniyle devam edilecek.`);
+            }
+          }
 
           // Eğer halihazırda yüksek puanlı notlar varsa kalite döngüsünü atla
           if (notes && notes.length > 500 && currentScore >= 98) {
@@ -588,7 +613,7 @@ async function processInBackground(slug: string, course: any) {
                 if (!isSmartInject) {
                   notes = await generateCourseNotes(
                     enrichedContent, section.title, course.name, course.userLevel,
-                    aiMode, course.geminiFileUri || undefined, section.pageStart, section.pageEnd
+                    aiMode, section.pageStart, section.pageEnd
                   )
                 }
 
@@ -602,7 +627,7 @@ async function processInBackground(slug: string, course: any) {
                 const { verifyNotesAgainstSource } = await import("@/lib/ai-service")
                 const verification = await verifyNotesAgainstSource(
                   section.rawContent, notes, section.title,
-                  undefined, section.pageStart, section.pageEnd
+                  section.pageStart, section.pageEnd
                 )
 
                 // score: -1 -> teknik hata, deneme hakkı yeme
@@ -734,7 +759,6 @@ async function processInBackground(slug: string, course: any) {
                           notes,
                           section.title,
                           pack,
-                          undefined,
                           section.pageStart,
                           section.pageEnd
                         )

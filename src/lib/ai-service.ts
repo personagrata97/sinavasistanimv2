@@ -3,6 +3,7 @@ import axios from "axios"
 // ==================== AI ENGINE SETUP ====================
 
 // PRIMARY: Gemini (High Quota & Quality) — Multi-key rotation
+const MODEL_NAME = "gemini-2.5-flash"
 const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 const geminiKeys = (process.env.GEMINI_API_KEYS || geminiKey || "").split(",").filter(k => k.trim())
 let currentKeyIndex = 0 // Aktif key index'i
@@ -257,43 +258,75 @@ function extractCleanJson(raw: string): any {
   throw new Error("AI cevabı geçerli bir JSON formatında değil.")
 }
 
-// Üç modlu AI çağrısı:
-// - "generation" modu (default): gemini-3.5-flash — hızlı, yaratıcı, ucuz
-// - "verification" modu: gemini-2.5-flash — analitik, dikkatli
-async function callAI(prompt: string, retries = 2, fileUri?: string, mode: "generation" | "verification" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
-  const isPdfMode = !!fileUri || Object.keys(activeFileUrisMap).length > 0
+// ==================== PRISTINE MARKDOWN OCR (GÖZCÜ KATMANI) ====================
+export async function extractPerfectMarkdownOCR(fileUri: string, pageStart: number, pageEnd: number, retries = 2): Promise<string> {
+  const activeKey = getNextGeminiKey();
+  if (!activeKey) throw new Error("Aktif API anahtarı bulunamadı.");
 
+  const prompt = `Ekteki PDF dosyasının ${pageStart} ile ${pageEnd}. sayfaları arasındaki TÜM İÇERİĞİ (metin, tablo, şema, resim, grafik) detaylıca okuyup kusursuz bir Markdown metnine çevir.
+Kurallar:
+1. Hiçbir cümleyi, tabloyu veya listeyi atlama. Her detayı koru.
+2. Tabloları düzgün Markdown tablolarına dönüştür.
+3. Görseller veya şemalar varsa, bunları "[Görsel Açıklaması: ...]" şeklinde olabildiğince detaylı metne dök.
+4. "İşte metin", "Tamamdır" gibi cevaplar yazma, sadece çevrilmiş markdown metnini ver.`;
+
+  const headers = { "Content-Type": "application/json", "x-goog-api-key": activeKey };
+  const body = {
+    contents: [
+      {
+        parts: [
+          { fileData: { mimeType: "application/pdf", fileUri: fileUri } },
+          { text: prompt }
+        ]
+      }
+    ],
+    generationConfig: { temperature: 0.1 }
+  };
+
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent`,
+      body,
+      { headers, timeout: 120000 } // Daha büyük süre çünkü tüm bölümü çeviriyor
+    );
+    const parts = response.data?.candidates?.[0]?.content?.parts || [];
+    const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text);
+    const result = textParts.join("").trim();
+    
+    if (result) {
+      console.log(`[MARKDOWN_OCR] ✅ Sayfa ${pageStart}-${pageEnd} kusursuz markdown çıkarıldı [${result.length} chars]`);
+      return `[MARKDOWN_OCR_SUCCESS]\n\n${result}`;
+    }
+  } catch (e: any) {
+    console.warn(`[MARKDOWN_OCR] Hata: ${e.message}`);
+    if (retries > 0) {
+      const nextKey = rotateToNextKey();
+      await new Promise(r => setTimeout(r, 3000));
+      return extractPerfectMarkdownOCR(fileUri, pageStart, pageEnd, retries - 1);
+    }
+    throw e;
+  }
+  throw new Error("OCR başarısız oldu.");
+}
+
+// Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
+async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
   const activeKey = getNextGeminiKey()
 
   if (activeKey) {
-    const geminiBody = (p: string, maxTokens: number, keyFileUri?: string) => {
+    const geminiBody = (p: string, maxTokens: number) => {
       const parts: any[] = [{ text: p }]
-      const activeFileUri = keyFileUri || fileUri
-      if (activeFileUri) {
-        parts.unshift({ fileData: { mimeType: "application/pdf", fileUri: activeFileUri } })
-      }
+      
       return {
         contents: [{ parts }],
-        generationConfig: { temperature: mode === "verification" ? 0.1 : 0.2, maxOutputTokens: maxTokens }
+        generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens }
       }
     }
 
-    // MODEL MİMARİSİ: Şelale (Cascade) Yöntemi
-    const MODEL_GENERATION = "gemini-3.5-flash";
-    const MODEL_VERIFICATION = "gemini-2.5-flash"
+    // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
+    const MODEL_ID = mode === "generation" ? "gemini-3.5-flash" : "gemini-2.5-flash"
+    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 8192 : 16384 }]
 
-    // ⚠️ priority="high" (not üretimi): gemini-3.5-flash | 65K token
-    // ⚠️ priority="normal" (flashcard/soru): gemini-3.5-flash | 32K token
-    // verification (Maker-Checker): Yalnızca gemini-2.5-flash ile denetim yapılır.
-    const modelChain = mode === "verification"
-      ? [
-        { id: MODEL_VERIFICATION, tokens: 16384 }
-      ]
-      : priority === "high"
-        ? [{ id: MODEL_GENERATION, tokens: 65536 }]
-        : [{ id: MODEL_GENERATION, tokens: 32768 }]
-
-    // Tüm key'leri dene (her key için model chain)
     const startKeyIndex = currentKeyIndex
     let triedAllKeys = false
 
@@ -302,53 +335,31 @@ async function callAI(prompt: string, retries = 2, fileUri?: string, mode: "gene
       const geminiHeaders = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
       let quotaHit = false
 
-      // Bu key'e ait fileUri'yi seç (her key kendi projesindeki dosyaya erişebilir)
       const keyFileUri = activeFileUrisMap[String(currentKeyIndex)] || undefined
 
       for (const model of modelChain) {
         try {
           const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
-            geminiBody(prompt, model.tokens, keyFileUri), { headers: geminiHeaders, timeout: 60000 }
+            geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
           )
           const parts = response.data?.candidates?.[0]?.content?.parts || []
-          // Thinking model (3.5-flash, 2.5-flash): thought=true olan part'ları ATLA
-          // Sadece gerçek çıktı text'ini al, düşünme bloğunu dahil etme
-          const textParts = parts
-            .filter((p: any) => p.text && !p.thought)
-            .map((p: any) => p.text)
+          const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text)
           const result = textParts.join("")
           if (result) {
-            console.log(`[AI_ENGINE] ✅ ${model.id} succeeded ${isPdfMode ? "(PDF Multimodal)" : ""} [Key #${currentKeyIndex + 1}] [${result.length} chars]`)
+            console.log(`[${mode === "generation" ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ✅ İşlem başarılı [Key #${currentKeyIndex + 1}] [Model: ${model.id}] [${result.length} chars]`)
             return result
           }
         } catch (e: any) {
-          console.warn(`[AI_ENGINE] ${model.id} failed [Key #${currentKeyIndex + 1}]: ${e.message?.substring(0, 120)}`)
+          console.warn(`[${mode === "generation" ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ${model.id} failed [Key #${currentKeyIndex + 1}]: ${e.message?.substring(0, 120)}`)
           const errMsg = e.message || ""
           const errData = e.response?.data?.error?.message || ""
 
-          const isSuspended = errMsg.includes("403") ||
-            errMsg.includes("PERMISSION_DENIED") ||
-            errData.includes("403") ||
-            errData.includes("PERMISSION_DENIED") ||
-            errData.includes("API key not valid")
+          const isSuspended = errMsg.includes("403") || errData.includes("403") || errData.includes("API key not valid")
+          if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now())
 
-          if (isSuspended) {
-            console.warn(`[AI_ENGINE] 🚫 Key #${currentKeyIndex + 1} kalıcı olarak kısıtlanmış/suspended. 10dk TTL ile askıya alınıyor...`)
-            suspendedKeys.set(currentKeyIndex, Date.now())
-          }
-
-          const isQuotaError = errMsg.includes("429") ||
-            errMsg.includes("503") ||
-            errMsg.includes("PERMISSION_DENIED") ||
-            errMsg.includes("timeout") ||
-            errMsg.includes("ECONNABORTED") ||
-            errData.includes("429") ||
-            errData.includes("403") ||
-            errData.includes("RESOURCE_EXHAUSTED") ||
-            errData.includes("quota")
+          const isQuotaError = errMsg.includes("429") || errMsg.includes("503") || errData.includes("429") || errData.includes("quota")
           if (isQuotaError) {
-            console.warn(`[AI_ENGINE] ⚠️ Key #${currentKeyIndex + 1} ${model.id} kota aşıldı/kısıtlandı. Bir sonraki model deneniyor...`)
             quotaHit = true
             continue
           }
@@ -358,33 +369,27 @@ async function callAI(prompt: string, retries = 2, fileUri?: string, mode: "gene
       if (quotaHit) {
         const nextKey = rotateToNextKey()
         if (!nextKey || currentKeyIndex === startKeyIndex) {
-          console.warn(`[AI_ENGINE] ⛔ Tüm ${geminiKeys.length} key'in kotası doldu! Bekleme moduna geçiliyor...`)
           triedAllKeys = true
         } else {
-          // Aynı Gmail'e bağlı projelerde ani peş peşe isteklerin "burst rate limit" (eşzamanlı istek engeli) tetiklemesini önlemek için 5 saniye bekliyoruz
-          console.log(`[AI_ENGINE] ⏱️ Burst limit koruması: Sonraki anahtara geçmeden önce 5 saniye bekleniyor...`)
           await new Promise(r => setTimeout(r, 5000))
         }
       } else {
-        break // Kota hatası değilse döngüden çık
+        break 
       }
     }
   }
 
-  // Retry — Gemini kotasının yenilenmesini bekle ve tekrar dene
   if (retries > 0) {
-    const waitTime = 180000 // 3 dakika bekle (Google IP banlamasın diye)
-    console.log(`[AI_ENGINE] 🔒 Gemini Modu: Kota doldu. ${waitTime / 1000}sn beklenip tekrar denenecek... (kalan: ${retries})`)
-    await new Promise(r => setTimeout(r, waitTime))
-    return callAI(prompt, retries - 1, fileUri, mode, priority)
+    await new Promise(r => setTimeout(r, 60000))
+    return callAI(prompt, retries - 1, mode, priority)
   }
 
-  throw new Error("Tüm Gemini API anahtarları kota sınırına ulaştı. Gemini kotasının yenilenmesini bekleyin.")
+  throw new Error(`API kota sınırına ulaştı (${mode} / ${priority}).`);
 }
 
 // ==================== SECTION ANALYSIS ====================
 
-export async function analyzeSectionContent(content: string, sectionTitle: string, aiMode: string = "general", fileUri?: string, courseName: string = "") {
+export async function analyzeSectionContent(content: string, sectionTitle: string, aiMode: string = "general", courseName: string = "") {
   const MAX_CONTENT_CHARS = 50000
   const truncated = content.length > MAX_CONTENT_CHARS
     ? content.substring(0, MAX_CONTENT_CHARS) + `\n\n[...İçerik kısaltıldı...]`
@@ -393,7 +398,7 @@ export async function analyzeSectionContent(content: string, sectionTitle: strin
 ${getExamIntelligence(aiMode, courseName || sectionTitle)}
 
 Aşağıdaki sınav hazırlık metnini analiz et.
-${fileUri ? "⚠️ EKTEKİ PDF DOSYASINI DA İNCELE — metin dışında grafik, şema, tablo görseli varsa bunları da analiz kapsamına al." : ""}
+⚠️ DİKKAT: Sana verilen ana metnin içinde [GÖRSEL İÇERİKLER] isimli bir bölüm görebilirsin. Bu bölümdeki görsel analiz tariflerini de analiz kapsamına mutlaka al.
 
 BÖLÜM: "${sectionTitle}"
 METİN: "${truncated.replace(/"/g, "'")}"
@@ -453,7 +458,7 @@ Sadece şu formatta JSON döndür:
 }
 `
 
-  const raw = await callAI(prompt, 1, fileUri)
+  const raw = await callAI(prompt, 1)
   try {
     return extractCleanJson(raw) as {
       summary: string
@@ -538,7 +543,6 @@ export async function generateCourseNotes(
   courseName: string,
   userLevel: string = "beginner",
   aiMode: string = "general",
-  fileUri?: string,
   pageStart?: number,
   pageEnd?: number,
   isChunked = false,
@@ -552,7 +556,7 @@ export async function generateCourseNotes(
 
   // Sözlük bölümlerinde yapay zeka her kelime için destan (senaryo, tanım vb.) yazdığından,
   // 10000 karakterlik standart bir girdi, çıktı limitini (8192 token) anında doldurur ve not yarıda kesilir.
-  const chunkThreshold = isGlossary ? 6000 : 10000;
+  const chunkThreshold = isGlossary ? 3000 : 5000;
 
   if (!isChunked && content.length > chunkThreshold) {
     const chunks = splitContentIntoChunks(content, chunkThreshold)
@@ -562,8 +566,8 @@ export async function generateCourseNotes(
       let lastChunkTail = ""
       for (let idx = 0; idx < chunks.length; idx++) {
         if (idx > 0) {
-          console.log(`[AUTO-CHUNKING] ⏱️ Key ve limit koruması: Parçalar arasında 5 saniye bekleniyor...`)
-          await new Promise(r => setTimeout(r, 5000))
+          console.log(`[AUTO-CHUNKING] ⏱️ Key ve limit koruması: Parçalar arasında 61 saniye bekleniyor...`)
+          await new Promise(r => setTimeout(r, 61000))
         }
         console.log(`[AUTO-CHUNKING] 👉 Parça ${idx + 1}/${chunks.length} üretiliyor...`)
         const chunkResult = await generateCourseNotes(
@@ -572,7 +576,6 @@ export async function generateCourseNotes(
           courseName,
           userLevel,
           aiMode,
-          fileUri,
           pageStart,
           pageEnd,
           true,
@@ -680,6 +683,12 @@ ${disc.analogies}
 - ⚠️ 💡 📌 🔑 🎯 🪤 emojilerini BOL kullan — görsel hiyerarşi yarat.
 - Bilgi kalitesi %100 kusursuz ve otoriter olmalı, ama anlatım dili su gibi akmalıdır. Tanımlar BİREBİR kaynak metinden olmalıdır.
 
+📄 GÖRSEL İÇERİK ANALİZİ TALİMATI (ÇOK ÖNEMLİ):
+Sana verilen metnin içinde [GÖRSEL İÇERİKLER] başlığı altında tarif edilen resim, tablo ve şemaları DİKKATLE OKU.
+1. Tarif edilen tabloları, organizasyon şemalarını, karar ağaçlarını ve akış şemalarını Markdown veya Mermaid ile şık bir şekilde yeniden çiz.
+2. Tarif edilen formülleri, hesaplama örneklerini ve kutu içi (box) uyarıları atlama.
+Metin içindeki hiçbir görsel tarifini atlama. Her biri sınavda sorulabilir.
+
 3. GÖRSELLEŞTİRME (NOTLARIN ALBENİSİNİ BELİRLER — ÇOK ÖNEMLİ):
    Notları görsel açıdan zengin ve çekici yap. Dümdüz paragraflarla dolu, göz yoran notlar DEĞERSİZDİR.
    Her fırsatta görselleştir, ama içerikle uyumsuz zorlama görsel EKLEME:
@@ -701,16 +710,6 @@ ${disc.quiz}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"
-${fileUri ? `
-📄 PDF ANALİZİ TALİMATI (ÇOK ÖNEMLİ):
-Ekteki PDF dosyasının ${pageStart} ile ${pageEnd}. sayfalarını analiz et.
-⚠️ SADECE METNİ DEĞİL, PDF'TEKİ TÜM GÖRSELLERİ DE ANALİZ ET:
-- Şemalar, akış diyagramları, organizasyon şemaları → Sunumları Mermaid.js formatında yeniden oluştur
-- Tablolar, karşılaştırma matrisleri → Markdown tablo olarak yeniden oluştur
-- Grafikler, pasta/çubuk grafikleri → Verilerini tablo + açıklama olarak yaz
-- Resimler, fotoğraflar → İçeriğini metinsel olarak açıkla
-PDF'te gördüğün HİÇBİR görsel öğeyi atlama. Her biri sınavda sorulabilir.
-` : ""}
 
 🎯 TEMEL STRATEJİ - "EKSİKSİZ, GÖRSEL, AKILDA KALICI":
 1. Kaynak metindeki ve PDF'teki HER BİLGİYİ nota dahil et. HİÇBİR kavram, terim, tanım, oran, süre, formül, istisna, kural ATLANMAYACAK.
@@ -967,7 +966,7 @@ export async function generateFlashcards(
   ${getExamIntelligence(aiMode)}
 
   ${instructionLimit}
-  ${fileUri ? `SAYFA ARALIĞI: Ekteki dosyanın ${pageStart} ile ${pageEnd}. sayfaları aralığı.` : ""}
+  SAYFA ARALIĞI: ${pageStart} ile ${pageEnd}. sayfalar arasındaki konu kapsamı.
 
   KART SEVİYESİ VE HEDEF KİTLE:
   ${levelCardStyle[userLevel] || ""}
@@ -1129,7 +1128,7 @@ ${getExamIntelligence(aiMode)}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"
-${fileUri ? `SAYFA ARALIĞI: Ekteki dosyanın ${pageStart} ile ${pageEnd}. sayfaları aralığı.` : ""}
+SAYFA ARALIĞI: ${pageStart} ile ${pageEnd}. sayfalar arasındaki konu kapsamı.
 
 SEVİYE TALİMATLARI: 
 ${levelQuestionStyle[userLevel] || levelQuestionStyle.beginner}
@@ -1382,8 +1381,7 @@ Sadece JSON array döndür:
 async function runGroundTruthTest(
   sourceContent: string,
   generatedNotes: string,
-  sectionTitle: string,
-  fileUri?: string
+  sectionTitle: string
 ): Promise<{ passed: boolean; failedQuestions: string[] }> {
   console.log(`[GROUND_TRUTH] 🕵️‍♂️ "${sectionTitle}" için Ground Truth Testi Başlatılıyor...`);
 
@@ -1403,7 +1401,7 @@ Sadece şu formatta JSON döndür:
 
   let questions: string[] = [];
   try {
-    const qRaw = await callAI(qPrompt, 1, fileUri, "verification");
+    const qRaw = await callAI(qPrompt, 1, "verification");
     questions = extractCleanJson(qRaw) as string[];
   } catch {
     console.log(`[GROUND_TRUTH] ⚠️ Soru üretilemedi, test atlanıyor.`);
@@ -1439,7 +1437,7 @@ Sadece şu formatta JSON döndür:
   `;
 
   try {
-    const aRaw = await callAI(aPrompt, 1, undefined, "verification");
+    const aRaw = await callAI(aPrompt, 1, "verification");
     const results = extractCleanJson(aRaw) as any;
     const failed = (results.results || []).filter((r: any) => r.foundInNotes === false).map((r: any) => r.question);
 
@@ -1463,18 +1461,18 @@ export async function verifyNotesAgainstSource(
   sourceContent: string,
   generatedNotes: string,
   sectionTitle: string,
-  fileUri?: string,
   pageStart?: number,
   pageEnd?: number
 ): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[] }> {
   const prompt = `
 Sen bir sınav materyali KALİTE KONTROLÖRÜSÜN (Kontrolör). Görevin, üretilen ders notlarını yasal kaynak dökümanla karşılaştırıp yasal süreler, cezalar, limitler ve kritik mevzuat kavramları bazında hiçbir eksiğin kalmadığını doğrulamaktır.
 
-${fileUri ? `📄 Ekteki PDF'in ${pageStart}-${pageEnd}. sayfalarını ASIL KAYNAK olarak kullan.` : ""}
+📄 Sana verilen metni ASIL KAYNAK olarak kullan.
 
 BÖLÜM: "${sectionTitle}"
 
-${!fileUri ? `KAYNAK METİN:\n${sourceContent.replace(/"/g, "'")}` : `KAYNAK METİN (yedek):\n${sourceContent.replace(/"/g, "'")}`}
+KAYNAK METİN:
+${sourceContent.replace(/"/g, "'")}
 
 ÜRETİLEN DERS NOTU:
 ${generatedNotes.replace(/"/g, "'")}
@@ -1540,14 +1538,14 @@ Sadece JSON döndür:
 TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİLİNDE YAZMALISIN (İngilizce kısaltmaları analiz etsen bile raporu Türkçe ver).
 `
 
-  const raw = await callAI(prompt, 1, fileUri, "verification")
+  const raw = await callAI(prompt, 1, "verification")
   try {
     const result = extractCleanJson(raw) as any
     let score = result.score || 0;
     const missingTopics = result.missingTopics || [];
 
     // GROUND TRUTH ENTEGRASYONU
-    const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, fileUri);
+    const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle);
     if (!groundTruth.passed && groundTruth.failedQuestions.length > 0) {
       const gtPenalty = groundTruth.failedQuestions.length * 10;
       score = Math.max(50, score - gtPenalty);
@@ -1580,7 +1578,6 @@ export async function auditNotesAgainstSourceSpecific(
   generatedNotes: string,
   sectionTitle: string,
   topicsToAudit: string[],
-  fileUri?: string,
   pageStart?: number,
   pageEnd?: number
 ): Promise<{ passed: boolean; missingDetails: string[]; contradictions: string[]; findings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> }> {
@@ -1623,7 +1620,7 @@ Sadece aşağıdaki JSON formatında bir çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, fileUri, "verification")
+  const raw = await callAI(prompt, 1, "verification")
   try {
     const result = extractCleanJson(raw)
     const findings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> = (result.findings || []).map((f: any) => ({

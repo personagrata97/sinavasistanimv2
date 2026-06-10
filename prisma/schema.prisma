@@ -81,6 +81,7 @@ model Course {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   glossary       String?     // Dinamik sözlük JSON formatında
+  markdownContent String?    // Tek seferde PDF'den çıkarılan saf metin (Token tasarrufu için)
 
   sections    Section[]
   flashcards  Flashcard[]

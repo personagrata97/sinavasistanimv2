@@ -1,10 +1,11 @@
 import "dotenv/config";
 import { prisma } from "./src/lib/prisma";
-import { generateCourseNotes, generateFlashcards, generateQuestions, analyzeSectionContent, verifyNotesAgainstSource, auditNotesAgainstSourceSpecific } from "./src/lib/ai-service";
+import { generateCourseNotes, generateFlashcards, generateQuestions, analyzeSectionContent, verifyNotesAgainstSource, auditNotesAgainstSourceSpecific, setFileUrisMap } from "./src/lib/ai-service";
+import { ensureGeminiFileUris } from "./src/lib/gemini-file-helper";
 import * as fs from "fs";
 
 async function main() {
-  const slug = "masak-uyum-gorevlisi";
+  const slug = "bd-bilgi-sistemleri-guvenligi";
   const course = await prisma.course.findUnique({
     where: { slug },
     include: { program: true }
@@ -20,9 +21,24 @@ async function main() {
     orderBy: { order: "asc" }
   });
 
-  console.log(`[AI_PROCESS] Found ${sections.length} unprocessed sections for MASAK.`);
+  console.log(`[AI_PROCESS] Found ${sections.length} unprocessed sections for BİLGİ SİSTEMLERİ GÜVENLİĞİ.`);
   
   const aiMode = course.program?.aiMode || "law";
+
+  let activeFileUri: string | undefined = undefined;
+  if (course.pdfPath) {
+    console.log("[AI_PROCESS] Ensuring PDF is uploaded to Gemini File API for image parsing...");
+    const { uriMap, updated } = await ensureGeminiFileUris(course.pdfPath, course.geminiFileUris, course.slug);
+    if (updated) {
+      await prisma.course.update({
+        where: { id: course.id },
+        data: { geminiFileUris: JSON.stringify(uriMap) }
+      });
+    }
+    setFileUrisMap(uriMap);
+    activeFileUri = uriMap["0"] || undefined;
+    console.log(`[AI_PROCESS] Gemini File API mapping ready. Base URI: ${activeFileUri || "None"}`);
+  }
 
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i];
@@ -37,7 +53,7 @@ async function main() {
         course.name,
         course.userLevel,
         aiMode,
-        undefined, // Skip fileUri to avoid PDF upload rate limits
+        activeFileUri,
         section.pageStart,
         section.pageEnd
       );
@@ -49,7 +65,7 @@ async function main() {
         section.rawContent,
         notes,
         section.title,
-        undefined,
+        activeFileUri,
         section.pageStart,
         section.pageEnd
       );
@@ -94,7 +110,7 @@ ${section.rawContent}`;
           course.name,
           course.userLevel,
           aiMode,
-          undefined,
+          activeFileUri,
           section.pageStart,
           section.pageEnd
         );
@@ -106,7 +122,7 @@ ${section.rawContent}`;
           section.rawContent,
           notes,
           section.title,
-          undefined,
+          activeFileUri,
           section.pageStart,
           section.pageEnd
         );
@@ -141,7 +157,7 @@ ${section.rawContent}`;
           notes,
           section.title,
           selectedTopics,
-          undefined,
+          activeFileUri,
           section.pageStart,
           section.pageEnd
         );
@@ -175,7 +191,7 @@ ${section.rawContent}`;
             course.name,
             course.userLevel,
             aiMode,
-            undefined,
+            activeFileUri,
             section.pageStart,
             section.pageEnd
           );
@@ -185,7 +201,7 @@ ${section.rawContent}`;
             section.rawContent,
             notes,
             section.title,
-            undefined,
+            activeFileUri,
             section.pageStart,
             section.pageEnd
           );
@@ -212,7 +228,7 @@ ${section.rawContent}`;
         course.name,
         course.userLevel,
         aiMode,
-        undefined,
+        activeFileUri,
         section.pageStart,
         section.pageEnd
       );
@@ -226,7 +242,7 @@ ${section.rawContent}`;
         course.name,
         course.userLevel,
         aiMode,
-        undefined,
+        activeFileUri,
         section.pageStart,
         section.pageEnd,
         section.importance || undefined

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { createPortal } from "react-dom"
-import { BookOpen, ChevronRight, Download, FileText, RefreshCw, Loader2, Bookmark, BookmarkCheck, Highlighter, X, Palette, Sparkles, ShieldCheck, AlertCircle, Bot, Check, Maximize, Minimize } from "lucide-react"
+import { BookOpen, ChevronRight, Download, FileText, RefreshCw, Loader2, Bookmark, BookmarkCheck, Highlighter, X, Palette, Sparkles, ShieldCheck, AlertCircle, Bot, Check, Maximize, Minimize, Folder } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -787,7 +787,26 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
         return { ...s, displayTitle, rawTitle };
       });
   }, [sections]);
+  const groupedSections = useMemo(() => {
+    const groups: { [key: string]: any[] } = {}
+    noteSections.forEach((section) => {
+      let mod = section.module || "Genel"
+      
+      // Eğer modül adı ile başlık neredeyse aynıysa (sayılar hariç), bu sahte bir modüldür (iç içe görünümü engelle)
+      if (section.rawTitle) {
+        const modLower = mod.toLowerCase().replace(/^\d+[\.\-\)]\s*/, '').trim();
+        const titleLower = section.rawTitle.toLowerCase().replace(/^\d+[\.\-\)]\s*/, '').trim();
+        
+        if (modLower === titleLower || modLower.includes(titleLower) || titleLower.includes(modLower)) {
+          mod = "Ders İçeriği";
+        }
+      }
 
+      if (!groups[mod]) groups[mod] = []
+      groups[mod].push(section)
+    })
+    return groups
+  }, [noteSections])
   if (sections.length === 0) {
     return (
       <EmptyState
@@ -942,7 +961,8 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
       </div>
       </div>
 
-      {/* Notes List */}
+      {/* Notes List (Flat - V1 Style) */}
+      <div className="space-y-4">
       {noteSections.map((section: any, i: number) => {
         const isExpanded = expandedIds.has(section.id)
 
@@ -966,13 +986,13 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-bold text-lg">{section.displayTitle}</h3>
-                      {section.module && (
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                      {section.module && (section.module === "Modül 1" || section.module === "Modül 2") && (
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1 ${
                           section.module === "Modül 1" 
                             ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/20" 
                             : "bg-violet-500/10 text-violet-400 border-violet-500/20"
                         }`}>
-                          {section.module === "Modül 1" ? "📘" : "📗"} {section.module}
+                          <BookOpen className="w-3 h-3" /> {section.module}
                         </span>
                       )}
                       {isAdmin && section.verificationScore != null && section.notes && (
@@ -988,7 +1008,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                             "bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
                           }`}
                         >
-                          <>🔍 {section.verificationScore === -1 ? "Atlandı" : `%${section.verificationScore}`}</>
+                          <><ShieldCheck className="w-3 h-3" /> {section.verificationScore === -1 ? "Atlandı" : `%${section.verificationScore}`}</>
                         </span>
                       )}
                     </div>
@@ -1021,42 +1041,55 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
               </div>
             </div>
 
-            {/* Section Content */}
+            {/* Content Body */}
             {isExpanded && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
-                className="p-6 border-t border-white/5 relative rounded-b-2xl"
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
                 id={`notes-content-${section.id}`}
+                className="border-t border-white/[0.08] p-5 lg:p-8 bg-slate-900/50 rounded-b-2xl"
                 onMouseUp={() => handleTextSelect(section.id, section.displayTitle)}
               >
-                {/* İşaretler bar */}
-                {(sectionHighlights[section.id]?.length || 0) > 0 && (
-                  <div className="mb-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Highlighter className="w-3.5 h-3.5 text-yellow-400" />
-                      <span className="text-xs font-bold text-slate-400">Özet Panom ({sectionHighlights[section.id]?.length})</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {sectionHighlights[section.id]?.map(hl => (
-                        <span
-                          key={hl.id}
-                          title={hl.note}
-                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] border cursor-help ${getColorClass(hl.color)}`}
+                {section.verificationScore !== undefined && section.verificationScore > 0 && section.verificationScore < 100 && isAdmin && (
+                  <div className="mb-6 p-4 rounded-xl bg-slate-800/80 border border-amber-500/20">
+                    <h4 className="text-sm font-bold text-amber-400 mb-2 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4" /> AI Kontrolör Uyarıları
+                    </h4>
+                    <p className="text-xs text-slate-300">
+                      Bu not, kalite standartlarına %100 uyum sağlamadı. İyileştirme önerileri için başlığın yanındaki 🔍 butonuna tıklayın.
+                    </p>
+                  </div>
+                )}
+                
+                {/* Active Highlights (Inline view) */}
+                {sectionHighlights[section.id]?.length > 0 && (
+                  <div className="mb-6 border-b border-white/[0.08] pb-6">
+                    <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                      <Palette className="w-4 h-4 text-yellow-400" /> Vurguladığım Notlar
+                    </h4>
+                    <div className="space-y-2">
+                      {sectionHighlights[section.id].map(hl => (
+                        <span 
+                          key={hl.id} 
+                          onClick={() => setScrollKeyword(hl.selectedText)}
+                          className={`inline-block mr-2 mb-2 px-3 py-1.5 rounded-lg text-xs leading-relaxed border border-transparent hover:border-white/[0.08] cursor-pointer transition-colors ${getColorClass(hl.color)}`}
+                          title={hl.note ? `Not: ${hl.note}` : "Tıkla ve metinde bul"}
                         >
-                          <span className="max-w-[200px] truncate">{hl.selectedText}</span>
-                          {hl.note && <span className="text-white/70">📝</span>}
+                          {hl.selectedText}
+                          {hl.note && <span className="ml-2 text-[10px] opacity-70">📝 {hl.note}</span>}
+                          
+                          {/* Sil Butonu */}
                           <button
-                            onClick={async () => {
-                              // İyimser olarak sil
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              // Optimistic UI
                               setSectionHighlights(prev => ({
                                 ...prev,
-                                [section.id]: prev[section.id]?.filter(h => h.id !== hl.id) || []
+                                [section.id]: prev[section.id].filter(h => h.id !== hl.id)
                               }))
-                              
-                              const { deleteUserAnnotation } = await import("@/lib/actions")
-                              const res = await deleteUserAnnotation(hl.id)
-                              
+                              const res = await removeHighlight(hl.id)
                               if (res.success) {
                                 toast.success("İşaret kaldırıldı")
                               } else {
@@ -1068,7 +1101,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                                 }))
                               }
                             }}
-                            className="ml-0.5 hover:text-red-400 transition-colors"
+                            className="ml-2 hover:text-red-400"
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -1098,7 +1131,8 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
           </article>
         )
       })}
-
+      </div>
+      
       {/* Highlight renk seçici popup */}
       {highlightPopup && (
         <div
