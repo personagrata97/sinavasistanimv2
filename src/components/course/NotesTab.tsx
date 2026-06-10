@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { createPortal } from "react-dom"
-import { BookOpen, ChevronRight, Download, FileText, RefreshCw, Loader2, Bookmark, BookmarkCheck, Highlighter, X, Palette, Sparkles, ShieldCheck, AlertCircle, Bot, Check, Maximize, Minimize, Folder } from "lucide-react"
+import { BookOpen, ChevronRight, Download, FileText, RefreshCw, Loader2, Bookmark, BookmarkCheck, Highlighter, X, Palette, Sparkles, ShieldCheck, AlertCircle, Bot, Check, Maximize, Minimize, Folder, Search } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -1058,7 +1058,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                       <AlertCircle className="w-4 h-4" /> AI Kontrolör Uyarıları
                     </h4>
                     <p className="text-xs text-slate-300">
-                      Bu not, kalite standartlarına %100 uyum sağlamadı. İyileştirme önerileri için başlığın yanındaki 🔍 butonuna tıklayın.
+                      Bu not, kalite standartlarına %100 uyum sağlamadı. İyileştirme önerileri için başlığın yanındaki <Search className="w-3 h-3 inline-block text-amber-400 mx-1" /> butonuna tıklayın.
                     </p>
                   </div>
                 )}
