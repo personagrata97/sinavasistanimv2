@@ -867,6 +867,7 @@ ${chunkIndex === chunkCount - 1 ? `
 
 ---
 
+` + prompt
   }
 
   const result = await callAI(finalPrompt, 2, undefined, "generation", "high")
