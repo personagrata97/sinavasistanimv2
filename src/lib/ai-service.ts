@@ -361,6 +361,7 @@ async function callAI(prompt: string, retries = 2, mode: "generation" | "verific
           const isQuotaError = errMsg.includes("429") || errMsg.includes("503") || errData.includes("429") || errData.includes("quota")
           if (isQuotaError) {
             quotaHit = true
+            suspendedKeys.set(currentKeyIndex, Date.now())
             continue
           }
         }
