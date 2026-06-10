@@ -867,13 +867,11 @@ ${chunkIndex === chunkCount - 1 ? `
 
 ---
 
-` + prompt
   }
 
-  const result = await callAI(finalPrompt, 2, fileUri, "generation", "high")
+  const result = await callAI(finalPrompt, 2, undefined, "generation", "high")
 
   // ⚠️ NOT KESİLME ALGILAMA
-  // maxOutputTokens aşıldığında Gemini yanıtı yarıda keser.
   // Notun sonu beklenen kapanış bölümleriyle bitmiyorsa kesilmiş demektir.
   if (!isChunked || chunkIndex === chunkCount - 1) {
     // Son parça veya tek parça — kapanış bölümleri olmalı
@@ -883,7 +881,7 @@ ${chunkIndex === chunkCount - 1 ? `
       result.includes("🧪") ||
       result.includes("🔑")
     if (!hasClosingSection && result.length > 2000) {
-      console.warn(`[AI_ENGINE] ⚠️ NOT KESİLME UYARISI: "${sectionTitle}" — Not kapanış bölümlerini (Test Et / Özet) içermiyor. maxOutputTokens yetersiz olabilir! (${result.length} karakter)`)
+      console.warn(`[AI_ENGINE] [WARNING] NOT KESİLME UYARISI: "${sectionTitle}" — Not kapanış bölümlerini (Test Et / Özet) içermiyor. maxOutputTokens yetersiz olabilir! (${result.length} karakter)`)
     }
   }
 

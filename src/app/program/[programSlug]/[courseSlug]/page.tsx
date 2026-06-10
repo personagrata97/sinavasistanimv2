@@ -603,43 +603,45 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
                   <XCircle className="w-5 h-5 text-red-400 mb-2" />
                   <div className="text-sm font-bold text-red-400">İşlem Başarısız</div>
                   <div className="text-[11px] text-red-400/80 mt-1 mb-3">Yapay zeka limitine takıldı.</div>
-                  <div className="flex flex-wrap gap-2 w-full justify-center mt-1">
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation()
-                        toast.info("İşlem kaldığı yerden devam ettiriliyor...")
-                        triggerProcess()
-                      }}
-                      disabled={processLock}
-                      className={`py-1 px-2.5 rounded-md text-[10px] font-bold transition-all flex items-center gap-1 shadow-md no-print ${
-                        processLock
-                          ? "bg-slate-800/40 text-slate-500 border border-slate-850 cursor-not-allowed opacity-50"
-                          : "bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white shadow-blue-950/50 cursor-pointer"
-                      }`}
-                    >
-                      <Play className="w-2.5 h-2.5 fill-current" /> Devam Et
-                    </button>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation()
-                        setConfirmAction({
-                          title: "Zorla Devam Ettir",
-                          message: "Eğer işlemin donduğundan eminseniz bu butonu kullanın. Eski notlarınız veya başarıyla tamamlanmış bölümleriniz KESİNLİKLE silinmez. Sadece takılı kalan işlem kaldığı yerden zorla yeniden başlatılır.",
-                          onConfirm: async () => {
-                            triggerProcess(true)
-                          }
-                        })
-                      }}
-                      className="py-1 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 hover:border-amber-500/40 rounded-md text-[10px] font-bold transition-all no-print flex items-center gap-1 shadow-sm"
-                    >
-                      <AlertTriangle className="w-2.5 h-2.5" /> Zorla Devam Ettir
-                    </button>
+                  <div className="flex flex-col gap-2 w-full mt-1 px-2">
+                    <div className="flex gap-2 w-full">
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          toast.info("İşlem kaldığı yerden devam ettiriliyor...")
+                          triggerProcess()
+                        }}
+                        disabled={processLock}
+                        className={`flex-1 justify-center py-1.5 px-2 rounded-md text-[10px] font-bold transition-all flex items-center gap-1.5 shadow-md no-print ${
+                          processLock
+                            ? "bg-slate-800/40 text-slate-500 border border-slate-850 cursor-not-allowed opacity-50"
+                            : "bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white shadow-blue-950/50 cursor-pointer"
+                        }`}
+                      >
+                        <Play className="w-2.5 h-2.5 fill-current" /> Devam Et
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          setConfirmAction({
+                            title: "Zorla Devam Ettir",
+                            message: "Eğer işlemin donduğundan eminseniz bu butonu kullanın. Eski notlarınız veya başarıyla tamamlanmış bölümleriniz KESİNLİKLE silinmez. Sadece takılı kalan işlem kaldığı yerden zorla yeniden başlatılır.",
+                            onConfirm: async () => {
+                              triggerProcess(true)
+                            }
+                          })
+                        }}
+                        className="flex-1 justify-center py-1.5 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 hover:border-amber-500/40 rounded-md text-[10px] font-bold transition-all no-print flex items-center gap-1.5 shadow-sm"
+                      >
+                        <AlertTriangle className="w-2.5 h-2.5" /> Zorla
+                      </button>
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
                         setShowUploadModal(true)
                       }}
-                      className="py-1 px-2.5 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-md text-[10px] font-bold transition-all border border-white/10 hover:border-white/20 no-print flex items-center gap-1 shadow-sm"
+                      className="w-full justify-center py-1.5 px-2 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-md text-[10px] font-bold transition-all border border-white/10 hover:border-white/20 no-print flex items-center gap-1.5 shadow-sm"
                     >
                       <RotateCcw className="w-2.5 h-2.5" /> Sıfırla
                     </button>
