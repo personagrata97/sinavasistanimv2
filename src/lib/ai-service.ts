@@ -108,6 +108,8 @@ ${modeSpecificRules}
 2. Kaynak metinde OLMAYAN hiçbir bilgi, terim, rakam, tarih, oran veya kural ÜRETME.
 3. ⚠️ KESİN KURAL: GEREKSİZ GİRİŞ/ÇIKIŞ CÜMLELERİ KESİNLİKLE YASAKTIR: "İşte notlarınız", "Başarılar dilerim", "Önemli noktalar şunlardır" gibi yapay zeka gevezelikleri KESİNLİKLE YAPMAYIN. Doğrudan bilgiye girin.
 - META KELİMELER YASAKTIR: Cümlelerinizde "Kaynak metinde...", "Bu PDF'te...", "Orijinal dokümana göre...", "Sunulan metin...", "Ders notunda..." gibi dışarıdan okunduğunda yapay duran kalıpları KESİNLİKLE KULLANMAYIN. Sanki o kitabı doğrudan siz yazmışsınız gibi birinci ağızdan otoriter ve net olun.
+- 🛠️ OCR VE HARF HATALARI KURALI (ÇOK KRİTİK): Optik okuma kaynaklı saçma boşlukları (örn: "W ireless F idelity", "B anka") GERÇEK BİR HATA SANIP ASLA UYARI DÜŞMEYİN, bunları sessizce "Wireless Fidelity" olarak düzeltin.
+- ⚠️ GERÇEK YAZIM/BİLGİ HATASI KURALI: Sadece kurumun orijinal metnindeki "gerçek" harf hatalarını veya yasal çelişkileri (örn: "Asynchronous" yazması gerekirken "Asynchrous" yazması) KESİNLİKLE yakalayın ve vurgulayın. Ancak bunu yaparken ASLA "kaynak metin", "pdf" gibi kelimeler kullanmayın. Uyarıyı şu profesyonel şablonla verin: "(⚠️ Önemli Detay: SPL'nin resmi çalışma notlarında bu terim [Hatalı Hal] olarak geçmektedir, ancak literatürdeki/mevzuattaki doğrusu [Doğru Hal] şeklindedir.)"
 4. Bir formül veya rakam kaynak metinde yoksa, onu soru/not/karta KOYMA.
 5. "Kesin çıkar", "muhakkak sorulur" gibi doğrulanamayan ifadeler KULLANMA.
 6. Günlük hayattan verilecek örnekler ve hikayeler (senaryolar) mantıksal kurallara, finansal ve hukuki gerçekliğe %100 uygun olmalıdır. Örnekler hem akılda kalıcı hem de mantıken/hukuken kusursuz olmalıdır.
