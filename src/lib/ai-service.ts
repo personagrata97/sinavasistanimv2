@@ -1385,14 +1385,22 @@ async function runGroundTruthTest(
 ): Promise<{ passed: boolean; failedQuestions: string[] }> {
   console.log(`[GROUND_TRUTH] 🕵️‍♂️ "${sectionTitle}" için Ground Truth Testi Başlatılıyor...`);
 
-  // Adım 1: Kaynaktan 15 zor soru üret
+  const charCount = sourceContent.length;
+  // Metnin uzunluğuna göre dinamik soru sayısı (Her ~400 karaktere 1 soru, Min: 5, Max: 35)
+  let questionCount = Math.round(charCount / 400);
+  if (questionCount < 5) questionCount = 5;
+  if (questionCount > 35) questionCount = 35;
+
+  console.log(`[GROUND_TRUTH] Dinamik soru sayısı hesaplandı: ${questionCount} soru (Metin: ${charCount} karakter)`);
+
+  // Adım 1: Kaynaktan dinamik sayıda zor soru üret
   const qPrompt = `
 Sen acımasız bir müfettişsin.
 BÖLÜM: "${sectionTitle}"
 KAYNAK METİN:
 ${sourceContent}
 
-GÖREV: SADECE bu kaynak metne bakarak, metindeki en ufak detayları, rakamları, yasal istisnaları ve kritik tanımları sınayan 15 adet "ÇOK ZOR" ve "NET" kontrol sorusu çıkar.
+GÖREV: SADECE bu kaynak metne bakarak, metindeki en ufak detayları, rakamları, yasal istisnaları ve kritik tanımları sınayan tam ${questionCount} adet "ÇOK ZOR" ve "NET" kontrol sorusu çıkar.
 Sorular kısa ve doğrudan bilgi arayan tarzda olmalı.
 
 Sadece şu formatta JSON döndür:
