@@ -259,54 +259,72 @@ function extractCleanJson(raw: string): any {
 }
 
 // ==================== PRISTINE MARKDOWN OCR (GÖZCÜ KATMANI) ====================
-export async function extractPerfectMarkdownOCR(fileUri: string, pageStart: number, pageEnd: number, retries = 2): Promise<string> {
-  const activeKey = getNextGeminiKey();
-  if (!activeKey) throw new Error("Aktif API anahtarı bulunamadı.");
-
+export async function extractPerfectMarkdownOCR(fileUri: string, pageStart: number, pageEnd: number): Promise<string> {
   const prompt = `Ekteki PDF dosyasının ${pageStart} ile ${pageEnd}. sayfaları arasındaki TÜM İÇERİĞİ (metin, tablo, şema, resim, grafik) detaylıca okuyup kusursuz bir Markdown metnine çevir.
 Kurallar:
 1. Hiçbir cümleyi, tabloyu veya listeyi atlama. Her detayı koru.
 2. Tabloları düzgün Markdown tablolarına dönüştür.
-3. Görseller veya şemalar varsa, bunları "[Görsel Açıklaması: ...]" şeklinde olabildiğince detaylı metne dök.
+3. Görseller veya şemalar varsa, bunları "[GÖRSEL İÇERİKLER]" başlığı altında olabildiğince detaylı metne dök.
 4. "İşte metin", "Tamamdır" gibi cevaplar yazma, sadece çevrilmiş markdown metnini ver.`;
 
-  const headers = { "Content-Type": "application/json", "x-goog-api-key": activeKey };
-  const body = {
-    contents: [
-      {
-        parts: [
-          { fileData: { mimeType: "application/pdf", fileUri: fileUri } },
-          { text: prompt }
-        ]
-      }
-    ],
-    generationConfig: { temperature: 0.1 }
-  };
+  // callAI gibi tüm 18 anahtarı agresif şekilde dene
+  const startKeyIndex = currentKeyIndex;
+  let triedAllKeys = false;
+  let lastError: any = null;
 
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent`,
-      body,
-      { headers, timeout: 120000 } // Daha büyük süre çünkü tüm bölümü çeviriyor
-    );
-    const parts = response.data?.candidates?.[0]?.content?.parts || [];
-    const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text);
-    const result = textParts.join("").trim();
-    
-    if (result) {
-      console.log(`[MARKDOWN_OCR] ✅ Sayfa ${pageStart}-${pageEnd} kusursuz markdown çıkarıldı [${result.length} chars]`);
-      return `[MARKDOWN_OCR_SUCCESS]\n\n${result}`;
+  while (!triedAllKeys) {
+    const currentKey = getNextGeminiKey();
+    if (!currentKey) break;
+
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey };
+    const body = {
+      contents: [
+        {
+          parts: [
+            { fileData: { mimeType: "application/pdf", fileUri: fileUri } },
+            { text: prompt }
+          ]
+        }
+      ],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
+    };
+
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+        body,
+        { headers, timeout: 180000 }
+      );
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text);
+      const result = textParts.join("").trim();
+
+      if (result && result.length > 100) {
+        console.log(`[MARKDOWN_OCR] ✅ Sayfa ${pageStart}-${pageEnd} kusursuz markdown çıkarıldı [Key #${currentKeyIndex + 1}] [${result.length} chars]`);
+        return `[MARKDOWN_OCR_SUCCESS]\n\n${result}`;
+      }
+    } catch (e: any) {
+      lastError = e;
+      console.warn(`[MARKDOWN_OCR] Key #${currentKeyIndex + 1} başarısız: ${e.message?.substring(0, 100)}`);
+
+      const errMsg = e.message || "";
+      const isSuspended = errMsg.includes("403") || errMsg.includes("API key not valid");
+      if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now());
+
+      const isQuotaError = errMsg.includes("429") || errMsg.includes("503");
+      if (isQuotaError) suspendedKeys.set(currentKeyIndex, Date.now());
     }
-  } catch (e: any) {
-    console.warn(`[MARKDOWN_OCR] Hata: ${e.message}`);
-    if (retries > 0) {
-      const nextKey = rotateToNextKey();
+
+    // Sonraki anahtara geç
+    const nextKey = rotateToNextKey();
+    if (!nextKey || currentKeyIndex === startKeyIndex) {
+      triedAllKeys = true;
+    } else {
       await new Promise(r => setTimeout(r, 3000));
-      return extractPerfectMarkdownOCR(fileUri, pageStart, pageEnd, retries - 1);
     }
-    throw e;
   }
-  throw new Error("OCR başarısız oldu.");
+
+  throw new Error(`OCR başarısız: Tüm anahtarlar denendi. Son hata: ${lastError?.message || "Bilinmiyor"}`);
 }
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
