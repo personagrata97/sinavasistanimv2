@@ -1,0 +1,184 @@
+## 📌 Bilgi Sistemleri ve Siber Güvenlik Kısaltmalar Sözlüğü [Bilgi Güvenliği ve Ağ Yönetimi]
+
+### 🎯 Bu Bölüm Ne Anlatıyor?
+Bilgi sistemleri, siber güvenlik, ağ mimarisi, uluslararası standartlar ve ilgili yasal mevzuatta kullanılan tüm teknik kısaltmaların, protokollerin ve kurumsal yapıların sistematik dizinidir. Bu sözlük, teknik ve hukuki terminolojinin doğru ve eksiksiz anlaşılması için temel referans kaynağıdır.
+
+---
+
+### 🏢 Düzenleyici, Denetleyici ve Resmi Kurumlar / Kuruluşlar
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **BDDK** | Bankacılık Düzenleme ve Denetleme Kurumu |
+| **DDO** | Dijital Dönüşüm Ofisi |
+| **KGK** | Kamu Gözetimi Muhasebe ve Denetim Standartları Kurumu |
+| **KVKK** | Kişisel Verilerin Korunması Kanunu |
+| **SPKn, Kanun** | Sermaye Piyasası Kanunu |
+| **SPK, Kurul** | Sermaye Piyasası Kurulu |
+| **SPL** | Sermaye Piyasa Lisanslama Sicil ve Eğitim Kuruluşu A.Ş. |
+| **TCMB** | Türkiye Cumhuriyet Merkez Bankası |
+| **TSE** | Türk Standartları Enstitüsü |
+| **TSPB** | Türkiye Sermaye Piyasaları Birliği |
+
+---
+
+### 🌐 Uluslararası Standartlar, Kuruluşlar ve Çerçeveler
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **AFRINIC** | African Network Information Centre |
+| **ANSI** | American National Standards Institute ( Amerikan Ulusal Standartlar Enstitüsü ) |
+| **APNIC** | Asia Pacific Network Information Centre |
+| **ARIN** | American Registry for Internet Numbers |
+| **CISA** | Certified Information Systems Auditor ( Bilgi Sistemleri Denetçisi Sertifikası ) |
+| **COBIT** | Control Objectives for Information and Related Technologies ( Bilgi Teknolojilerine İlişkin Kontrol Hedefleri ) |
+| **DARPA** | The Defense Advanced Research Projects Agency ( İleri Savunma Araştırma Projeleri Dairesi ) |
+| **IAB** | Internet Architecture Board ( İnternet Mimarisi Kurulu ) |
+| **IAITAM** | International Association of Information Technology Asset Managers ( Uluslararası Bilgi Teknolojileri Varlık Yöneticileri Birliği ) |
+| **ICANN** | The Internet Corporation for Assigned Names and Numbers ( İnternet Tahsisli Sayılar ve İsimler Kurumu ) |
+| **IEEE** | The Institute of Electrical and Electronics Engineers ( Elektrik ve Elektronik Mühendisleri Enstitüsü ) |
+| **IETF** | Internet Engineering Task Force ( İnternet Mühendisliği Görev Gücü ) |
+| **ISA** | International Standards on Auditing ( Uluslararası Denetim Standartları ) |
+| **ISACA** | Information Systems Audit and Control Association ( Bilgi Sistemleri Denetim ve Kontrol Birliği ) |
+| **ISACF** | Information Systems Audit and Control Foundation ( Bilgi Sistemleri Denetim ve Kontrol Vakfı ) |
+| **ISO** | International Organization for Standardization ( Uluslararası Standartlar Örgütü ) |
+| **ITAF** | Information Technology Assurance Framework ( Bilgi Teknolojileri Güvence Çerçevesi ) |
+| **ITGI** | IT Governance Institute ( Bilgi Teknolojileri Yönetişim Enstitüsü ) |
+| **ITIL** | Information Technology Infrastructure Library ( Bilgi Teknolojisi Altyapı Kütüphanesi ) |
+| **ITU** | International Telecommunication Union ( Uluslararası Telekomünikasyon Birliği ) |
+| **LACNIC** | Latin America and Caribbean Network Information Centre |
+| **NIST** | National Institute of Standards and Technology ( Ulusal Standartlar ve Teknoloji Enstitüsü ) |
+| **OWASP** | Open Web Application Security Project ( Açık Web Uygulama Güvenliği Projesi ) |
+| **RIPE NCC** | Réseaux IP Européens Network Coordination Centre |
+| **RIR** | Regional Internet Registry ( Bölgesel İnternet Kayıt Kuruluşu ) |
+| **W3C** | World Wide Web Consortium ( Dünya Çapında Ağ Konsorsiyumu ) |
+
+---
+
+### 🔒 Bilgi Güvenliği, Şifreleme ve Yetkilendirme
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **APT** | Advanced Persistent Threat (Gelişmiş Kalıcı Tehdit) |
+| **BYOD** | Bring Your Own Device ( Kendi Cihazını Getir ) |
+| **CA** | Certification Authority ( Sertifika Otoritesi ) |
+| **COBO** | Corporate-Owned, Business-Only ( Şirkete Ait, Yalnızca İş ) |
+| **COPE** | Corporate-Owned, Personally-Enabled ( Şirkete Ait, Kişisel Olarak Etkinleştirilmiş ) |
+| **CRL** | Certificate Revocation List ( Sertifika İptal Listesi ) |
+| **CSRF** | Cross-Site Request Forgery ( Çapraz Site Talep Sahteciliği ) |
+| **CYOD** | Choose Your Own Device ( Kendi Cihazını Seç ) |
+| **DAC** | Discretionary Access Control ( İsteğe Bağlı Erişim Kontrolü ) |
+| **DES** | Data Encryption Standart ( Veri Şifreleme Standardı ) |
+| **DLP** | Data Loss Prevention ( Veri Sızıntısı Önleme ) |
+| **DMZ** | Demilitarized Zone ( Silahsızlanma Alanı / Savunmasız Bölge ) |
+| **ECC** | Elliptical Curve Cryptography ( Eliptik Eğri Kriptografisi ) |
+| **IDS** | Intrusion Detection System ( Saldırı Tespit Sistemi ) |
+| **IPS** | Intrusion Prevention System ( Saldırı Engelleme Sistemi ) |
+| **LDAP** | Lightweight Directory Access Protocol ( Basit Dizin Erişim Protokolü ) |
+| **MAC** | Mandatory Access Control ( Zorunlu Erişim Kontrolü ) |
+| **MFA** | Multi-Factor Authentication ( Çok Faktörlü Kimlik Doğrulama ) |
+| **NAC** | Network Access Control ( Ağ Erişim Kontrolü ) |
+| **PKI** | Public Key Infrastructure ( Açık Anahtar Altyapısı ) |
+| **PIN** | Personal Identification Number ( Kişisel Kimlik Numarası ) |
+| **RA** | Registration Authority ( Kayıt Otoritesi ) |
+| **SIEM** | Security Information and Event Management ( Güvenlik Bilgileri ve Olay Yönetimi ) |
+| **SSO** | Single Sign-On ( Tek Oturum Açma ) |
+| **SoD** | Separation of Duty ( Görevler Ayrılığı ) |
+| **VPN** | Virtual Private Network ( Sanal Özel Ağ ) |
+| **WAF** | Web Application Firewall ( Uygulama Güvenlik Duvarı ) |
+| **XSS** | Cross-Site Scripting ( Çapraz Site Betik ) |
+| **ZT** | Zero Trust ( Sıfır Güven ) |
+| **ZTA** | Zero Trust Architecture ( Sıfır Güven Mimarisi ) |
+
+---
+
+### 🌐 Ağ Teknolojileri, Protokoller ve Donanım
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **ARPANET** | The Advanced Research Projects Agency Network ( Gelişmiş Araştırma Projeleri Dairesi Ağı ) |
+| **ATM** | Asynchrous Transfer Mode *(⚠️ Önemli Detay: Kaynak metinde "Asynchronous" kelimesi "Asynchrous" şeklinde yazılmıştır.)* |
+| **BGP** | Border Gateway Protocol ( Sınır Geçit Protokolü ) |
+| **BSSID** | Basic Service Set Identifier ( Bağımsız Temel Hizmet Takımı Tanımlayıcısı ) |
+| **CAN** | Campus Area Network ( Kampüs Alan Ağı ) |
+| **DCE** | Distributed Computing Environment ( Dağıtık Bilgi İşlem Ortamı ) |
+| **EMI** | Electromagnetic Interference ( Elektromanyetik Enterferans ) |
+| **FC** | Fiber Channel |
+| **FDDI** | Fiber Distributed Data Interface ( Fiber Dağıtılmış Veri Arayüzü ) |
+| **HTML** | Hypertext Markup Language |
+| **ICMP** | The Internet Control Message Protocol ( İnternet Kontrol Mesajı Protokolü ) |
+| **IGMP** | Internet Group Management Protocol ( İnternet Grup Yönetim Protokolü ) |
+| **ISS** | İnternet Servis Sağlayıcıları |
+| **IoT** | Internet of things ( nesnelerin İnterneti ) |
+| **IP** | İnternet Protokolü |
+| **iSCSI** | Internet Small Computer System Interface |
+| **LAN** | Local Area Network ( Yerel Alan Ağı ) |
+| **LSO** | Local Shared Object ( Yerel Paylaşılan Nesneler ) |
+| **MAC Adresi** | Media Access Control Address ( Ortam Erişim Kontrolü Adresi ) |
+| **MAN** | Metropolitan Area Network ( Büyükşehir Alan Ağı ) |
+| **MEF** | Metropolitan Ethernet Forum |
+| **MLD** | Multicast Listener Discovery ( Multicast Dinleyici Keşfi ) |
+| **NFC** | Near Field Communication ( Yakın Alan İletişimi ) |
+| **NIC** | Network Interface Card |
+| **NOS** | Network Operating System |
+| **NTP** | Network Time Protocol ( Ağ Zaman Protokolü ) |
+| **OSI** | Open Systems Interconnection ( Açık Sistemler Bağlantısı ) |
+| **PAN** | Personal Area Network ( Kişisel Alan Ağı ) |
+| **PDU** | Protocol Data Unit ( Protokol Veri Birimi ) |
+| **SAN** | Storage Area Network ( Depolama Alan Ağı ) |
+| **SMDS** | Switched Multi-Megabit Data Service |
+| **SMS** | Short Message/Messaging Service ( Kısa Mesaj ) |
+| **SNA** | Systems Network Architecture |
+| **SNIA** | Storage Networking Industry Association ( Depolama Ağı Endüstrisi Birliği ) |
+| **SQL** | Structured Query Language ( Yapılandırılmış Sorgu Dili ) |
+| **SSID** | Service Set Identifier ( Hizmet Kümesi Tanımlayıcı ) |
+| **TCP** | Transmission Control Protocol ( İletim Kontrol Protokolü ) |
+| **TLD** | Top Level Domain |
+| **TOR** | The Onion Router |
+| **UDP** | User Datagram Protocol ( Kullanıcı Veri Bloğu Protokolü ) |
+| **URI** | Uniform Resource Identifier ( Tekbiçimli Kaynak Tanımlayıcısı ) |
+| **URN** | Uniform Resource Name ( Tekbiçimli Kaynak Adı ) |
+| **URL** | Uniform Resource Locator ( Tekbiçimli Kaynak Konumlayıcısı ) |
+| **USB** | Universal Serial Bus |
+| **VoD** | Video on Demand ( Talebe Bağlı Video ) |
+| **VoIP** | Voice Over Internet Protocol ( IP Üzerinden Ses ) |
+| **WEP** | Wired Equivalent Privacy ( Kabloya Eşdeğer Mahremiyet ) |
+| **Wi-Fi** | W ireless F idelity ( Kablosuz Bağlantı Alanı ) *(⚠️ Önemli Detay: Kaynak metinde "Wireless Fidelity" kelimeleri "W ireless F idelity" şeklinde, "W" ile "ireless" ve "F" ile "idelity" arasında birer boşluk olacak şekilde yazılmıştır.)* |
+| **WPA** | Wi-Fi Protected Access ( Wi-Fi Korumalı Erişim ) |
+| **WPS** | Wi-Fi Protected Setup ( Wi-Fi Korumalı Kurulum ) |
+| **XML** | Extensible Markup Language ( Genişletilebilir İşaretleme Dili ) |
+| **WAN** | Wide Area Network ( Uzak Alan Ağı ) |
+| **WLAN** | Wireless Local Area Network ( Kablosuz Yerel Alan Ağı ) |
+| **WPAN** | Wireless Personal Area Network ( Kablosuz Kişisel Alan Ağı ) |
+| **WWW** | World Wide Web ( İnternet Sunucuları Ağı ) |
+
+---
+
+### 📊 Biyometri, Performans ve İş Sürekliliği
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **CER** | Crossover Error Rate ( Çapraz Hata Oranı ) |
+| **EER** | Equal Error Rate ( Eşit Hata Oranı ) |
+| **FAR** | False Acceptance Rate ( Yanlış Kabul Oranı ) |
+| **FRR** | False Rejection Rate ( Yanlış Reddetme Oranı ) |
+| **KPI** | Key Performance Indicator ( Anahtar Başarı Göstergesi ) |
+| **RPO** | Recovery Point Objective ( Kurtarma Noktası Hedefi ) |
+| **RTO** | Recovery Time Objective ( İyileşme Süresi Hedefi ) |
+| **SLA** | Service-Level Agreement ( Hizmet Seviyesi Anlaşması ) |
+| **UPS** | Uninterruptible Power Supply ( Kesintisiz Güç Kaynağı ) |
+
+---
+
+### 📜 Tebliğler, Kanunlar ve Genel Terimler
+
+| Kısaltma | Açılımı / Anlamı |
+| :--- | :--- |
+| **BSBDL** | Bilgi Sistemleri Bağımsız Denetim Lisansı |
+| **BSBD Tebliği** | III-62.2 sayılı Bilgi Sistemleri Bağımsız Denetim Tebliği |
+| **BSY Tebliği** | VII-128.10 sayılı Bilgi Sistemleri Yönetimine İlişkin Usul ve Esaslar Tebliği |
+| **BT** | Bilgi Teknolojileri |
+| **IT** | Information Technologies ( Bilgi Teknolojileri ) |
+| **MIT** | Massachusetts Institute of Technology ( Massachusetts Teknoloji Enstitüsü ) |
+| **PC** | Personal Computer ( Kişisel Bilgisayar ) |
+| **TTK** | 610 sayılı Türk Ticaret Kanunu *(⚠️ Önemli Detay: Kaynak metinde kanun numarası "610" olarak belirtilmiştir.)* |

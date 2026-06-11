@@ -483,7 +483,7 @@ async function processInBackground(slug: string, course: any) {
             
             const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
             try {
-              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUri, section.pageStart, section.pageEnd);
+              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUris || course.geminiFileUri, section.pageStart, section.pageEnd);
               if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
                 section.rawContent = pristineMarkdown;
                 await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });

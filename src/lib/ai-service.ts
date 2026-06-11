@@ -261,13 +261,21 @@ function extractCleanJson(raw: string): any {
 }
 
 // ==================== PRISTINE MARKDOWN OCR (GÖZCÜ KATMANI) ====================
-export async function extractPerfectMarkdownOCR(fileUri: string, pageStart: number, pageEnd: number): Promise<string> {
+export async function extractPerfectMarkdownOCR(fileUrisInput: string | null, pageStart: number, pageEnd: number): Promise<string> {
   const prompt = `Ekteki PDF dosyasının ${pageStart} ile ${pageEnd}. sayfaları arasındaki TÜM İÇERİĞİ (metin, tablo, şema, resim, grafik) detaylıca okuyup kusursuz bir Markdown metnine çevir.
 Kurallar:
 1. Hiçbir cümleyi, tabloyu veya listeyi atlama. Her detayı koru.
 2. Tabloları düzgün Markdown tablolarına dönüştür.
 3. Görseller veya şemalar varsa, bunları "[GÖRSEL İÇERİKLER]" başlığı altında olabildiğince detaylı metne dök.
 4. "İşte metin", "Tamamdır" gibi cevaplar yazma, sadece çevrilmiş markdown metnini ver.`;
+
+  // Parse the file URIs JSON map
+  let uriMap: Record<string, string> = {};
+  if (fileUrisInput && fileUrisInput.startsWith("{")) {
+    try { uriMap = JSON.parse(fileUrisInput); } catch(e) {}
+  } else if (fileUrisInput) {
+    uriMap["0"] = fileUrisInput;
+  }
 
   // callAI gibi tüm 18 anahtarı agresif şekilde dene
   const startKeyIndex = currentKeyIndex;
@@ -278,12 +286,22 @@ Kurallar:
     const currentKey = getNextGeminiKey();
     if (!currentKey) break;
 
+    // Use the specific file URI that was uploaded with THIS specific key
+    const activeFileUri = uriMap[currentKeyIndex.toString()] || uriMap["0"] || fileUrisInput;
+    if (!activeFileUri) {
+      // If there is no URI for this key, simulate a 403 to trigger rotation
+      lastError = new Error("Bu API anahtarı için yüklenmiş bir PDF dosyası bulunamadı (403)");
+      const nextKey = rotateToNextKey();
+      if (!nextKey || currentKeyIndex === startKeyIndex) triedAllKeys = true;
+      continue;
+    }
+
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey };
     const body = {
       contents: [
         {
           parts: [
-            { fileData: { mimeType: "application/pdf", fileUri: fileUri } },
+            { fileData: { mimeType: "application/pdf", fileUri: activeFileUri } },
             { text: prompt }
           ]
         }
