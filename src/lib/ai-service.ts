@@ -325,7 +325,7 @@ async function callAI(prompt: string, retries = 2, mode: "generation" | "verific
 
     // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
     const MODEL_ID = mode === "generation" ? "gemini-3.5-flash" : "gemini-2.5-flash"
-    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 8192 : 16384 }]
+    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 65536 : 16384 }]
 
     const startKeyIndex = currentKeyIndex
     let triedAllKeys = false
@@ -555,9 +555,9 @@ export async function generateCourseNotes(
   const isBibliography = sectionTitle.toLowerCase().includes("kaynakça") || sectionTitle.toLowerCase().includes("referans") || sectionTitle.toLowerCase().includes("bibliography")
   const isGlossary = sectionTitle.toLowerCase().includes("kısaltma") || sectionTitle.toLowerCase().includes("terimler") || sectionTitle.toLowerCase().includes("sözlük") || sectionTitle.toLowerCase().includes("glossary")
 
-  // Sözlük bölümlerinde yapay zeka her kelime için destan (senaryo, tanım vb.) yazdığından,
-  // 10000 karakterlik standart bir girdi, çıktı limitini (8192 token) anında doldurur ve not yarıda kesilir.
-  const chunkThreshold = isGlossary ? 3000 : 5000;
+  // Çıktı limiti 65536 token'a yükseltildiği için tüm bölümler 15000 karaktere kadar
+  // tek seferde işlenebilir. Bu, parça birleştirme sırasında oluşan içerik kaybını tamamen önler.
+  const chunkThreshold = 15000;
 
   if (!isChunked && content.length > chunkThreshold) {
     const chunks = splitContentIntoChunks(content, chunkThreshold)
