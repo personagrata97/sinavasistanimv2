@@ -325,7 +325,7 @@ async function callAI(prompt: string, retries = 2, mode: "generation" | "verific
 
     // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
     const MODEL_ID = mode === "generation" ? "gemini-3.5-flash" : "gemini-2.5-flash"
-    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 65536 : 16384 }]
+    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 65536 : 65536 }]
 
     const startKeyIndex = currentKeyIndex
     let triedAllKeys = false
@@ -620,20 +620,10 @@ export async function generateCourseNotes(
   const isMasak = normalizedCourse.includes("masak") || normalizedCourse.includes("uyum görev");
   const disc = getDisciplineExamples(isSecurity, isMasak);
 
-  let glossaryInstruction = ""
-  if (isGlossary) {
-    glossaryInstruction = `
-⚠️⚠️⚠️ DERS NOTU YERİNE KISALTMALAR VE TERİMLER SÖZLÜĞÜ ÜRETİLECEKTİR:
-- Bu bölümdeki ders notunu bir Kısaltmalar ve Terimler Sözlüğü olarak yapılandır.
-- Bölümde geçen tüm resmi ve teknik kısaltmaları (örn: BDDK, SPK, WAF vb.) ve önemli terimleri alfabetik sırala.
-- Her terimi/kısaltmayı şu formatta zenginleştir:
-  #### [Kısaltma/Terim Adı] (Açılımı / Türkçe Karşılığı)
-  - **Resmi Tanım:** Kaynak metindeki birebir resmi tanımı. Kurumların görevlerini yazarken sadece adından (örn: Banka) yola çıkarak kestirip atma, metinde geçen TÜM şirket tiplerini (Faktoring, Leasing vb.) dahil et.
-  - 💡 **Hafıza Teknikli Benzetme (Mnemonic):** Günlük hayattan somut benzetme.
-  - 🎬 **Kurumsal Canlı Mikro-Senaryo:** En az 3-4 cümlelik, gerçekçi kurumsal aktörler içeren (örn: Alfa AŞ Uyum Görevlisi, Beta Bankası Denetçisi), bu terimin/kısaltmanın pratikte nasıl uygulandığını veya ne işe yaradığını gösteren mini hikaye. (KESİNLİKLE Ahmet, Ayşe gibi şahıs isimleri KULLANMA).
-- Başka hiçbir düz yazı veya giriş/sonuç yazısı ekleme.
-`
-  }
+  // Not: Glossary bölümleri için talimatlar, aşağıdaki NOT YAPISI şablonunda
+  // (SADE KISALTMALAR SÖZLÜĞÜ formatında) zaten eksiksiz tanımlanmıştır.
+  // Burada ek talimat vermek çelişki yaratır ve sonsuz döngüye neden olur.
+  const glossaryInstruction = ""
 
   let visualRulesInstruction = `
 🎨 GÖRSEL YENİDEN İNŞA (VISUAL RECONSTRUCTION) KURALLARI (ÇOK KRİTİK):
@@ -870,7 +860,7 @@ ${chunkIndex === chunkCount - 1 ? `
 ` + prompt
   }
 
-  const result = await callAI(finalPrompt, 2, undefined, "generation", "high")
+  const result = await callAI(finalPrompt, 2, "generation")
 
   // ⚠️ NOT KESİLME ALGILAMA
   // Notun sonu beklenen kapanış bölümleriyle bitmiyorsa kesilmiş demektir.
@@ -996,7 +986,7 @@ ${cardTypesInstruction}
     {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar: [tuzak uyarısı])", "difficulty": "easy|medium|hard"}
   ]
   `
-    let raw = await callAI(prompt, 2, fileUri)
+    let raw = await callAI(prompt, 2, "generation")
 
     let attempt = 1
     const maxAttempts = 2
@@ -1042,13 +1032,13 @@ ${cardTypesInstruction}
   Tüm kurallara ve şablon formatına %100 uyarak flashcardları yeniden sıfırdan üret. Sadece JSON array döndür.
   `
         await new Promise(r => setTimeout(r, 4000)) // RPM limit nefes payı
-        raw = await callAI(repairPrompt, 2, fileUri)
+        raw = await callAI(repairPrompt, 2, "generation")
         attempt++
       } catch (e: any) {
         console.error(`[FLASHCARD_DEBUG] Parça ${i + 1} Flashcard ayrıştırma/doğrulama hatası (Attempt #${attempt}): ${e.message}`)
         if (attempt === maxAttempts) break
         await new Promise(r => setTimeout(r, 4000))
-        raw = await callAI(prompt, 2, fileUri)
+        raw = await callAI(prompt, 2, "generation")
         attempt++
       }
     }
@@ -1198,7 +1188,7 @@ Sadece JSON array döndür:
 ]
 `
 
-    let raw = await callAI(prompt, 2, fileUri)
+    let raw = await callAI(prompt, 2, "generation")
 
     let attempt = 1
     const maxAttempts = 2
@@ -1251,13 +1241,13 @@ Lütfen bu hataları KESİNLİKLE düzelt, çelişkileri gider ve açıklamalar�
 Tüm kurallara ve şablon formatına %100 uyarak soruları yeniden sıfırdan üret. Sadece JSON array döndür.
 `
         await new Promise(r => setTimeout(r, 4000)) // RPM limit nefes payı
-        raw = await callAI(repairPrompt, 2, fileUri)
+        raw = await callAI(repairPrompt, 2, "generation")
         attempt++
       } catch (e: any) {
         console.error(`[QUESTION_DEBUG] Parça ${i + 1} Soru ayrıştırma/doğrulama hatası (Attempt #${attempt}): ${e.message}`)
         if (attempt === maxAttempts) break
         await new Promise(r => setTimeout(r, 4000))
-        raw = await callAI(prompt, 2, fileUri)
+        raw = await callAI(prompt, 2, "generation")
         attempt++
       }
     }
@@ -1308,7 +1298,7 @@ Sadece JSON array döndür:
 ]
 `
       await new Promise(r => setTimeout(r, 4000))
-      const backupRaw = await callAI(backupPrompt, 1, fileUri)
+      const backupRaw = await callAI(backupPrompt, 1, "generation")
       const backupQuestions = extractCleanJson(backupRaw)
       if (Array.isArray(backupQuestions) && backupQuestions.length > 0) {
         console.log(`[YEDEK_GÜÇ] ✅ Başarıyla ${backupQuestions.length} adet yedek güç sorusu üretildi.`)
@@ -1366,9 +1356,26 @@ Sadece JSON array döndür:
 
   if (allQuestions.length > 0) {
     const aRatio = answerCounts["A"] / allQuestions.length;
-    if (aRatio > 0.4) {
-      console.warn(`[QUESTION_AUDIT] ⚠️ Cevapların %${(aRatio * 100).toFixed(0)}'si A şıkkı! Model tembellik yapıyor olabilir.`);
-      // Soru cevapları dağılımını düzeltmek için frontend tarafında veya burada shuffle edilebilir.
+    if (aRatio > 0.4 && allQuestions.length > 3) {
+      console.warn(`[QUESTION_SHUFFLE] ⚠️ Cevapların %${(aRatio * 100).toFixed(0)}'si A şıkkı! Şıklar otomatik karıştırılıyor...`);
+      for (const q of allQuestions) {
+        if (!q.options || q.options.length < 5 || !q.correct) continue;
+        const correctIdx = q.correct.charCodeAt(0) - 65;
+        const correctOptionText = q.options[correctIdx];
+        // Fisher-Yates shuffle
+        for (let i = q.options.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [q.options[i], q.options[j]] = [q.options[j], q.options[i]];
+        }
+        const newIdx = q.options.findIndex((o: string) => o === correctOptionText);
+        if (newIdx !== -1) q.correct = String.fromCharCode(65 + newIdx);
+        const prefixes = ["A) ", "B) ", "C) ", "D) ", "E) "];
+        q.options = q.options.map((opt: string, i: number) => {
+          const clean = opt.replace(/^[A-Ea-e][):.]\s*/, '').trim();
+          return `${prefixes[i]}${clean}`;
+        });
+      }
+      console.log(`[QUESTION_SHUFFLE] 🔀 ${allQuestions.length} sorunun şıkları otomatik karıştırıldı.`);
     }
   }
 
@@ -1686,7 +1693,7 @@ Sadece aşağıdaki JSON formatında çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, fileUri, "verification")
+  const raw = await callAI(prompt, 1, "verification")
   try {
     const result = extractCleanJson(raw)
     return {
@@ -1731,7 +1738,7 @@ Sadece aşağıdaki JSON formatında çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, fileUri, "verification")
+  const raw = await callAI(prompt, 1, "verification")
   try {
     const result = extractCleanJson(raw)
     return {
@@ -1777,7 +1784,7 @@ ${existingNotes}
 
   // 2.5-flash modelinde bilginin kaybolmasını engellemek için ikinci bir "cilalama" turu (Aşama 2) İPTAL EDİLMİŞTİR.
   // Tüm organik yedirme ve cilalama işi Aşama 1'de (injectPrompt içinde) tek geçişte yapılır.
-  return await callAI(injectPrompt, 1, undefined, "generation", "high");
+  return await callAI(injectPrompt, 1, "generation");
 }
 
 // ==================== AUTO-HEALING FLAGGING ====================
@@ -1889,7 +1896,7 @@ Sadece şu formatta JSON döndür:
 `;
 
   try {
-    const raw = await callAI(prompt, 1, undefined, "verification");
+    const raw = await callAI(prompt, 1, "verification");
     const solverResults = extractCleanJson(raw) as any[];
 
     const validQuestions = questions.filter((q, i) => {
@@ -1958,7 +1965,7 @@ Eğer spoiler varsa veya bilgi yanlışsa "is_valid": false yap.
 `;
 
   try {
-    const raw = await callAI(prompt, 1, undefined, "verification");
+    const raw = await callAI(prompt, 1, "verification");
     const solverResults = extractCleanJson(raw) as any[];
 
     const validFlashcards = flashcards.filter((f, i) => {
