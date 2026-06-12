@@ -509,6 +509,8 @@ export function cleanExplanationText(text: string): string {
     .replace(/Yapay zeka/g, "Akıllı asistan")
     .replace(/\n+\s*❌/g, "\n\n❌")
     .replace(/\n+\s*💡/g, "\n\n💡")
+    .replace(/\[KAYNAK BAŞLIĞI:.*?\]/gi, "")
+    .trim()
 }
 
 import { PremiumMarkdownRenderer } from "./PremiumMarkdownRenderer"

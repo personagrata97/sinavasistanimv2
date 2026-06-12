@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     // 🔒 Çift tıklama koruması: Sadece aktif olarak bellek üzerindeyse engelle
     if (activeProcesses.has(slug)) {
       // KALICI DÜZELTME: Eğer veritabanında 'paused' veya 'error' durumuna düşmüşse, bellek kilidini kesinlikle kır!
-      if (forceRetry || course.status === "paused" || course.status === "error") {
+      if (course.status === "paused" || course.status === "error") {
         console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (DB Durumu: ${course.status}), kilit zorla kırılıyor: ${course.name}`);
         activeProcesses.delete(slug);
       } else {
@@ -662,15 +662,6 @@ async function processInBackground(slug: string, course: any) {
 
                 currentScore = verification.score
 
-                // En yüksek başarılı doğrulama skorunu ve notlarını koru
-                let isNewBest = false;
-                if (currentScore > bestScore) {
-                  bestScore = currentScore
-                  bestNotes = notes
-                  isNewBest = true;
-                  console.log(`[BG] 🏆 Yeni en yüksek skor: %${bestScore}`)
-                }
-
                 // KONTROLÖR ÇELİŞKİ DENETÇİSİ (Consistency Check)
                 // Kontrolör "hata/eksik var" deyip puanı 100 döndürürse, çelişkiyi tespit edip puanı
                 // dürüst bir şekilde eksik ve hata sayısına oranla düşürüyoruz.
@@ -707,6 +698,15 @@ async function processInBackground(slug: string, course: any) {
 
                 // Kontrolörün yapısal skor değerini kaydet (SmartInject routing kararı için)
                 const kontrolorStructuralScore = verification.score;
+
+                // FIX: En yüksek başarılı doğrulama skorunu ve notlarını koru (TÜM CEZALARDAN SONRA)
+                let isNewBest = false;
+                if (currentScore > bestScore) {
+                  bestScore = currentScore
+                  bestNotes = notes
+                  isNewBest = true;
+                  console.log(`[BG] 🏆 Yeni en yüksek skor: %${bestScore}`)
+                }
 
                 lastVerification = verification
                 if (isNewBest) {

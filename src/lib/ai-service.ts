@@ -1021,7 +1021,7 @@ ${cardTypesInstruction}
 
   Sadece JSON array döndür:
   [
-    {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar: [tuzak uyarısı])", "difficulty": "easy|medium|hard"}
+    {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar: [tuzak uyarısı])\\n\\n[KAYNAK BAŞLIĞI: Bu bilginin kaynağındaki ana başlığın tam adını buraya yaz]", "difficulty": "easy|medium|hard"}
   ]
   `
     let raw = await callAI(prompt, 2, "generation")
@@ -1220,7 +1220,7 @@ Sadece JSON array döndür:
     "text": "soru metni",
     "options": ["A) seçenek", "B) seçenek", "C) seçenek", "D) seçenek", "E) seçenek"],
     "correct": "A",
-    "explanation": "✅ Doğru cevap A'dır: [detaylı açıklama].\\n\\n❌ B) Yanlış çünkü: [neden]\\n❌ C) Yanlış çünkü: [neden]\\n❌ D) Yanlış çünkü: [neden]\\n❌ E) Yanlış çünkü: [neden]\\n\\n💡 Sınav İpucu: [ipucu]",
+    "explanation": "✅ Doğru cevap A'dır: [detaylı açıklama].\\n\\n❌ B) Yanlış çünkü: [neden]\\n❌ C) Yanlış çünkü: [neden]\\n❌ D) Yanlış çünkü: [neden]\\n❌ E) Yanlış çünkü: [neden]\\n\\n💡 Sınav İpucu: [ipucu]\\n\\n[KAYNAK BAŞLIĞI: Bu bilginin kaynağındaki ana başlığın tam adını buraya yaz]",
     "difficulty": "easy|medium|hard"
   }
 ]

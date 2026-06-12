@@ -342,7 +342,7 @@ function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string 
             </div>
             <div className={`font-medium leading-relaxed text-left space-y-4 ${flipped ? "text-sm" : "text-lg text-center"}`}>
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                {flattenNestedMarkdown((flipped ? card.back : card.front).replace(/💡/g, '\n\n💡').replace(/🪤/g, '\n\n🪤'))}
+                {flattenNestedMarkdown((flipped ? card.back : card.front).replace(/\[KAYNAK BAŞLIĞI:.*?\]/gi, '').replace(/💡/g, '\n\n💡').replace(/🪤/g, '\n\n🪤'))}
               </ReactMarkdown>
             </div>
             {flipped && (

@@ -85,9 +85,31 @@ export function PremiumMarkdownRenderer({
       let bestMatch: HTMLElement | null = null;
       let maxScore = 0;
 
+      // ✨ YENİ: DIRECT SOURCE MAPPING (KAYNAK İŞARETLEME) KONTROLÜ ✨
+      // Yapay zekanın "explanation" veya "back" alanına eklediği [KAYNAK BAŞLIĞI: Başlık Adı] etiketini yakala
+      const sourceMatch = autoScrollKeyword.match(/\[KAYNAK BAŞLIĞI:\s*(.*?)\]/i);
+      if (sourceMatch && sourceMatch[1]) {
+         const exactHeadingText = sourceMatch[1].trim().toLowerCase();
+         for (let i = 0; i < elements.length; i++) {
+            const el = elements[i] as HTMLElement;
+            if (el.tagName.match(/^H[1-6]$/)) {
+               const text = (el.textContent || '').toLowerCase().trim();
+               // Başlık metniyle eşleşme kontrolü
+               if (text === exactHeadingText || text.includes(exactHeadingText) || exactHeadingText.includes(text)) {
+                  bestMatch = el;
+                  maxScore = 10000; // Fuzzy match'i bypass etmesi için tavan puan
+                  break; 
+               }
+            }
+         }
+      }
+
       // Arama kelimelerini küçük harfe çevir ve kelimelere ayır
-      const stopWords = ['aşağıdakilerden', 'hangisi', 'yanlıştır', 'doğrudur', 'kaynak', 'metne', 'metin', 'metinde', 'metinden', 'göre', 'hangisidir', 'hangileri', 'ilgili', 'nedir', 'değildir', 'olamaz', 'olabilir', 'hakkında'];
-      const keywordTokens = autoScrollKeyword.toLowerCase().split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
+      const stopWords = ['aşağıdakilerden', 'hangisi', 'yanlıştır', 'doğrudur', 'kaynak', 'metne', 'metin', 'metinde', 'metinden', 'göre', 'hangisidir', 'hangileri', 'ilgili', 'nedir', 'değildir', 'olamaz', 'olabilir', 'hakkında', '[kaynak', 'başlığı:'];
+      const keywordTokens = autoScrollKeyword.toLowerCase().replace(/\[kaynak başlığı:.*?\]/g, '').split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
+
+      // Eğer Source Mapping ile kesin sonuç bulunamadıysa (veya etiketsiz eski bir kayıtsa) eski kelime arama motoruna (Fuzzy Match) düş:
+      if (!bestMatch) {
 
       // Tüm elemanlarda en iyi eşleşmeyi bul
       for (let i = 0; i < elements.length; i++) {
@@ -134,6 +156,7 @@ export function PremiumMarkdownRenderer({
            maxScore = score;
            bestMatch = el;
         }
+      }
       }
 
       // Eğer hiç eşleşme bulamadıysa, biraz daha toleranslı arayalım (en az 1 kelime kökü)
