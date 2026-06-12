@@ -351,9 +351,10 @@ function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string 
                   onClick={(e) => {
                     e.stopPropagation(); // prevent flipping the card back
                     if (card.section?.notes) {
-                        // Sadece kartın ön yüzünü (Kavram adını veya soruyu) gönderiyoruz ki
-                        // gereksiz uzun arka yüz açıklamaları yüzünden alakasız paragraflar eşleşmesin!
-                        const semanticTarget = card.front;
+                        // Ön yüz (soru) ve arka yüzü (cevap) birlikte gönderiyoruz.
+                        // Yeni "Strong Tag Bonus" algoritması sayesinde uzun arka yüz metinleri alakasız eşleşmelere yol açmayacak,
+                        // tam tersine cevaptaki anahtar kelimenin (Örn: Bütünlük) metindeki kalın harfli (Strong) tanımını bulmasını sağlayacak.
+                        const semanticTarget = card.front + " " + card.back;
                         setAutoScrollKeyword(semanticTarget);
                         setShowNotesModal(true);
                     }

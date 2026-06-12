@@ -116,6 +116,15 @@ export function PremiumMarkdownRenderer({
              if (el.tagName === 'TD' || el.tagName === 'TH' || el.tagName.match(/^H[1-6]$/)) {
                score += token.length * 2; // Çarpanı düşürdüm ki alakasız kelimeler devleşmesin
              }
+             
+             // ✨ YENİ: VURGULU (STRONG/B) KELİME BONUSU ✨
+             const strongElements = el.querySelectorAll('strong, b');
+             for (let j = 0; j < strongElements.length; j++) {
+               if ((strongElements[j].textContent || '').toLowerCase().includes(root)) {
+                 score += token.length * 15; // Dev bonus
+                 break;
+               }
+             }
            }
         });
         
