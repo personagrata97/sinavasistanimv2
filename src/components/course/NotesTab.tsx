@@ -1052,16 +1052,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                 className="border-t border-white/[0.08] p-5 lg:p-8 bg-slate-900/50 rounded-b-2xl"
                 onMouseUp={() => handleTextSelect(section.id, section.displayTitle)}
               >
-                {section.verificationScore !== undefined && section.verificationScore > 0 && section.verificationScore < 100 && isAdmin && (
-                  <div className="mb-6 p-4 rounded-xl bg-slate-800/80 border border-amber-500/20">
-                    <h4 className="text-sm font-bold text-amber-400 mb-2 flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4" /> AI Kontrolör Uyarıları
-                    </h4>
-                    <p className="text-xs text-slate-300">
-                      Bu not, kalite standartlarına %100 uyum sağlamadı. İyileştirme önerileri için başlığın yanındaki <Search className="w-3 h-3 inline-block text-amber-400 mx-1" /> butonuna tıklayın.
-                    </p>
-                  </div>
-                )}
+                {/* Removed AI Warning Banner */}
                 
                 {/* Active Highlights (Inline view) */}
                 {sectionHighlights[section.id]?.length > 0 && (

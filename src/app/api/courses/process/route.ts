@@ -679,7 +679,7 @@ async function processInBackground(slug: string, course: any) {
                 }
 
                 // SUGGESTIONS KAÇAK KAPISI KONTROLÜ
-                const suspiciousRegex = /(eksik|anlatılmamış|bahsedilmemiş|değinilmemiş|yer almıyor|yoktur|bulunmamaktadır)/i;
+                const suspiciousRegex = /(eksik(?!siz)|anlatılmamış|bahsedilmemiş|değinilmemiş|yer almıyor|yoktur|bulunmamaktadır)/i;
                 const suspiciousSuggestions = verification.suggestions.filter((s: string) => suspiciousRegex.test(s));
                 if (suspiciousSuggestions.length > 0) {
                   console.log(`[BG] 🚨 KAÇAK KAPI TESPİTİ: Suggestions alanında ${suspiciousSuggestions.length} adet eksik içerik beyanı bulundu. Bunlar zorla missingTopics'e taşınıyor.`);
