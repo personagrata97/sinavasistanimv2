@@ -514,20 +514,52 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
 
           {/* PDF Upload Card - Processing durumunu burada göster */}
           {isAdmin && (
-            <div
-              onClick={() => course.status !== "processing" && setShowUploadModal(true)}
-              className={`p-4 rounded-2xl border transition-all ${
-                course.status === "processing"
-                  ? "bg-blue-500/5 border-blue-500/20"
-                  : course.status === "error"
-                  ? "bg-red-500/5 border-red-500/20 hover:bg-red-500/10 cursor-pointer"
-                  : "bg-white/[0.03] border-white/[0.06] hover:bg-white/[0.06] cursor-pointer"
+            <div 
+              className={`p-3 rounded-xl border transition-all relative overflow-hidden group ${
+                (() => {
+                  const sectionWithAction = processingStatus?.sections?.find((s: any) => {
+                    try {
+                      const issues = typeof s.verificationIssues === "string" ? JSON.parse(s.verificationIssues) : (s.verificationIssues || {});
+                      return issues.needsUserAction === true;
+                    } catch { return false; }
+                  });
+                  const isActionNeeded = !!sectionWithAction;
+
+                  if (isActionNeeded) return "bg-rose-500/10 border-rose-500/30 cursor-pointer";
+                  if (course.status === "processing") return "bg-blue-500/5 border-blue-500/20 cursor-pointer";
+                  if (course.status === "error") return "bg-red-500/5 border-red-500/20 hover:bg-red-500/10 cursor-pointer";
+                  return "bg-white/[0.03] border-white/[0.06] hover:bg-white/[0.06] cursor-pointer";
+                })()
               }`}
+              onClick={() => {
+                const sectionWithAction = processingStatus?.sections?.find((s: any) => {
+                  try {
+                    const issues = typeof s.verificationIssues === "string" ? JSON.parse(s.verificationIssues) : (s.verificationIssues || {});
+                    return issues.needsUserAction === true;
+                  } catch { return false; }
+                });
+                
+                if (sectionWithAction) {
+                  // Click directly opens the NotesTab for that section (if available in sections list)
+                  // but we handle NotesTab separately, user can scroll down and see it.
+                } else if (course.status !== "processing") {
+                  setShowUploadModal(true);
+                }
+              }}
             >
               {course.status === "processing" ? (
                 <>
                   <div className="flex items-center gap-2 mb-2">
                     {(() => {
+                      const sectionWithAction = processingStatus?.sections?.find((s: any) => {
+                        try {
+                          const issues = typeof s.verificationIssues === "string" ? JSON.parse(s.verificationIssues) : (s.verificationIssues || {});
+                          return issues.needsUserAction === true;
+                        } catch { return false; }
+                      });
+                      
+                      if (sectionWithAction) return <AlertTriangle className="w-4 h-4 text-rose-500 animate-pulse" />;
+                      
                       const label = processingStatus?.phaseLabel || "";
                       if (label.includes("Notları Çıkarılıyor")) return <Brain className="w-4 h-4 animate-pulse text-purple-400" />;
                       if (label.includes("Kontrolör")) return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
@@ -537,9 +569,34 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
                       if (label.includes("Soru Havuzu")) return <HelpCircle className="w-4 h-4 text-indigo-400" />;
                       return <Loader2 className="w-4 h-4 animate-spin text-blue-400" />;
                     })()}
-                    <span className="text-xs font-bold text-blue-300">İşleniyor</span>
+                    {(() => {
+                      const isActionNeeded = !!processingStatus?.sections?.find((s: any) => {
+                        try {
+                          const issues = typeof s.verificationIssues === "string" ? JSON.parse(s.verificationIssues) : (s.verificationIssues || {});
+                          return issues.needsUserAction === true;
+                        } catch { return false; }
+                      });
+                      
+                      return isActionNeeded ? (
+                        <span className="text-xs font-black tracking-widest text-rose-400 uppercase">ONAY BEKLENİYOR</span>
+                      ) : (
+                        <span className="text-xs font-bold text-blue-300">İşleniyor</span>
+                      );
+                    })()}
                   </div>
-                  <div className="text-[11px] text-slate-400 mb-1">{processingStatus?.phaseLabel || "Hazırlanıyor..."}</div>
+                  <div className="text-[11px] text-slate-400 mb-1">
+                    {(() => {
+                      const isActionNeeded = !!processingStatus?.sections?.find((s: any) => {
+                        try {
+                          const issues = typeof s.verificationIssues === "string" ? JSON.parse(s.verificationIssues) : (s.verificationIssues || {});
+                          return issues.needsUserAction === true;
+                        } catch { return false; }
+                      });
+                      
+                      if (isActionNeeded) return "Bir bölüm 5 denemede de %100 alamadı, müdahale bekleniyor. Arka planda diğer işlemler devam ediyor.";
+                      return processingStatus?.phaseLabel || "Hazırlanıyor...";
+                    })()}
+                  </div>
                   <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all"

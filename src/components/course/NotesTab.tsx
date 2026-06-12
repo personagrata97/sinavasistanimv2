@@ -1182,13 +1182,90 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
       {mounted && createPortal(
         <AnimatePresence>
           {isAdmin && activeScoreSection && (
-            <SectionQualityModal
-              section={activeScoreSection}
-              onClose={() => setActiveScoreSection(null)}
-              actions={(
-                <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto flex-1">
-                  {activeScoreSection.verificationScore === 100 ? null : (
-                    <>
+            (() => {
+              let issues: any = {};
+              try { issues = JSON.parse(activeScoreSection.verificationIssues || "{}"); } catch(e) {}
+              const needsAction = issues.needsUserAction === true;
+              
+              return (
+                <SectionQualityModal
+                  section={activeScoreSection}
+                  onClose={() => setActiveScoreSection(null)}
+                  actions={(
+                    <div className="flex flex-col gap-3 w-full mt-4">
+                      {needsAction ? (
+                        <>
+                          <div className="w-full text-center mb-2">
+                            <span className="text-red-400 font-bold text-[11px] tracking-widest uppercase bg-red-500/10 px-3 py-1.5 rounded-full border border-red-500/20">
+                              ⚠️ 5 DENEME SONUCUNDA %100 PUANA ULAŞILAMADI
+                            </span>
+                          </div>
+                          <div className="flex flex-col sm:flex-row gap-3 w-full">
+                            <button
+                              disabled={isApproving}
+                              onClick={async () => {
+                                setIsApproving(true);
+                                try {
+                                  const res = await fetch("/api/courses/resolve-action", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ sectionId: activeScoreSection.id, action: "accept" }),
+                                  });
+                                  const data = await res.json();
+                                  if (data.success) {
+                                    toast.success("Mevcut skor kabul edildi ve devam ediliyor!");
+                                    setActiveScoreSection(null);
+                                    onReloadCourse?.();
+                                  } else {
+                                    toast.error(data.error || "Bilinmeyen hata");
+                                  }
+                                } catch (err: any) {
+                                  toast.error("Hata: " + err.message);
+                                } finally {
+                                  setIsApproving(false);
+                                }
+                              }}
+                              className={`flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold transition-all text-center text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/30 ${
+                                isApproving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+                              }`}
+                            >
+                              <Check className="w-3.5 h-3.5" /> En İyi Skoru (%{activeScoreSection.verificationScore}) Kabul Et ve Devam Et
+                            </button>
+
+                            <button
+                              disabled={isApproving}
+                              onClick={async () => {
+                                setIsApproving(true);
+                                try {
+                                  const res = await fetch("/api/courses/resolve-action", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ sectionId: activeScoreSection.id, action: "restart" }),
+                                  });
+                                  const data = await res.json();
+                                  if (data.success) {
+                                    toast.success("Bölüm başarıyla sıfırlandı ve baştan başlatılıyor!");
+                                    setActiveScoreSection(null);
+                                    onReloadCourse?.();
+                                  } else {
+                                    toast.error(data.error || "Bilinmeyen hata");
+                                  }
+                                } catch (err: any) {
+                                  toast.error("Hata: " + err.message);
+                                } finally {
+                                  setIsApproving(false);
+                                }
+                              }}
+                              className={`flex-1 py-3 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-bold transition-all text-center text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-rose-950/30 ${
+                                isApproving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+                              }`}
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" /> Süreci Sadece Bu Bölüm İçin Baştan Başlat
+                            </button>
+                          </div>
+                        </>
+                      ) : activeScoreSection.verificationScore !== 100 && (
+                        <div className="flex flex-col sm:flex-row gap-3 w-full flex-1">
                       <button
                         disabled={isRefining || isApproving}
                         onClick={async () => {
@@ -1267,11 +1344,13 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                           </>
                         )}
                       </button>
-                    </>
+                        </div>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
-            />
+                />
+              );
+            })()
           )}
         </AnimatePresence>,
         document.body

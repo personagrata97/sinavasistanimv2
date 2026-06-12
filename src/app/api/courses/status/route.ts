@@ -75,11 +75,21 @@ export async function GET(req: NextRequest) {
         phaseLabel = `Modüller Hazırlanıyor: Kısım ${processedSections + 1}/${totalSections}`
         
         // Mevcut işlenen bölümü bul ve mikro-aşamasını al
-        const currentSection = await prisma.section.findFirst({
+        const unprocessedSections = await prisma.section.findMany({
           where: { courseId: course.id, processed: false },
           orderBy: { order: "asc" },
           select: { id: true, verificationIssues: true }
         });
+        
+        let currentSection = null;
+        for (const sec of unprocessedSections) {
+          let issues: any = {};
+          try { issues = JSON.parse(sec.verificationIssues || "{}"); } catch(e) {}
+          if (issues.needsUserAction !== true) {
+            currentSection = sec;
+            break;
+          }
+        }
         
         if (currentSection) {
           // ZOMBİ SÜREÇ (TIMEOUT) DEDEKTÖRÜ: Tamamen güvenli Date parsing

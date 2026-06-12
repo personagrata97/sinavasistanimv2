@@ -448,6 +448,13 @@ async function processInBackground(slug: string, course: any) {
         continue
       }
 
+      let sectionIssuesObj: any = {}
+      try { sectionIssuesObj = JSON.parse(section.verificationIssues || "{}") } catch {}
+      if (sectionIssuesObj.needsUserAction === true) {
+        console.log(`[BG] ⏸️ [${section.title}] Kullanıcı onayı bekleniyor. Bu bölüm geçici olarak atlanıyor...`)
+        continue // Sonraki bölüme geç (Non-blocking)
+      }
+
       let success = false
       let sectionRetries = 0
       const maxSectionRetries = 5
@@ -1192,17 +1199,26 @@ async function processInBackground(slug: string, course: any) {
           success = true
 
           // Yeni Akış Kontrolü: 
-          // Akıllı Çıkış (notesAttemptSuccess) onay verdiyse işlem durmadan sonraki bölüme geçer.
-          // Eğer 5 denemede de onay alınamadıysa (notesAttemptSuccess === false), kullanıcı onayı için durdurur.
+          // Eğer 5 denemede de onay alınamadıysa, bölüm verificationIssues içerisine needsUserAction: true olarak işaretlenir.
+          // VE SÜREÇ DURDURULMAZ, SONRAKİ BÖLÜMDEN DEVAM EDER!
           const needsUserApproval = !notesAttemptSuccess;
           if (needsUserApproval) {
-            console.log(`[BG] ⚠️ [${finalTitle}] 5 kalite döngüsü sonrasında dahi tam kusursuzluğa ulaşılamadı (%${currentScore})! İşlem kullanıcı onayı için durduruluyor.`)
-            await prisma.course.update({
-              where: { id: course.id },
-              data: { status: "ready" }
+            console.log(`[BG] ⚠️ [${finalTitle}] 5 kalite döngüsü sonrasında dahi tam kusursuzluğa ulaşılamadı (%${currentScore})! Kullanıcı onayı beklenecek, ancak diğer bölümler işlenmeye devam edecek.`)
+            
+            let issuesObj: any = {}
+            try { issuesObj = JSON.parse(lastVerification || "{}") } catch {}
+            issuesObj.needsUserAction = true
+            
+            await prisma.section.update({
+              where: { id: section.id },
+              data: {
+                verificationIssues: JSON.stringify(issuesObj),
+                processed: true // true yapıyoruz ki API yeniden sıfırdan çekmesin. (Kullanıcı accept veya restart diyecek)
+              }
             })
-            isPausedForApproval = true
-            break
+            
+            // isPausedForApproval = true YAPMIYORUZ!
+            break // Sadece bu bölümün while döngüsünden çık, dışarıdaki for döngüsü devam etsin
           }
         } catch (aiError: any) {
           sectionRetries++
@@ -1211,9 +1227,8 @@ async function processInBackground(slug: string, course: any) {
         }
       }
 
-      if (isPausedForApproval) {
-        break
-      }
+      // if (isPausedForApproval) { break } KALDIRILDI!
+
 
       if (!success) {
         console.error(`[BG] 💀 FAILED: ${section.title} — Bölüm ${maxSectionRetries} deneme sonrasında da işlenemedi, işlem durduruluyor.`)
@@ -1251,29 +1266,8 @@ async function processInBackground(slug: string, course: any) {
     console.log(`[BG] ✅ "${course.name}" tamamlandı! ${stats.flashcards} flashcard, ${stats.questions} soru`)
   } catch (fatalError: any) {
     console.error(`[BG_FATAL] "${course.name}" işlenirken kritik hata:`, fatalError.message)
-    // Status'u 'uploaded' yap ki kullanıcı tekrar deneyebilsin, 'processing'de sonsuz kalmasın
     try { await prisma.course.update({ where: { slug }, data: { status: "uploaded" } }) } catch { }
   } finally {
     activeProcesses.delete(slug)
   }
-}
-
-// ==================== SECTION DETECTION ====================
-
-function detectSections(pageTexts: string[], totalPages: number): DetectedSection[] {
-  const sections: DetectedSection[] = []
-  let currentSection: DetectedSection | null = null
-
-  for (let pageIdx = 0; pageIdx < pageTexts.length; pageIdx++) {
-    const text = pageTexts[pageIdx]
-    const pageNum = pageIdx + 1
-
-    // Skip very short pages (empty, table-only etc.)
-    if (text.trim().length < 20) continue
-
-    // Check for section headers in first 500 chars of page
-    const headerArea = text.substring(0, 500)
-  }
-
-  return `Bölüm İçeriği (Sayfa ${pageStart}-${pageEnd})`;
 }

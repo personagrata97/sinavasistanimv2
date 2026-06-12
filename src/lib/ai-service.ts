@@ -820,7 +820,7 @@ Metni 3 veya 4 ana alt başlığa (Konuya) böl. Her bir alt başlık altında, 
         - 💡 *Benzetme:* Terimi akılda tutacak günlük hayattan gerçekçi ve somut benzetme.
         - 🎬 *Mikro-Senaryo - [Kısa Başlık]:* Bu kuralın/sürenin pratikte nasıl işlediğini anlatan 3-5 cümlelik mini olay örgüsü. (⚠️ KESİN KURAL: Başlığın hemen ardına mutlaka iki nokta ve tire ":**" koyarak kalın başlık kapandıktan sonra kelimelerin birbirine yapışmasını engelle! Örn: "🎬 *Mikro-Senaryo - Ali Bey'in İhlali:* Ali Bey...")
 *   📊 **Karşılaştırma / Bilgi Tablosu:** İçerikte karşılaştırılacak kavramlar, süreler, limitler veya kurallar varsa bunları şık bir Markdown tablosuna dök. Tablo için uygun malzeme varsa KESİNLİKLE atlama — ama içerikle alakasız zorlama tablo da ekleme.
-*   🔄 **Süreç Akışı (Mermaid.js):** Konuda kronolojik bir süreç, karar ağacı veya hiyerarşi varsa Mermaid diyagramı çiz. Görsel zenginlik notun albenisini artırır — fırsat varsa çiz, yoksa zorlama.
+*   🔄 **Süreç Akışı (Mermaid.js):** Konuda kronolojik bir süreç, karar ağacı veya hiyerarşi varsa Mermaid diyagramı çiz. DİKKAT: Sözdizimi hatası olmaması için düğüm metinlerini KESİNLİKLE tırnak içine al (Örn: A["Örnek Metin"]). Görsel zenginlik notun albenisini artırır — fırsat varsa çiz, yoksa zorlama.
 
 ### ## 🏢 Konu 2: [İkinci Ana Konu Adı] [[İlgili Mevzuat/Sınav Modülü Başlığı]]
 (Bu konuya özel tüm yasal tanımlar, senaryolar, tablolar, formüller ve şemalar burada bir arada akacaktır...)
@@ -1446,6 +1446,7 @@ KAYNAK METİN:
 ${sourceContent}
 
 GÖREV: SADECE bu kaynak metne bakarak, metindeki en ufak detayları, rakamları, yasal istisnaları ve kritik tanımları sınayan tam ${questionCount} adet "ÇOK ZOR" ve "NET" kontrol sorusu çıkar.
+DİKKAT: Soruları sadece teknik, kavramsal veya kanuni konulardan seç. Kitapçık numarası, yayın numarası, sayfa sayısı veya referans edilen doküman numaraları gibi "Sınav Dışı Meta Bilgiler" hakkında KESİNLİKLE soru sorma!
 Sorular kısa ve doğrudan bilgi arayan tarzda olmalı.
 
 Sadece şu formatta JSON döndür:
@@ -1553,7 +1554,6 @@ PUAN KIRAN DURUMLAR VE ASİMETRİK CEZA MATEMATİĞİ (KESİN KURAL):
 - Mevzuat adı veya madde numarası YANLIŞ: -10 PUAN.
 - Tablo veya liste YARIDA kesilmiş: -10 PUAN.
 - Ceza miktarı veya yaptırım türü HATALI: -20 PUAN.
-- Mermaid diyagramlarında düğümlerin tırnak içinde OLUP OLMADIĞINI (Örn: A["metin"]) KESİNLİKLE denetle. Eğer tırnak kullanılmamışsa sözdizimi hatası vardır, derhal "issues" alanına yaz ve -20 puan kır.
 - 🚨 KISMİ ANLATIM KURALI (ÖNEMLİ): Kaynak metinde bir kavramın, kanunun veya sürecin ALT MADDELERİ (örn: 5 alt bent, 4 özellik) varsa ve üretilen notta bu maddelerin SADECE BAZILARI (örn: 3 tanesi) yer alıp diğerleri EKSİK BIRAKILMIŞSA, bu kabul edilemez! "Ana başlık var" diyerek konuyu tam sayma. Atlanan her alt maddeyi "missingTopics" listesine KESİNLİKLE detaylıca yaz ve kısmi anlatım için -15 PUAN KIR.
 
 

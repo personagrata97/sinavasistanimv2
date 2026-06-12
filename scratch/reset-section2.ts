@@ -1,52 +1,61 @@
-import { PrismaClient } from '@prisma/client'
+import { prisma } from '../src/lib/prisma';
 
-// Instantiate directly with URL to avoid the Next.js specific wrapper issue
-const prisma = new PrismaClient({
-  datasources: {
-    db: {
-      url: process.env.DATABASE_URL || "file:../prisma/dev.db"
-    }
-  }
-})
-
-async function main() {
-  const course = await prisma.course.findFirst({
+async function resetSection2() {
+  console.log("Resetting Section 2 (Bilgi Güvenliği Yönetimi)...");
+  
+  const course = await prisma.course.findUnique({
     where: { slug: "bd-bilgi-sistemleri-guvenligi" },
-    include: { sections: { orderBy: { order: "asc" } } }
-  })
-  
+    include: { sections: { orderBy: { order: 'asc' } } }
+  });
+
   if (!course) {
-    console.log("Course not found")
-    return
+    console.error("Course not found!");
+    return;
   }
+
+  // Find Section 2 (which is index 1, or order 2, let's find by title)
+  const section = course.sections.find(s => s.title.includes("BİLGİ GÜVENLİĞİ") || s.title.includes("Bilgi Güvenliği"));
   
-  // "Not 2" is likely the 2nd section. 
-  // Let's find section at index 1
-  const section2 = course.sections[1]
-  if (!section2) {
-    console.log("Section 2 not found")
-    return
+  if (!section) {
+    console.error("Section 2 not found!");
+    return;
   }
-  
-  console.log(`Resetting Section 2: ${section2.title} (Score: ${section2.verificationScore})`)
-  
-  // Clear the notes and score to force a fresh regeneration
+
+  console.log(`Found section: ${section.title} (ID: ${section.id})`);
+
+  // 1. Delete all Questions for this section
+  const deletedQ = await prisma.question.deleteMany({
+    where: { sectionId: section.id }
+  });
+  console.log(`Deleted ${deletedQ.count} questions.`);
+
+  // 2. Delete all Flashcards for this section
+  const deletedF = await prisma.flashcard.deleteMany({
+    where: { sectionId: section.id }
+  });
+  console.log(`Deleted ${deletedF.count} flashcards.`);
+
+  // 3. Reset Section Data
   await prisma.section.update({
-    where: { id: section2.id },
+    where: { id: section.id },
     data: {
       notes: null,
+      processed: false,
       verificationScore: null,
       verificationIssues: null
     }
-  })
-  
-  // Set course status back to processing so the background processor can pick it up
+  });
+  console.log(`Reset section data (notes, processed, scores, issues).`);
+
+  // Ensure course is processing or paused
   await prisma.course.update({
     where: { id: course.id },
-    data: { status: "processing" }
-  })
-  
-  console.log("Successfully reset Section 2 and set course to processing.")
+    data: { status: "paused" }
+  });
+
+  console.log("Done! Section 2 is completely reset.");
 }
 
-main()
+resetSection2()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());
