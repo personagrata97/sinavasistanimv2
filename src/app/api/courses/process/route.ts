@@ -897,6 +897,13 @@ async function processInBackground(slug: string, course: any) {
 
                 if (vAttempt < 5) {
                   console.log(`[BG] ⛔ Skor mükemmel değil (%${verification.score}), 10sn beklenip tekrar denenecek...`)
+                  
+                  // Kalkan Yöntemi: Eğer yeni deneme bir öncekini geçemediyse metni çöpe at ve bestNotes'a dön
+                  if (bestScore > 0 && currentScore <= bestScore) {
+                    console.log(`[BG] 🛡️ KALKAN DEVREDE: Yeni skor (%${currentScore}), en iyi skoru (%${bestScore}) geçemedi. Bozuk metin atılıp en iyi metne dönülüyor...`);
+                    notes = bestNotes;
+                  }
+                  
                   await new Promise(r => setTimeout(r, 10000))
                 }
               } catch (notesErr: any) {

@@ -1427,7 +1427,7 @@ async function runGroundTruthTest(
   sourceContent: string,
   generatedNotes: string,
   sectionTitle: string
-): Promise<{ passed: boolean; failedQuestions: string[] }> {
+): Promise<{ passed: boolean; failedQuestions: string[]; totalQuestions: number }> {
   console.log(`[GROUND_TRUTH] 🕵️‍♂️ "${sectionTitle}" için Ground Truth Testi Başlatılıyor...`);
 
   const charCount = sourceContent.length;
@@ -1459,10 +1459,10 @@ Sadece şu formatta JSON döndür:
     questions = extractCleanJson(qRaw) as string[];
   } catch {
     console.log(`[GROUND_TRUTH] ⚠️ Soru üretilemedi, test atlanıyor.`);
-    return { passed: true, failedQuestions: [] };
+    return { passed: true, failedQuestions: [], totalQuestions: 0 };
   }
 
-  if (!questions || questions.length === 0) return { passed: true, failedQuestions: [] };
+  if (!questions || questions.length === 0) return { passed: true, failedQuestions: [], totalQuestions: 0 };
   console.log(`[GROUND_TRUTH] 🎯 Üretilen kontrol sorusu sayısı: ${questions.length}`);
 
   // Adım 2: Soruları sadece notlara bakarak cevapla
@@ -1501,10 +1501,10 @@ Sadece şu formatta JSON döndür:
       console.log(`[GROUND_TRUTH] ✅ BAŞARILI: Notlar tüm soruları cevaplayabildi.`);
     }
 
-    return { passed: failed.length === 0, failedQuestions: failed };
+    return { passed: failed.length === 0, failedQuestions: failed, totalQuestions: questions.length };
   } catch {
     console.log(`[GROUND_TRUTH] ⚠️ Cevaplar analiz edilemedi, test atlanıyor.`);
-    return { passed: true, failedQuestions: [] };
+    return { passed: true, failedQuestions: [], totalQuestions: questions.length || 0 };
   }
 }
 
@@ -1599,8 +1599,9 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
 
     // GROUND TRUTH ENTEGRASYONU
     const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle);
-    if (!groundTruth.passed && groundTruth.failedQuestions.length > 0) {
-      const gtPenalty = groundTruth.failedQuestions.length * 10;
+    if (!groundTruth.passed && groundTruth.failedQuestions.length > 0 && groundTruth.totalQuestions > 0) {
+      const failRatio = groundTruth.failedQuestions.length / groundTruth.totalQuestions;
+      const gtPenalty = Math.round(score * failRatio);
       score = Math.max(50, score - gtPenalty);
 
       const gtTopics = groundTruth.failedQuestions.map(q => `Eksik Detay (Ground Truth Testi Başarısız): ${q}`);
