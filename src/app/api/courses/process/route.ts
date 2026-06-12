@@ -536,7 +536,7 @@ async function processInBackground(slug: string, course: any) {
             for (let vAttempt = 1; vAttempt <= MAX_RETRIES; vAttempt++) {
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
-                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Notları Çıkarılıyor (Deneme #${vAttempt})` }) } }) } catch { }
+                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Notları Çıkarılıyor (Deneme #${vAttempt})`, currentAttempt: vAttempt, attemptHistory: attemptHistory }) } }) } catch { }
 
                 // ==================== SMART INJECT (TARGETED REFINEMENT) KONTROLÜ ====================
                 let isSmartInject = false;
@@ -897,7 +897,14 @@ async function processInBackground(slug: string, course: any) {
                         where: { id: section.id },
                         data: {
                           notes: notes,
-                          verificationScore: 100
+                          verificationScore: 100,
+                          verificationIssues: JSON.stringify({
+                            message: "100 puan alındı ve onaylandı.",
+                            currentAttempt: vAttempt,
+                            attemptHistory: attemptHistory,
+                            missingTopics: [],
+                            issues: []
+                          })
                         }
                       })
                       console.log(`[BG] 💾 %100 Kusursuz Not Anında Veritabanına Kazındı!`)
