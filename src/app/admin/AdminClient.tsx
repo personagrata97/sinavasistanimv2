@@ -842,7 +842,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                           <div className="flex items-center justify-between mb-3">
                             <div>
                               <div className="font-bold text-sm tracking-wide text-slate-200">{key}</div>
-                              <div className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[9px] bg-slate-800 text-slate-300 font-mono border border-slate-700">
+                              <div className="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[9px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/20 shadow-sm"><Sparkles className="w-2.5 h-2.5 text-blue-400" />
                                 {data.model.replace("gemini-", "").replace("-flash", "")}
                               </div>
                             </div>
@@ -944,20 +944,20 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="font-bold text-sm text-slate-200">{log.apiKey}</div>
-                                  <div className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-mono border border-slate-700">
+                                  <div className="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[10px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/20 shadow-sm"><Sparkles className="w-3 h-3 text-blue-400" />
                                     {log.model}
                                   </div>
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="flex flex-col gap-1.5 min-w-[220px]">
-                                    <div className="inline-flex w-fit px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 border border-white/10 text-slate-300">
-                                      {log.operation === 'verification' ? '✅ DOĞRULAMA (MÜFETTİŞ)' : 
-                                       log.operation === 'generation' ? '📝 DERS NOTU ÜRETİMİ' : 
-                                       log.operation === 'notes_generation' ? '📝 DERS NOTU ÜRETİMİ' :
-                                       log.operation === 'question_generation' ? '🃏 SORU HAVUZU ÜRETİMİ' :
-                                       log.operation === 'flashcard' ? '🃏 BİLGİ KARTI ÜRETİMİ' : 
-                                       log.operation === 'flashcard_generation' ? '🃏 BİLGİ KARTI ÜRETİMİ' : 
-                                       log.operation === 'ocr_extraction' ? '📄 PDF OKUMA (OCR)' :
+                                    <div className="inline-flex items-center gap-1.5 w-fit px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 border border-white/10 text-slate-300">
+                                      {log.operation === 'verification' ? <><ShieldCheck className="w-3 h-3 text-emerald-400" /> DOĞRULAMA (MÜFETTİŞ)</> : 
+                                       log.operation === 'generation' ? <><FileText className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> : 
+                                       log.operation === 'notes_generation' ? <><FileText className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> :
+                                       log.operation === 'question_generation' ? <><Target className="w-3 h-3 text-purple-400" /> SORU HAVUZU ÜRETİMİ</> :
+                                       log.operation === 'flashcard' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
+                                       log.operation === 'flashcard_generation' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
+                                       log.operation === 'ocr_extraction' ? <><Search className="w-3 h-3 text-indigo-400" /> PDF OKUMA (OCR)</> :
                                        log.operation.toUpperCase()}
                                     </div>
                                     <div className="flex flex-col gap-0.5 pl-2 border-l-2 border-indigo-500/30">

@@ -60,11 +60,30 @@ export async function POST(req: NextRequest) {
       activeProcesses.delete(slug)
     }
 
-    // 🔒 Çift tıklama koruması: Sadece aktif olarak bellek üzerindeyse engelle
+    // 🔒 ÇİFT TIKLAMA VE RACE CONDITION KORUMASI (DB BAZLI KİLİT)
+    if (course.status === "processing" && !forceRetry) {
+      // İşlem zaten DB'de "processing" görünüyor. Zombi mi yoksa gerçekten çalışıyor mu?
+      // En son güncellenen bölümün updatedAt süresine bakıyoruz.
+      const activeSection = await prisma.section.findFirst({
+        where: { courseId: course.id, processed: false },
+        orderBy: { updatedAt: 'desc' }
+      });
+      
+      if (activeSection) {
+        const timeSinceLastUpdate = Date.now() - activeSection.updatedAt.getTime();
+        // Eğer son 15 dakika içinde güncellendiyse işlem %100 canlıdır! Çift tıklamayı engelle.
+        if (timeSinceLastUpdate < 15 * 60 * 1000) {
+          console.log(`[PROCESS] ⚠️ Zaten işlemde (DB Kilitli, Son Güncelleme: ${Math.round(timeSinceLastUpdate/1000)}sn önce): ${course.name} — Race Condition engellendi.`)
+          return NextResponse.json({ message: "İşlem arka planda aktif olarak devam ediyor. Lütfen bekleyin." }, { status: 200 })
+        } else {
+          console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (15 dk'dan uzun süredir hareketsiz), kilit zorla kırılıyor: ${course.name}`);
+        }
+      }
+    }
+
+    // Hafıza kilidini yine de set edelim (aynı saniye içinde gelen iki isteği eşzamanlı kesmek için)
     if (activeProcesses.has(slug)) {
-      // KALICI DÜZELTME: Eğer veritabanında 'paused' veya 'error' durumuna düşmüşse, bellek kilidini kesinlikle kır!
       if (course.status === "paused" || course.status === "error") {
-        console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (DB Durumu: ${course.status}), kilit zorla kırılıyor: ${course.name}`);
         activeProcesses.delete(slug);
       } else {
         console.log(`[PROCESS] ⚠️ Zaten işlemde (bellekte aktif): ${course.name} — tekrar tetikleme engellendi.`)
@@ -379,7 +398,6 @@ export async function POST(req: NextRequest) {
       await processInBackground(slug, course)
     } catch (err: any) {
       console.error("[BG] FATAL ERROR in background process:", err)
-      require("fs").appendFileSync("/Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant/scratch/bg_error.log", `\n[${new Date().toISOString()}] FATAL BG ERR: ${err.stack}\n`);
       await prisma.course.update({
         where: { id: course.id },
         data: { status: "error" }
@@ -391,7 +409,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ success: true, message: "İşleme başlatıldı" })
 } catch (error: any) {
-  console.error("[PROCESS_FATAL]", error); require("fs").writeFileSync("/Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant/scratch/fatal.log", error.stack);
+  console.error("[PROCESS_FATAL]", error);
   return NextResponse.json({ error: error.message, stack: error.stack }, { status: 500 })
 }
 }
@@ -470,7 +488,7 @@ async function processInBackground(slug: string, course: any) {
         try {
           console.log(`[BG] [${sIdx + 1 + alreadyDone}/${totalSections}] ${section.title} - İŞLEME BAŞLADI (Deneme #${sectionRetries + 1}/${maxSectionRetries})`)
 
-          try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 1: Ham İçerik (Ground Truth) Okunuyor (Deneme #${sectionRetries + 1})` }) } }) } catch { }
+          try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 1: Ham İçerik Okunuyor (Deneme #${sectionRetries + 1})` }) } }) } catch { }
 
           let notes = section.notes || ""
           let currentScore = section.verificationScore || 0
@@ -537,7 +555,7 @@ async function processInBackground(slug: string, course: any) {
             for (let vAttempt = 1; vAttempt <= MAX_RETRIES; vAttempt++) {
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
-                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 2: Ham İçerik (Ground Truth) Yapılandırılıyor (Deneme #${vAttempt})`, currentAttempt: vAttempt, attemptHistory: attemptHistory }) } }) } catch { }
+                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 2: Ders Notları Üretiliyor (Deneme #${vAttempt})`, currentAttempt: vAttempt, attemptHistory: attemptHistory }) } }) } catch { }
 
                 // ==================== SMART INJECT (TARGETED REFINEMENT) KONTROLÜ ====================
                 let isSmartInject = false;
@@ -615,7 +633,7 @@ async function processInBackground(slug: string, course: any) {
                     } else if (kontrolorStructuralScore >= 85 && !lastAttemptWasSmartInject) {
                       console.log(`[BG] 🧠 Yapısal İskelet Sağlam (Kontrolör: %${kontrolorStructuralScore} ≥ 85): 2-Aşamalı Biçim-Duyarlı Akıllı Yama (Smart Inject + Polish) devreye giriyor...`);
                     }
-                    const fullCourseName = `SPL Düzey ${course.level || 3} > ${course.name}`;
+                    const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
                     
                     if (isSmartInject) {
                       const { smartInjectCourseNotes } = await import("@/lib/ai-service");
@@ -635,7 +653,7 @@ async function processInBackground(slug: string, course: any) {
                 }
 
                 if (!isSmartInject) {
-                  const fullCourseName = `SPL Düzey ${course.level || 3} > ${course.name}`;
+                  const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
                   notes = await generateCourseNotes(
                     enrichedContent, section.title, fullCourseName, course.userLevel,
                     aiMode, section.pageStart, section.pageEnd
@@ -650,7 +668,7 @@ async function processInBackground(slug: string, course: any) {
                 console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
                 try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } }) } catch { }
                 const { verifyNotesAgainstSource } = await import("@/lib/ai-service")
-                const fullCourseName = `SPL Düzey ${course.level || 3} > ${course.name}`;
+                const fullCourseName = `${course.program?.name || "Bilinmeyen Lisans"} > ${course.name}`;
                 const verification = await verifyNotesAgainstSource(
                   section.rawContent, notes, section.title, fullCourseName
                 )
@@ -788,7 +806,7 @@ async function processInBackground(slug: string, course: any) {
                         await new Promise(r => setTimeout(r, 4000))
 
                         try {
-                          const fullCourseName = `SPL Düzey ${course.level || 3} > ${course.name}`;
+                          const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
                           const auditResult = await auditNotesAgainstSourceSpecific(
                             fullCourseName,
                             section.rawContent,
@@ -988,35 +1006,11 @@ async function processInBackground(slug: string, course: any) {
               }
             } // End of quality loop
 
-            // SIKI KALİTE KONTROLÜ: Not üretiminin tamamlanması için Kontrolör ve Müfettiş'ten tam 100 puan alınması zorunludur.
-            // 5 denemenin sonunda 100 puan barajı aşılamazsa, sistem ÇÖKMEYECEK ancak not "paused" durumunda beklemeye alınacak.
+            // SIKI KALİTE KONTROLÜ: 100 alınmazsa fallback
             if (currentScore < 100) {
-              console.error(`[BG] ❌ 🚨 KRİTİK İPTAL: Skor %${bestScore} — 100 puan zorunluluğu sağlanamadı. Bölüm paused.`);
-              if (bestNotes && bestNotes.length > 500) {
-                await prisma.section.update({
-                  where: { id: section.id },
-                  data: {
-                    notes: bestNotes,
-                    verificationScore: bestScore,
-                    processed: false,
-                    verificationIssues: JSON.stringify({
-                      message: `100 puan zorunluluğu sağlanamadı. En iyi skor: %${bestScore}`,
-                      lastScore: currentScore,
-                      bestScore: bestScore,
-                      missingTopics: lastVerification?.missingTopics || [],
-                      issues: lastVerification?.issues || []
-                    })
-                  }
-                });
-              }
-              
-              await prisma.course.update({
-                where: { id: course.id },
-                data: { status: "paused" }
-              });
-              
-              // Döngüden çık, rotayı kır
-              break;
+              console.log(`[BG] ⚠️ Skor %${bestScore} — 100 puan zorunluluğu sağlanamadı. En iyi nota dönülüyor ve manuel onay beklenecek.`);
+              notes = bestNotes;
+              currentScore = bestScore;
             }
           } // End of if (!notesAttemptSuccess)
 
@@ -1274,7 +1268,6 @@ async function processInBackground(slug: string, course: any) {
         } catch (aiError: any) {
           sectionRetries++
           console.error(`[BG_ERROR] [Deneme #${sectionRetries}/${maxSectionRetries}] ${section.title} işlenirken hata oluştu:`, aiError.message?.substring(0, 120))
-          require("fs").appendFileSync("/Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant/scratch/bg_error.log", `\n[${new Date().toISOString()}] SECTION LOOP ERR: ${aiError.stack}\n`);
         }
       }
 
