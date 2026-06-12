@@ -1,4 +1,5 @@
 import axios from "axios"
+import { prisma } from "./prisma"
 
 // ==================== AI ENGINE SETUP ====================
 
@@ -8,7 +9,37 @@ const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 const geminiKeys = (process.env.GEMINI_API_KEYS || geminiKey || "").split(",").filter(k => k.trim())
 let currentKeyIndex = 0 // Aktif key index'i
 const suspendedKeys = new Map<number, number>() // keyIndex → suspendedAt timestamp
-const SUSPENDED_KEY_TTL_MS = 10 * 60 * 1000 // 10 dakika sonra otomatik kurtarma
+const SUSPENDED_KEY_TTL_MS = 65 * 1000 // 65 saniye — Google'ın dakikalık sayacı ~60sn'de sıfırlanır
+
+// ==================== PROAKTİF RPM SAYACI ====================
+// Her key için dakika bazında istek sayısını tutar — 429 yemeden ÖNCE limiti aşmayı engeller
+const keyMinuteCounters = new Map<string, number>() // "keyIndex|minuteKey" → count
+const RPM_LIMIT = 14 // Google limiti 15, güvenlik payı olarak 14'te key değiştir
+
+function getMinuteKey(): string {
+  const now = new Date()
+  return `${now.getHours()}:${now.getMinutes()}`
+}
+
+function getKeyRpmCount(keyIndex: number): number {
+  const k = `${keyIndex}|${getMinuteKey()}`
+  return keyMinuteCounters.get(k) || 0
+}
+
+function incrementKeyRpm(keyIndex: number): void {
+  const minuteKey = getMinuteKey()
+  const k = `${keyIndex}|${minuteKey}`
+  keyMinuteCounters.set(k, (keyMinuteCounters.get(k) || 0) + 1)
+  
+  // Eski dakikaların sayaçlarını temizle (bellek sızıntısı önleme)
+  const keysToDelete: string[] = []
+  keyMinuteCounters.forEach((_, key) => {
+    if (!key.endsWith(`|${minuteKey}`)) {
+      keysToDelete.push(key)
+    }
+  })
+  keysToDelete.forEach(key => keyMinuteCounters.delete(key))
+}
 
 // Her key'in kendi fileUri'si (PDF multimodal için — her key kendi projesindeki dosyaya erişir)
 let activeFileUrisMap: Record<string, string> = {}
@@ -17,38 +48,55 @@ export function setFileUrisMap(map: Record<string, string>) { activeFileUrisMap 
 function getNextGeminiKey(): string | null {
   if (geminiKeys.length === 0) return null
 
-  // Find the next non-suspended key starting from currentKeyIndex
-  let attempts = 0
-  while (attempts < geminiKeys.length) {
-    const idx = (currentKeyIndex + attempts) % geminiKeys.length
-    if (!suspendedKeys.has(idx) || (Date.now() - suspendedKeys.get(idx)!) > SUSPENDED_KEY_TTL_MS) {
-      if (suspendedKeys.has(idx) && (Date.now() - suspendedKeys.get(idx)!) > SUSPENDED_KEY_TTL_MS) {
-        console.log(`[AI_ENGINE] 🔓 Key #${idx + 1} TTL süresi doldu, yeniden aktif edildi.`)
+  // Tüm key'ler arasından en uygununu seç: askıda olmayan VE dakikalık limiti dolmamış
+  let bestIdx = -1
+  let bestRpm = Infinity
+  
+  for (let i = 0; i < geminiKeys.length; i++) {
+    const idx = (currentKeyIndex + i) % geminiKeys.length
+    
+    // Askıdaki key'leri kontrol et
+    if (suspendedKeys.has(idx)) {
+      if ((Date.now() - suspendedKeys.get(idx)!) > SUSPENDED_KEY_TTL_MS) {
+        console.log(`[AI_ENGINE] 🔓 Key #${idx + 1} askı süresi doldu, yeniden aktif edildi.`)
         suspendedKeys.delete(idx)
+      } else {
+        continue // Hâlâ askıda
       }
-      currentKeyIndex = idx
-      return geminiKeys[idx].trim()
     }
-    attempts++
+    
+    // Bu key'in bu dakikadaki kullanım sayısını kontrol et
+    const rpm = getKeyRpmCount(idx)
+    if (rpm >= RPM_LIMIT) {
+      continue // Bu key bu dakika dolmuş, atla
+    }
+    
+    // En az kullanılan key'i tercih et (yükü eşit dağıt)
+    if (rpm < bestRpm) {
+      bestRpm = rpm
+      bestIdx = idx
+    }
   }
-  return null // All keys suspended
+  
+  if (bestIdx === -1) return null // Tüm key'ler ya askıda ya da bu dakika dolu
+  
+  currentKeyIndex = bestIdx
+  return geminiKeys[bestIdx].trim()
 }
 
 function rotateToNextKey(): string | null {
   if (geminiKeys.length <= 1) return null
 
-  // Move to next index and find next non-suspended key
-  let attempts = 0
-  while (attempts < geminiKeys.length - 1) {
-    currentKeyIndex = (currentKeyIndex + 1) % geminiKeys.length
-    if (!suspendedKeys.has(currentKeyIndex) || (Date.now() - suspendedKeys.get(currentKeyIndex)!) > SUSPENDED_KEY_TTL_MS) {
-      const newKey = geminiKeys[currentKeyIndex]
-      console.log(`[AI_ENGINE] 🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length}'e geçildi`)
-      return newKey.trim()
-    }
-    attempts++
+  // Mevcut key'i atla, sonraki en uygun key'i bul
+  const originalIdx = currentKeyIndex
+  currentKeyIndex = (currentKeyIndex + 1) % geminiKeys.length
+  
+  // getNextGeminiKey zaten en uygununu seçecek
+  const result = getNextGeminiKey()
+  if (result) {
+    console.log(`[AI_ENGINE] 🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length}'e geçildi (RPM: ${getKeyRpmCount(currentKeyIndex)}/${RPM_LIMIT})`)
   }
-  return null
+  return result
 }
 
 // ==================== EXAM INTELLIGENCE ====================
@@ -309,7 +357,11 @@ Kurallar:
       generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
     };
 
+    const startTime = Date.now();
     try {
+      // İstek gönderilmeden önce RPM sayacını artır
+      incrementKeyRpm(currentKeyIndex);
+      
       const response = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
         body,
@@ -320,6 +372,17 @@ Kurallar:
       const result = textParts.join("").trim();
 
       if (result && result.length > 100) {
+        prisma.apiUsageLog.create({
+          data: {
+            apiKey: `Key #${currentKeyIndex + 1}`,
+            model: "gemini-2.5-flash",
+            operation: "ocr_extraction",
+            courseSlug: "PDF Okuma (OCR)",
+            status: "SUCCESS",
+            durationMs: Date.now() - startTime
+          }
+        }).catch(() => {})
+
         console.log(`[MARKDOWN_OCR] ✅ Sayfa ${pageStart}-${pageEnd} kusursuz markdown çıkarıldı [Key #${currentKeyIndex + 1}] [${result.length} chars]`);
         return `[MARKDOWN_OCR_SUCCESS]\n\n${result}`;
       }
@@ -328,10 +391,25 @@ Kurallar:
       console.warn(`[MARKDOWN_OCR] Key #${currentKeyIndex + 1} başarısız: ${e.message?.substring(0, 100)}`);
 
       const errMsg = e.message || "";
-      const isSuspended = errMsg.includes("403") || errMsg.includes("API key not valid");
+      let errStatus = "ERROR";
+      if (errMsg.includes("429") || errMsg.includes("503") || errMsg.includes("quota")) errStatus = "RATE_LIMIT_429";
+      else if (errMsg.includes("403") || errMsg.includes("API key not valid")) errStatus = "FORBIDDEN_403";
+
+      prisma.apiUsageLog.create({
+        data: {
+          apiKey: `Key #${currentKeyIndex + 1}`,
+          model: "gemini-2.5-flash",
+          operation: "ocr_extraction",
+          courseSlug: "PDF Okuma (OCR)",
+          status: errStatus,
+          durationMs: Date.now() - startTime
+        }
+      }).catch(() => {})
+
+      const isSuspended = errStatus === "FORBIDDEN_403";
       if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now());
 
-      const isQuotaError = errMsg.includes("429") || errMsg.includes("503");
+      const isQuotaError = errStatus === "RATE_LIMIT_429";
       if (isQuotaError) suspendedKeys.set(currentKeyIndex, Date.now());
     }
 
@@ -348,7 +426,7 @@ Kurallar:
 }
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
-async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
+async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
   const activeKey = getNextGeminiKey()
 
   if (activeKey) {
@@ -362,41 +440,95 @@ async function callAI(prompt: string, retries = 2, mode: "generation" | "verific
     }
 
     // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
-    const MODEL_ID = mode === "generation" ? "gemini-3.5-flash" : "gemini-2.5-flash"
-    const modelChain = [{ id: MODEL_ID, tokens: mode === "generation" ? 65536 : 65536 }]
+    const isGeneration = mode === "generation" || mode === "question_generation" || mode === "notes_generation" || mode === "flashcard_generation";
+    const MODEL_ID = isGeneration ? "gemini-3.5-flash" : "gemini-2.5-flash"
+    const modelChain = [{ id: MODEL_ID, tokens: isGeneration ? 65536 : 65536 }]
 
     const startKeyIndex = currentKeyIndex
     let triedAllKeys = false
 
     while (!triedAllKeys) {
-      const currentKey = getNextGeminiKey()!
+      const currentKey = getNextGeminiKey()
+      
+      // Tüm key'ler bu dakika doluysa, yeni dakikayı bekle
+      if (!currentKey) {
+        const now = new Date()
+        const secsUntilNextMinute = 60 - now.getSeconds() + 2 // 2sn güvenlik payı
+        console.log(`[AI_ENGINE] ⏳ Tüm key'lerin dakikalık limiti doldu. ${secsUntilNextMinute}sn sonra yeni dakikada devam edilecek...`)
+        await new Promise(r => setTimeout(r, secsUntilNextMinute * 1000))
+        continue
+      }
+      
       const geminiHeaders = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
       let quotaHit = false
 
       const keyFileUri = activeFileUrisMap[String(currentKeyIndex)] || undefined
 
       for (const model of modelChain) {
+        const startTime = Date.now()
+        let callStatus = "SUCCESS"
+        
+        // Extract context from prompt for logging
+        const contextMatch = prompt.match(/\[LOG_CONTEXT:\s*([^\]]+)\]/)
+        const sectionMatch = prompt.match(/BÖLÜM:\s*"?([^"\n]+)"?/) || prompt.match(/DERS:\s*"?([^"\n]+)"?/)
+        const logContext = contextMatch ? contextMatch[1] : (sectionMatch ? sectionMatch[1] : mode)
+
         try {
+          // İstek gönderilmeden önce RPM sayacını artır
+          incrementKeyRpm(currentKeyIndex)
+          
           const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
             geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
           )
+          
+          prisma.apiUsageLog.create({
+            data: {
+              apiKey: `Key #${currentKeyIndex + 1}`,
+              model: model.id,
+              operation: mode,
+              courseSlug: logContext.substring(0, 150),
+              status: "SUCCESS",
+              durationMs: Date.now() - startTime
+            }
+          }).catch(() => {})
+
           const parts = response.data?.candidates?.[0]?.content?.parts || []
           const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text)
           const result = textParts.join("")
           if (result) {
-            console.log(`[${mode === "generation" ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ✅ İşlem başarılı [Key #${currentKeyIndex + 1}] [Model: ${model.id}] [${result.length} chars]`)
+            console.log(`[${isGeneration ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ✅ İşlem başarılı [Key #${currentKeyIndex + 1}] [Model: ${model.id}] [RPM: ${getKeyRpmCount(currentKeyIndex)}/${RPM_LIMIT}] [${result.length} chars]`)
+            // Başarılı istekten sonra bir sonraki key'e geç (yükü eşit dağıt)
+            rotateToNextKey()
             return result
           }
         } catch (e: any) {
-          console.warn(`[${mode === "generation" ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ${model.id} failed [Key #${currentKeyIndex + 1}]: ${e.message?.substring(0, 120)}`)
+          console.warn(`[${isGeneration ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ${model.id} failed [Key #${currentKeyIndex + 1}]: ${e.message?.substring(0, 120)}`)
           const errMsg = e.message || ""
           const errData = e.response?.data?.error?.message || ""
 
-          const isSuspended = errMsg.includes("403") || errData.includes("403") || errData.includes("API key not valid")
+          let errStatus = "ERROR"
+          if (errMsg.includes("429") || errData.includes("429") || errData.includes("quota")) errStatus = "RATE_LIMIT_429"
+          else if (errMsg.includes("503") || errData.includes("503")) errStatus = "SERVER_ERROR_503"
+          else if (errMsg.includes("timeout") || errMsg.includes("ECONNABORTED")) errStatus = "TIMEOUT"
+          else if (errMsg.includes("403") || errData.includes("403")) errStatus = "FORBIDDEN_403"
+
+          prisma.apiUsageLog.create({
+            data: {
+              apiKey: `Key #${currentKeyIndex + 1}`,
+              model: model.id,
+              operation: mode,
+              courseSlug: logContext.substring(0, 150),
+              status: errStatus,
+              errorDetail: (errData || errMsg).substring(0, 500),
+              durationMs: Date.now() - startTime
+            }
+          }).catch(() => {})
+
+          const isSuspended = errStatus === "FORBIDDEN_403" || errData.includes("API key not valid")
           if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now())
 
-          const isQuotaError = errMsg.includes("429") || errMsg.includes("503") || errData.includes("429") || errData.includes("quota")
+          const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || isSuspended
           if (isQuotaError) {
             quotaHit = true
             suspendedKeys.set(currentKeyIndex, Date.now())
@@ -509,7 +641,10 @@ Sadece şu formatta JSON döndür:
       module?: string
       requiresQuestions: boolean
     }
-  } catch {
+  } catch (e: any) {
+    if (e.message && (e.message.includes("429") || e.message.includes("quota") || e.message.includes("exhausted"))) {
+      throw e; // 🚨 SESSİZ ATLAMA AÇIĞI KAPATILDI: Kota hatasıysa yutma, üst katmana fırlat!
+    }
     return { summary: "Analiz yapılamadı.", importance: "Medium", topics: [], examLikelihood: "", keyTerms: [], suggestedTitle: "", requiresQuestions: true }
   }
 }
@@ -691,7 +826,7 @@ export async function generateCourseNotes(
 `
   }
 
-  const prompt = `
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || sectionTitle)}
 
 ${glossaryInstruction}
@@ -751,7 +886,7 @@ BÖLÜM: "${sectionTitle}"
 4. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
 5. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
 6. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
-7. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreneceğiz" tarzı metinler.
+7. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
 8. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. Günlük hayattan gerçekçi ve somut örnekler ver ancak KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR).
 9. Hedef: 10 sayfalık bir PDF bölümünün notu ~8 sayfa olmalı. Yoğun ama EKSİKSİZ.
 
@@ -795,7 +930,7 @@ ${isGlossary ? `
 ### 🎯 Bu Bölüm Ne Anlatıyor?
 Bu bölümde, ${courseName} dersinde yer alan teknik kısaltmalar ve terimler listelenmektedir.
 
-Metindeki her bir kısaltma veya terim için aşağıdaki sade şablona %100 uyarak detaylı bilgi ver:
+Metindeki her bir kısaltma veya terim için aşağıdaki sade şablona %100 uy ederek detaylı bilgi ver:
 
 ### 🔑 [Kısaltma/Terim Adı]
 - **Açılımı veya Tanımı:** [Kaynak metindeki resmi Türkçe tanımını/açıklamasını veya açılımını birebir yaz, tek bir kelimeyi bile değiştirme]
@@ -898,7 +1033,7 @@ ${chunkIndex === chunkCount - 1 ? `
 ` + prompt
   }
 
-  const result = await callAI(finalPrompt, 2, "generation")
+  const result = await callAI(finalPrompt, 2, "notes_generation")
 
   // ⚠️ NOT KESİLME ALGILAMA
   // Notun sonu beklenen kapanış bölümleriyle bitmiyorsa kesilmiş demektir.
@@ -990,7 +1125,7 @@ export async function generateFlashcards(
   - Kart 2: "İhraççı ile aracı kuruluş arasındaki fark nedir?" (karşılaştırma)
   - Kart 3: "Hangi durumlarda ihraççı SPK'ya başvurmak zorundadır?" (uygulama)`;
 
-    const prompt = `
+    const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
   ${getExamIntelligence(aiMode)}
 
   ${instructionLimit}
@@ -1024,7 +1159,7 @@ ${cardTypesInstruction}
     {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar: [tuzak uyarısı])\\n\\n[KAYNAK BAŞLIĞI: Bu bilginin kaynağındaki ana başlığın tam adını buraya yaz]", "difficulty": "easy|medium|hard"}
   ]
   `
-    let raw = await callAI(prompt, 2, "generation")
+    let raw = await callAI(prompt, 2, "flashcard_generation")
 
     let attempt = 1
     const maxAttempts = 2
@@ -1059,7 +1194,7 @@ ${cardTypesInstruction}
 
         // Onarım Promptunu hazırla
         console.log(`[FLASHCARD_AUDIT] 🔄 Parça ${i + 1} Flashcardlar Müfettiş bulguları doğrultusunda onarılıyor...`)
-        const repairPrompt = `
+        const repairPrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
   ${prompt}
 
   ⚠️⚠️⚠️ ÇOK ÖNEMLİ — ÖNCEKİ DENEMEDE TESPİT EDİLEN HATALAR:
@@ -1070,13 +1205,13 @@ ${cardTypesInstruction}
   Tüm kurallara ve şablon formatına %100 uyarak flashcardları yeniden sıfırdan üret. Sadece JSON array döndür.
   `
         await new Promise(r => setTimeout(r, 4000)) // RPM limit nefes payı
-        raw = await callAI(repairPrompt, 2, "generation")
+        raw = await callAI(repairPrompt, 2, "flashcard_generation")
         attempt++
       } catch (e: any) {
         console.error(`[FLASHCARD_DEBUG] Parça ${i + 1} Flashcard ayrıştırma/doğrulama hatası (Attempt #${attempt}): ${e.message}`)
         if (attempt === maxAttempts) break
         await new Promise(r => setTimeout(r, 4000))
-        raw = await callAI(prompt, 2, "generation")
+        raw = await callAI(prompt, 2, "flashcard_generation")
         attempt++
       }
     }
@@ -1151,7 +1286,7 @@ export async function generateQuestions(
       `,
     }
 
-    const prompt = `
+    const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode)}
 
 DERS: ${courseName}
@@ -1226,7 +1361,7 @@ Sadece JSON array döndür:
 ]
 `
 
-    let raw = await callAI(prompt, 2, "generation")
+    let raw = await callAI(prompt, 2, "question_generation")
 
     let attempt = 1
     const maxAttempts = 2
@@ -1268,7 +1403,7 @@ Sadece JSON array döndür:
           repairIssues.push(...audit.missingTopics.map(t => `Eksik Konu: "${t}" hakkında kesinlikle soru sorulmalı ve test edilmelidir.`))
         }
 
-        const repairPrompt = `
+        const repairPrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${prompt}
 
 ⚠️⚠️⚠️ ÇOK ÖNEMLİ — ÖNCEKİ DENEMEDE TESPİT EDİLEN HATALAR VEYA EKSİKLİKLER:
@@ -1279,13 +1414,13 @@ Lütfen bu hataları KESİNLİKLE düzelt, çelişkileri gider ve açıklamalar�
 Tüm kurallara ve şablon formatına %100 uyarak soruları yeniden sıfırdan üret. Sadece JSON array döndür.
 `
         await new Promise(r => setTimeout(r, 4000)) // RPM limit nefes payı
-        raw = await callAI(repairPrompt, 2, "generation")
+        raw = await callAI(repairPrompt, 2, "question_generation")
         attempt++
       } catch (e: any) {
         console.error(`[QUESTION_DEBUG] Parça ${i + 1} Soru ayrıştırma/doğrulama hatası (Attempt #${attempt}): ${e.message}`)
         if (attempt === maxAttempts) break
         await new Promise(r => setTimeout(r, 4000))
-        raw = await callAI(prompt, 2, "generation")
+        raw = await callAI(prompt, 2, "question_generation")
         attempt++
       }
     }
@@ -1309,7 +1444,7 @@ Tüm kurallara ve şablon formatına %100 uyarak soruları yeniden sıfırdan ü
       const backupCount = Math.min(5, finalAudit.missingTopics.length)
       console.log(`[YEDEK_GÜÇ] ⚡ Yedek güç devreye giriyor! Test edilmeden geçilen ${backupCount} eksik konu için hedeflenmiş yedek sorular üretiliyor...`)
 
-      const backupPrompt = `
+      const backupPrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode)}
 
 DERS: ${courseName}
@@ -1336,7 +1471,7 @@ Sadece JSON array döndür:
 ]
 `
       await new Promise(r => setTimeout(r, 4000))
-      const backupRaw = await callAI(backupPrompt, 1, "generation")
+      const backupRaw = await callAI(backupPrompt, 1, "question_generation")
       const backupQuestions = extractCleanJson(backupRaw)
       if (Array.isArray(backupQuestions) && backupQuestions.length > 0) {
         console.log(`[YEDEK_GÜÇ] ✅ Başarıyla ${backupQuestions.length} adet yedek güç sorusu üretildi.`)
@@ -1439,7 +1574,7 @@ async function runGroundTruthTest(
   console.log(`[GROUND_TRUTH] Dinamik soru sayısı hesaplandı: ${questionCount} soru (Metin: ${charCount} karakter)`);
 
   // Adım 1: Kaynaktan dinamik sayıda zor soru üret
-  const qPrompt = `
+  const qPrompt = `[LOG_CONTEXT: GroundTruth - ${sectionTitle}]
 Sen acımasız bir müfettişsin.
 BÖLÜM: "${sectionTitle}"
 KAYNAK METİN:
@@ -1466,7 +1601,7 @@ Sadece şu formatta JSON döndür:
   console.log(`[GROUND_TRUTH] 🎯 Üretilen kontrol sorusu sayısı: ${questions.length}`);
 
   // Adım 2: Soruları sadece notlara bakarak cevapla
-  const aPrompt = `
+  const aPrompt = `[LOG_CONTEXT: GroundTruth - ${sectionTitle}]
 Sen bir kalite kontrolörüsün.
 BÖLÜM: "${sectionTitle}"
 ÜRETİLEN DERS NOTU:
@@ -1515,10 +1650,9 @@ export async function verifyNotesAgainstSource(
   sourceContent: string,
   generatedNotes: string,
   sectionTitle: string,
-  pageStart?: number,
-  pageEnd?: number
+  courseName: string
 ): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[] }> {
-  const prompt = `
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 Sen bir sınav materyali KALİTE KONTROLÖRÜSÜN (Kontrolör). Görevin, üretilen ders notlarını yasal kaynak dökümanla karşılaştırıp yasal süreler, cezalar, limitler ve kritik mevzuat kavramları bazında hiçbir eksiğin kalmadığını doğrulamaktır.
 
 📄 Sana verilen metni ASIL KAYNAK olarak kullan.
@@ -1627,7 +1761,7 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
 
 
 
-export async function auditNotesAgainstSourceSpecific(
+export async function auditNotesAgainstSourceSpecific(courseName: string, 
   sourceContent: string,
   generatedNotes: string,
   sectionTitle: string,
@@ -1635,7 +1769,7 @@ export async function auditNotesAgainstSourceSpecific(
   pageStart?: number,
   pageEnd?: number
 ): Promise<{ passed: boolean; missingDetails: string[]; contradictions: string[]; findings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> }> {
-  const prompt = `
+  const prompt = `[LOG_CONTEXT: Detay Müfettişi - ${sectionTitle}]
 Sen bir sınav hazırlık derin denetim uzmanısın (Müfettiş). Görevin, üretilen ders notlarını en ince mikro-detay seviyesinde, özellikle mevzuattaki yasal süreler, ceza miktarları, istisnalar, katalog suçlar ve rakamlar bazında kaynak metinle çapraz sorgulamak ve açık aramaktır.
 
 BÖLÜM BAŞLIĞI: "${sectionTitle}"
@@ -1706,7 +1840,7 @@ export async function auditQuestionsAgainstSource(
   sectionTitle: string,
   fileUri?: string
 ): Promise<{ passed: boolean; issues: string[]; missingTopics: string[] }> {
-  const prompt = `
+  const prompt = `[LOG_CONTEXT: Soru Müfettişi - ${sectionTitle}]
 Sen bir sınav hazırlık soru denetim uzmanısın (Soru Müfettişi). Görevin, üretilen çoktan seçmeli soruları, cevap anahtarlarını ve açıklamaları kaynak resmi metinle karşılaştırarak bilgi doğruluğu, mantık hataları ve yapay zeka halüsinasyonları açısından denetlemektir.
 
 BÖLÜM BAŞLIĞI: "${sectionTitle}"
@@ -1799,7 +1933,8 @@ export async function smartInjectCourseNotes(
   aiMode: string
 ): Promise<string> {
   // AŞAMA 1: Biçim-Duyarlı Akıllı Yama (Format-Aware Smart Inject)
-  const injectPrompt = `Sen kıdemli bir eğitim içerik mimarı ve baş editörsün. 
+  const injectPrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
+Sen kıdemli bir eğitim içerik mimarı ve baş editörsün. 
 Aşağıda "${courseName}" eğitiminin "${sectionTitle}" bölümü için halihazırda üretilmiş olan Ders Notları yer alıyor. 
 Denetim ekibi (Müfettiş) bazı eksikler tespit etti. Görevin bu eksikleri notun İÇİNE, mevcut yapıyı bozmadan ZEKİCE ve ORGANİK bir dille enjekte etmektir.
 
@@ -1823,7 +1958,7 @@ ${existingNotes}
 
   // 2.5-flash modelinde bilginin kaybolmasını engellemek için ikinci bir "cilalama" turu (Aşama 2) İPTAL EDİLMİŞTİR.
   // Tüm organik yedirme ve cilalama işi Aşama 1'de (injectPrompt içinde) tek geçişte yapılır.
-  return await callAI(injectPrompt, 1, "generation");
+  return await callAI(injectPrompt, 1, "notes_generation");
 }
 
 // ==================== AUTO-HEALING FLAGGING ====================

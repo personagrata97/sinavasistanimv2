@@ -43,7 +43,6 @@ export async function GET(req: Request) {
       },
       data: {
         status: "error",
-        errorDetails: "İşlem zaman aşımına uğradı veya sunucu yeniden başlatıldı."
       }
     })
 

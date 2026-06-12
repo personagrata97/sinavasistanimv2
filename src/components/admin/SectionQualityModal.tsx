@@ -1,6 +1,6 @@
 import React from "react"
 import { motion } from "framer-motion"
-import { FileText, ShieldCheck, Bot, AlertCircle, RefreshCw, ChevronRight, Sparkles } from "lucide-react"
+import { FileText, ShieldCheck, Bot, AlertCircle, RefreshCw, ChevronRight, Sparkles, Search } from "lucide-react"
 import { Modal } from "@/components/course/shared"
 
 interface SectionQualityModalProps {
@@ -211,12 +211,12 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             <ul className="list-disc pl-4 text-[11px] text-slate-300 space-y-1">
               {kontrolorMissing.map((t: string, idx: number) => (
                 <li key={`mt-${idx}`} className="leading-relaxed">
-                  <span className="text-amber-500 font-bold">Eksik Konu:</span> "{t}" kapsam dışı kalmış veya yetersiz işlenmiş.
+                  <span className="text-amber-500 font-bold">Eksik/Yetersiz:</span> {t}
                 </li>
               ))}
               {kontrolorIssues.map((i: string, idx: number) => (
                 <li key={`vi-${idx}`} className="leading-relaxed">
-                  <span className="text-red-400 font-bold">Bilgi Çelişkisi:</span> "{i}" bilgisinde uyumsuzluk var.
+                  <span className="text-red-400 font-bold">Bilgi Çelişkisi:</span> {i}
                 </li>
               ))}
               {suggestions.map((s: string, idx: number) => (
@@ -332,9 +332,15 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                       const hSuggestions = h.suggestions || [];
                       
                       const kaliteMissing = hMissing.filter((m: string) => !m.includes("[MÜFETTİŞ"));
+                      const groundTruthMissing = kaliteMissing.filter((m: string) => m.includes("Ground Truth Testi Başarısız"));
+                      const pureKaliteMissing = kaliteMissing.filter((m: string) => !m.includes("Ground Truth Testi Başarısız"));
+
                       const mufettisMissing = hMissing.filter((m: string) => m.includes("[MÜFETTİŞ"));
                       
                       const kaliteIssues = hIssues.filter((i: string) => !i.includes("[MÜFETTİŞ"));
+                      const groundTruthIssues = kaliteIssues.filter((i: string) => i.includes("Ground Truth Testi Başarısız"));
+                      const pureKaliteIssues = kaliteIssues.filter((i: string) => !i.includes("Ground Truth Testi Başarısız"));
+
                       const mufettisIssues = hIssues.filter((i: string) => i.includes("[MÜFETTİŞ"));
 
                       // Puan doğrudan veritabanından gelir — arka plan motoru zaten dürüst puanı hesaplar.
@@ -379,32 +385,59 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                               </div>
                             ) : (
                               <>
-                                {(kaliteMissing.length > 0 || kaliteIssues.length > 0 || hSuggestions.length > 0) && (
+                                {(pureKaliteMissing.length > 0 || pureKaliteIssues.length > 0 || hSuggestions.length > 0) && (
                                   <div className="p-2 rounded-lg bg-amber-500/5 border border-amber-500/10">
                                     <div className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                      <Bot className="w-3 h-3" /> KALİTE KONTROLÖRÜ BULGULARI
+                                      <Bot className="w-3 h-3" /> KALİTE KONTROLÖRÜ (YAPAY ZEKA) BULGULARI
                                     </div>
-                                    {kaliteMissing.length > 0 && (
+                                    {pureKaliteMissing.length > 0 && (
                                       <div className="text-[10px] text-slate-400 mb-1">
                                         <span className="font-bold text-slate-500">Eksik Konular:</span>
                                         <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
-                                          {kaliteMissing.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
+                                          {pureKaliteMissing.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
                                         </ul>
                                       </div>
                                     )}
-                                    {kaliteIssues.length > 0 && (
+                                    {pureKaliteIssues.length > 0 && (
                                       <div className="text-[10px] text-red-400/90 mb-1">
                                         <span className="font-bold text-red-500/70">Bilgi Hataları:</span>
                                         <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
-                                          {kaliteIssues.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
+                                          {pureKaliteIssues.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
                                         </ul>
                                       </div>
                                     )}
                                     {hSuggestions.length > 0 && (
                                       <div className="text-[10px] text-amber-400/90">
-                                        <span className="font-bold text-amber-500/70">Öneriler:</span>
+                                        <span className="font-bold text-amber-500/70">Yapay Zeka Yorumu/Önerisi:</span>
                                         <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
                                           {hSuggestions.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {(groundTruthMissing.length > 0 || groundTruthIssues.length > 0) && (
+                                  <div className="p-2 rounded-lg bg-purple-500/5 border border-purple-500/10">
+                                    <div className="text-[9px] font-black text-purple-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
+                                      <Search className="w-3 h-3" /> ÇAPRAZ SORGULAMA (GROUND TRUTH) TESTİ
+                                    </div>
+                                    <div className="text-[9px] text-purple-400/70 mb-2 italic">
+                                      Yapay zeka notu yeterli bulsa bile, algoritmamız aşağıdaki kritik soruların cevabını notta bulamadığı için manuel ceza puanı uygulamıştır.
+                                    </div>
+                                    {groundTruthMissing.length > 0 && (
+                                      <div className="text-[10px] text-purple-300/90 mb-1">
+                                        <span className="font-bold text-purple-400/80">Bulunamayan Detaylar:</span>
+                                        <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
+                                          {groundTruthMissing.map((m: string, idx: number) => <li key={idx}>{m.replace("Eksik Detay (Ground Truth Testi Başarısız): ", "")}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {groundTruthIssues.length > 0 && (
+                                      <div className="text-[10px] text-red-400/90">
+                                        <span className="font-bold text-red-500/70">Hatalar:</span>
+                                        <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
+                                          {groundTruthIssues.map((m: string, idx: number) => <li key={idx}>{m.replace("Eksik Detay (Ground Truth Testi Başarısız): ", "")}</li>)}
                                         </ul>
                                       </div>
                                     )}

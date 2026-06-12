@@ -91,6 +91,7 @@ model Course {
   mockResults UserMockExamResult[]
   blueprint   ExamBlueprint?
   annotations UserAnnotation[]
+  generationLogs GenerationLog[]
 }
 
 model Section {
@@ -116,6 +117,7 @@ model Section {
   questions   Question[]
   flashcards  Flashcard[]
   annotations UserAnnotation[]
+  generationLogs GenerationLog[]
 
   @@index([courseId])
 }
@@ -345,4 +347,43 @@ model SystemError {
 
   @@index([type])
   @@index([createdAt])
+}
+
+// ================= API USAGE LOGGING =================
+
+model ApiUsageLog {
+  id          String   @id @default(cuid())
+  apiKey      String   // Masked key or ID
+  model       String   // e.g., gemini-1.5-flash
+  operation   String   // e.g., generateFlashcards, generateQuestions, ProcessSection
+  courseSlug  String?  // the context
+  sectionId   String?  // the context
+  status      String   // "SUCCESS", "RATE_LIMIT_429", "SERVER_ERROR_503", "TIMEOUT"
+  errorDetail String?  // Detaylı Google API Hata Mesajı
+  durationMs  Int?     // How long the API call took
+  createdAt   DateTime @default(now())
+
+  @@index([apiKey])
+  @@index([createdAt])
+  @@index([status])
+}
+
+// ================= GENERATION LOGGING =================
+
+model GenerationLog {
+  id          String   @id @default(cuid())
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  sectionId   String
+  section     Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  
+  operation   String   // "NOTES_GENERATION", "QUESTIONS_GENERATION", "FLASHCARDS_GENERATION", "DEEP_AUDIT", "QUALITY_GATE"
+  status      String   // "SUCCESS", "REJECTED", "ERROR"
+  score       Int?     // Eğer notes generation ise skor (0-100)
+  details     String   // Üretilen soru/kart sayısı veya eksiklerin JSON detayı
+  
+  createdAt   DateTime @default(now())
+
+  @@index([courseId])
+  @@index([sectionId])
 }
