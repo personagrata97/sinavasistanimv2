@@ -475,6 +475,7 @@ async function processInBackground(slug: string, course: any) {
           let currentScore = section.verificationScore || 0
           let bestScore = currentScore // En yüksek başarılı doğrulama skoru — kota hatalarında korunur
           let bestNotes = notes // En yüksek skora sahip notlar
+          let bestVerification: any = null // En iyi metne ait geri bildirimler
           let lastVerification: any = null
           let notesAttemptSuccess = false
           let attemptHistory: any[] = []
@@ -648,9 +649,11 @@ async function processInBackground(slug: string, course: any) {
                 currentScore = verification.score
 
                 // En yüksek başarılı doğrulama skorunu ve notlarını koru
+                let isNewBest = false;
                 if (currentScore > bestScore) {
                   bestScore = currentScore
                   bestNotes = notes
+                  isNewBest = true;
                   console.log(`[BG] 🏆 Yeni en yüksek skor: %${bestScore}`)
                 }
 
@@ -669,9 +672,9 @@ async function processInBackground(slug: string, course: any) {
 
                 // TERS ÇELİŞKİ DENETÇİSİ (Reverse Consistency)
                 if (currentScore <= 70 && !hasCriticalFeedback) {
-                  console.log(`[BG] ⚠️ TERS ÇELİŞKİ: Model düşük puan (%${currentScore}) verdi ama hiç eksik/hata bulamadı. Güvenilmez puan reddediliyor.`);
-                  verification.issues.push("Puan 70 veya altı olmasına rağmen missingTopics boş dönmüş. Puanlama güvenirliği ihlali.");
-                  currentScore = Math.min(85, currentScore + 15); // Kısmen telafi et ama 100 verme
+                  console.log(`[BG] ⚠️ TERS ÇELİŞKİ: Model düşük puan (%${currentScore}) verdi ama hiç eksik/hata bulamadı. Geri bildirim boş olduğu için Smart Inject yapılamaz, sıfırdan yazım tetikleniyor.`);
+                  verification.issues.push("[SİSTEM] Puan düşük olmasına rağmen geri bildirim boş dönmüş. Akıllı Yama (Smart Inject) hedefsiz çalışamayacağı için sıfırdan yazım tetikleniyor.");
+                  currentScore = 65; // Force rewrite
                   verification.score = currentScore;
                 }
 
@@ -683,7 +686,7 @@ async function processInBackground(slug: string, course: any) {
                   verification.missingTopics.push(...suspiciousSuggestions);
                   verification.suggestions = verification.suggestions.filter((s: string) => !suspiciousRegex.test(s));
                   
-                  const rawPenalty = suspiciousSuggestions.length * 15;
+                  const rawPenalty = Math.min(30, suspiciousSuggestions.length * 10); // Max 30 puan ceza
                   currentScore = Math.max(50, currentScore - rawPenalty);
                   verification.score = currentScore;
                 }
@@ -692,6 +695,9 @@ async function processInBackground(slug: string, course: any) {
                 const kontrolorStructuralScore = verification.score;
 
                 lastVerification = verification
+                if (isNewBest) {
+                  bestVerification = JSON.parse(JSON.stringify(verification));
+                }
 
                 const historyEntry = {
                   attempt: vAttempt,
@@ -902,6 +908,9 @@ async function processInBackground(slug: string, course: any) {
                   if (bestScore > 0 && currentScore <= bestScore) {
                     console.log(`[BG] 🛡️ KALKAN DEVREDE: Yeni skor (%${currentScore}), en iyi skoru (%${bestScore}) geçemedi. Bozuk metin atılıp en iyi metne dönülüyor...`);
                     notes = bestNotes;
+                    if (bestVerification) {
+                      lastVerification = JSON.parse(JSON.stringify(bestVerification));
+                    }
                   }
                   
                   await new Promise(r => setTimeout(r, 10000))
