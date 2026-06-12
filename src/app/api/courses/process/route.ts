@@ -477,6 +477,20 @@ async function processInBackground(slug: string, course: any) {
           let bestNotes = notes // En yüksek skora sahip notlar
           let bestVerification: any = null // En iyi metne ait geri bildirimler
           let lastVerification: any = null
+
+          if (sectionIssuesObj && (sectionIssuesObj.missingTopics || sectionIssuesObj.issues)) {
+            const restoredVerification = {
+              score: currentScore,
+              missingTopics: sectionIssuesObj.missingTopics || [],
+              issues: sectionIssuesObj.issues || [],
+              suggestions: sectionIssuesObj.suggestions || [],
+              inspectorFindings: sectionIssuesObj.inspectorFindings || []
+            }
+            lastVerification = restoredVerification
+            bestVerification = restoredVerification
+            console.log(`[BG] 🧠 Hafıza Geri Yüklendi: Kaldığı yerden %${currentScore} skor ile devam ediliyor.`)
+          }
+          
           let notesAttemptSuccess = false
           let attemptHistory: any[] = []
           let quotaFailures = 0 // FIX #4: Kota hatalarını ayrı say, gerçek deneme hakkını yemesin
@@ -528,7 +542,7 @@ async function processInBackground(slug: string, course: any) {
                 let isSmartInject = false;
                 let enrichedContent = section.rawContent;
 
-                if (vAttempt > 1 && lastVerification) {
+                if (lastVerification) {
                   const feedbackItems: string[] = [];
                   if (lastVerification.missingTopics?.length > 0) {
                     feedbackItems.push("ATLANAN KONULAR (Kesinlikle ekle):\n- " + lastVerification.missingTopics.join("\n- "));
