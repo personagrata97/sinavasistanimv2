@@ -851,6 +851,8 @@ Amacın, sıkıcı ve ağır kanun maddelerini veya teknik kavramları, öğrenc
 ${disc.analogies}
 - ⚠️ 💡 📌 🔑 🎯 🪤 emojilerini BOL kullan — görsel hiyerarşi yarat.
 - Bilgi kalitesi %100 kusursuz ve otoriter olmalı, ama anlatım dili su gibi akmalıdır. Tanımlar BİREBİR kaynak metinden olmalıdır.
+- 🚨 DÜZELTME ŞERHİ (ÇOK ÖNEMLİ): Eğer kaynak PDF metninde NESNEL ve KESİN bir bilgi hatası yakalarsan (örn: eski bir kanun maddesi, yanlış bir oran veya miktar), öğrencinin sınavda hata yapmaması için PDF'teki O HATALI BİLGİYİ DE YAZACAKSIN (çünkü sınav PDF'e göre yapılacak), ancak hemen yanına parantez içinde kibar ve profesyonel bir şerh düşeceksin.
+  ÖRNEK: "...bu süre 15 gündür. *(Not: SPL resmi çalışma notlarında bu süre 15 gün olarak geçse de, güncel mevzuatta/gerçekte bu süre 30 gündür. Sınav için 15 gün olarak kabul edilmelidir.)*"
 `;
 
     memoryTechniqueInstruction = `
