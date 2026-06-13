@@ -821,7 +821,7 @@ export async function generateCourseNotes(
 - KESİNLİKLE ama KESİNLİKLE hiçbir Mermaid.js diyagramı, akış şeması, zihin haritası veya kavram haritası ÇİZMEYİNİZ. Sıfır diyagram kuralına uyunuz.
 - Kısaltmaları veya terimleri KESİNLİKLE düz liste veya başlıklar halinde DEĞİL, şık ve okunaklı bir Markdown Tablosu (Markdown Table) içinde veriniz.
 - Tablonun sütunları: | Kısaltma / Terim | Açıklama |
-- Açıklama sütununun içine resmi tanımı, akılda kalıcı ufak bir benzetmeyi (💡) ve varsa çok kısa bir örneği (🎬) birlikte yazınız.
+- Açıklama sütununun içine SADECE resmi tanımı yazınız. Kesinlikle uydurma hikayeler, benzetmeler (💡) veya mini senaryolar YAZMAYINIZ. Bu bölüm resmi bir sözlüktür.
 `
   }
 
@@ -832,6 +832,19 @@ ${glossaryInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
 
+  let styleInstruction = "";
+  let memoryTechniqueInstruction = "";
+
+  if (isGlossary || isBibliography) {
+    styleInstruction = `
+Sen son derece ciddi, profesyonel ve resmi bir DOKÜMANTASYON UZMANISIN.
+Amacın, sana verilen metni (kısaltmalar, terimler veya kaynakça) en net, en temiz ve en resmi formatta, dümdüz bir bilgi listesi / tablosu olarak sunmaktır.
+⚠️ KESİNLİKLE HİKAYELEŞTİRME YAPMA! 
+⚠️ KESİNLİKLE BENZETME VEYA ANALOJİ KULLANMA!
+⚠️ "Bu bölüm bize X'i sunmaktadır" gibi girişler KULLANMA. Doğrudan listeye/tabloya başla.
+`;
+  } else {
+    styleInstruction = `
 Sen alanında efsaneleşmiş, otoriter ama öğrencilerin dinlemeye doyamadığı KARİZMATİK BİR MENTORSUN.
 Amacın, sıkıcı ve ağır kanun maddelerini veya teknik kavramları, öğrencilerin asla unutamayacağı kadar akıcı, sürükleyici ve hikayeleştirerek anlatmak.
 
@@ -845,6 +858,29 @@ Amacın, sıkıcı ve ağır kanun maddelerini veya teknik kavramları, öğrenc
 ${disc.analogies}
 - ⚠️ 💡 📌 🔑 🎯 🪤 emojilerini BOL kullan — görsel hiyerarşi yarat.
 - Bilgi kalitesi %100 kusursuz ve otoriter olmalı, ama anlatım dili su gibi akmalıdır. Tanımlar BİREBİR kaynak metinden olmalıdır.
+`;
+
+    memoryTechniqueInstruction = `
+🧠 HAFIZA TEKNİKLİ (HER BÖLÜMDE EN AZ 2 TANE KULLAN):
+- **🎬 Hikaye Yöntemi (BİRİNCİL TEKNİK — BOL KULLAN!):** Her karmaşık süreç veya kuralı kısa bir SENARYO ile anlat. İsim ver, durum yarat, sonucu göster. Öğrenci "aa evet karakterin hikayesindeki gibi" diye hatırlasın.
+${disc.stories}
+  ⚠️ Her bölümde EN AZ 3-4 hikaye/senaryo olsun. Sayısal eşikleri, süreleri, cezaları HİKAYE İÇİNDE ver — böylece rakamlar da akılda kalır.
+  ⚠️ KESİN KURAL: Bu senaryoları/hikayeleri kesinlikle bağımsız veya en altta ayrı bir başlık altında toplama! İlgili kavramın/tanımın hemen altına alt madde veya alt paragraf olarak yerleştir ki teori ve pratik senaryo yan yana dursun.
+- **Akrostiş:** Sıralı maddeleri baş harfleriyle hatırlat. ${disc.akrostiş}
+- **Karşılaştırma ile Fark:** Benzer kavramları "İKİSİ DE... AMA..." formatında ayırt et.
+- **Mini Quiz:** Her büyük bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu yaz. Cevabı hemen altına gizle.
+${disc.quiz}
+`;
+  }
+
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
+${getExamIntelligence(aiMode, courseName || sectionTitle)}
+
+${glossaryInstruction}
+
+${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
+
+${styleInstruction}
 
 📄 GÖRSEL İÇERİK ANALİZİ TALİMATI (ÇOK ÖNEMLİ):
 Sana verilen metnin içinde [GÖRSEL İÇERİKLER] başlığı altında tarif edilen resim, tablo ve şemaları DİKKATLE OKU.
@@ -861,15 +897,7 @@ Metin içindeki hiçbir görsel tarifini atlama. Her biri sınavda sorulabilir.
    - Listeler → **Madde işaretli liste**
    🎯 HEDEF: Bir bölümde içerik uygunsa en az 2-3 tablo ve en az 1 Mermaid diyagramı olsun. Ama içerik gerektirmiyorsa zorlama yapma — içerik uygunluğu her şeyden önemli.
 
-🧠 HAFIZA TEKNİKLİ (HER BÖLÜMDE EN AZ 2 TANE KULLAN):
-- **🎬 Hikaye Yöntemi (BİRİNCİL TEKNİK — BOL KULLAN!):** Her karmaşık süreç veya kuralı kısa bir SENARYO ile anlat. İsim ver, durum yarat, sonucu göster. Öğrenci "aa evet karakterin hikayesindeki gibi" diye hatırlasın.
-${disc.stories}
-  ⚠️ Her bölümde EN AZ 3-4 hikaye/senaryo olsun. Sayısal eşikleri, süreleri, cezaları HİKAYE İÇİNDE ver — böylece rakamlar da akılda kalır.
-  ⚠️ KESİN KURAL: Bu senaryoları/hikayeleri kesinlikle bağımsız veya en altta ayrı bir başlık altında toplama! İlgili kavramın/tanımın hemen altına alt madde veya alt paragraf olarak yerleştir ki teori ve pratik senaryo yan yana dursun.
-- **Akrostiş:** Sıralı maddeleri baş harfleriyle hatırlat. ${disc.akrostiş}
-- **Karşılaştırma ile Fark:** Benzer kavramları "İKİSİ DE... AMA..." formatında ayırt et.
-- **Mini Quiz:** Her büyük bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu yaz. Cevabı hemen altına gizle.
-${disc.quiz}
+${memoryTechniqueInstruction}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"
