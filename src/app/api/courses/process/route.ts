@@ -63,21 +63,15 @@ export async function POST(req: NextRequest) {
     // 🔒 ÇİFT TIKLAMA VE RACE CONDITION KORUMASI (DB BAZLI KİLİT)
     if (course.status === "processing" && !forceRetry) {
       // İşlem zaten DB'de "processing" görünüyor. Zombi mi yoksa gerçekten çalışıyor mu?
-      // En son güncellenen bölümün updatedAt süresine bakıyoruz.
-      const activeSection = await prisma.section.findFirst({
-        where: { courseId: course.id, processed: false },
-        orderBy: { updatedAt: 'desc' }
-      });
+      // Arka plan işlemi her bölüm bittiğinde Course.updatedAt değerini 'Canlılık Sinyali' olarak günceller.
+      const timeSinceLastUpdate = Date.now() - course.updatedAt.getTime();
       
-      if (activeSection) {
-        const timeSinceLastUpdate = Date.now() - activeSection.updatedAt.getTime();
-        // Eğer son 15 dakika içinde güncellendiyse işlem %100 canlıdır! Çift tıklamayı engelle.
-        if (timeSinceLastUpdate < 15 * 60 * 1000) {
-          console.log(`[PROCESS] ⚠️ Zaten işlemde (DB Kilitli, Son Güncelleme: ${Math.round(timeSinceLastUpdate/1000)}sn önce): ${course.name} — Race Condition engellendi.`)
-          return NextResponse.json({ message: "İşlem arka planda aktif olarak devam ediyor. Lütfen bekleyin." }, { status: 200 })
-        } else {
-          console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (15 dk'dan uzun süredir hareketsiz), kilit zorla kırılıyor: ${course.name}`);
-        }
+      // Eğer son 15 dakika içinde güncellendiyse işlem %100 canlıdır! Çift tıklamayı engelle.
+      if (timeSinceLastUpdate < 15 * 60 * 1000) {
+        console.log(`[PROCESS] ⚠️ Zaten işlemde (DB Kilitli, Son Güncelleme: ${Math.round(timeSinceLastUpdate/1000)}sn önce): ${course.name} — Race Condition engellendi.`)
+        return NextResponse.json({ message: "İşlem arka planda aktif olarak devam ediyor. Lütfen bekleyin." }, { status: 200 })
+      } else {
+        console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (15 dk'dan uzun süredir hareketsiz), kilit zorla kırılıyor: ${course.name}`);
       }
     }
 

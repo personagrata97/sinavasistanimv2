@@ -10,6 +10,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 });
     }
 
+    const dbUser = await prisma.user.findUnique({ where: { email: session.user.email } });
+    if (!dbUser || dbUser.role !== "admin") {
+      return NextResponse.json({ error: "Bu işlem için sistem yöneticisi (admin) yetkisi gereklidir." }, { status: 403 });
+    }
+
     const body = await req.json();
     const { sectionId, action } = body;
 
@@ -69,10 +74,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Arka plan sürecini tetikle
-    const host = req.headers.get("host") || "localhost:3000";
-    const protocol = host.includes("localhost") ? "http" : "https";
-    const baseUrl = `${protocol}://${host}`;
+    // Arka plan sürecini tetikle (Güvenli URL)
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3001";
 
     fetch(`${baseUrl}/api/courses/process`, {
       method: 'POST',

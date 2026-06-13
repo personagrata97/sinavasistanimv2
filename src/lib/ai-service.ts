@@ -426,7 +426,7 @@ Kurallar:
 }
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
-async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
+async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" | "kontrolor" | "ground_truth" | "mufettis" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
   const activeKey = getNextGeminiKey()
 
   if (activeKey) {
@@ -1547,6 +1547,19 @@ Sadece JSON array döndür:
           const clean = opt.replace(/^[A-Ea-e][):.]\s*/, '').trim();
           return `${prefixes[i]}${clean}`;
         });
+        
+        // Temizlik: Şıklar karıştırıldığı için eski açıklamadaki A,B,C harflerini kırpıyoruz
+        if (q.explanation) {
+          q.explanation = q.explanation
+            .replace(/^(Doğru )?cevap\s+[A-Ea-e]\s*(şıkkı(dır)?)?[\s\.\:\,\-]*/i, '')
+            .replace(/^[A-Ea-e][\)\.\:\-]\s*(Doğru )?cevap\s*(olduğu için|olduğundan)?[\s\.\:\,\-]*/i, '')
+            .replace(/^[A-Ea-e]\s*şıkkı\s*(doğrudur|yanlıştır)?[\s\.\:\,\-]*çünkü\s*/i, '')
+            .replace(/^[A-Ea-e][\)\.\:\-]\s*/i, '');
+          
+          if (!q.explanation.toLowerCase().startsWith("açıklama") && !q.explanation.toLowerCase().startsWith("doğru")) {
+             q.explanation = "Açıklama: " + q.explanation;
+          }
+        }
       }
       console.log(`[QUESTION_SHUFFLE] 🔀 ${allQuestions.length} sorunun şıkları otomatik karıştırıldı.`);
     }
@@ -1561,7 +1574,8 @@ Sadece JSON array döndür:
 async function runGroundTruthTest(
   sourceContent: string,
   generatedNotes: string,
-  sectionTitle: string
+  sectionTitle: string,
+  courseName: string = ""
 ): Promise<{ passed: boolean; failedQuestions: string[]; totalQuestions: number }> {
   console.log(`[GROUND_TRUTH] 🕵️‍♂️ "${sectionTitle}" için Ground Truth Testi Başlatılıyor...`);
 
@@ -1574,7 +1588,7 @@ async function runGroundTruthTest(
   console.log(`[GROUND_TRUTH] Dinamik soru sayısı hesaplandı: ${questionCount} soru (Metin: ${charCount} karakter)`);
 
   // Adım 1: Kaynaktan dinamik sayıda zor soru üret
-  const qPrompt = `[LOG_CONTEXT: GroundTruth - ${sectionTitle}]
+  const qPrompt = `[LOG_CONTEXT: ${courseName ? courseName + ' > ' : ''}${sectionTitle}]
 Sen acımasız bir müfettişsin.
 BÖLÜM: "${sectionTitle}"
 KAYNAK METİN:
@@ -1590,7 +1604,7 @@ Sadece şu formatta JSON döndür:
 
   let questions: string[] = [];
   try {
-    const qRaw = await callAI(qPrompt, 1, "verification");
+    const qRaw = await callAI(qPrompt, 1, "ground_truth");
     questions = extractCleanJson(qRaw) as string[];
   } catch {
     console.log(`[GROUND_TRUTH] ⚠️ Soru üretilemedi, test atlanıyor.`);
@@ -1601,7 +1615,7 @@ Sadece şu formatta JSON döndür:
   console.log(`[GROUND_TRUTH] 🎯 Üretilen kontrol sorusu sayısı: ${questions.length}`);
 
   // Adım 2: Soruları sadece notlara bakarak cevapla
-  const aPrompt = `[LOG_CONTEXT: GroundTruth - ${sectionTitle}]
+  const aPrompt = `[LOG_CONTEXT: ${courseName ? courseName + ' > ' : ''}${sectionTitle}]
 Sen bir kalite kontrolörüsün.
 BÖLÜM: "${sectionTitle}"
 ÜRETİLEN DERS NOTU:
@@ -1626,7 +1640,7 @@ Sadece şu formatta JSON döndür:
   `;
 
   try {
-    const aRaw = await callAI(aPrompt, 1, "verification");
+    const aRaw = await callAI(aPrompt, 1, "ground_truth");
     const results = extractCleanJson(aRaw) as any;
     const failed = (results.results || []).filter((r: any) => r.foundInNotes === false).map((r: any) => r.question);
 
@@ -1725,14 +1739,14 @@ Sadece JSON döndür:
 TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİLİNDE YAZMALISIN (İngilizce kısaltmaları analiz etsen bile raporu Türkçe ver).
 `
 
-  const raw = await callAI(prompt, 1, "verification")
+  const raw = await callAI(prompt, 1, "kontrolor")
   try {
     const result = extractCleanJson(raw) as any
     let score = result.score || 0;
     const missingTopics = result.missingTopics || [];
 
     // GROUND TRUTH ENTEGRASYONU
-    const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle);
+    const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, courseName);
     if (!groundTruth.passed && groundTruth.failedQuestions.length > 0 && groundTruth.totalQuestions > 0) {
       const failRatio = groundTruth.failedQuestions.length / groundTruth.totalQuestions;
       const gtPenalty = Math.round(score * failRatio);
@@ -1769,7 +1783,7 @@ export async function auditNotesAgainstSourceSpecific(courseName: string,
   pageStart?: number,
   pageEnd?: number
 ): Promise<{ passed: boolean; missingDetails: string[]; contradictions: string[]; findings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> }> {
-  const prompt = `[LOG_CONTEXT: Detay Müfettişi - ${sectionTitle}]
+  const prompt = `[LOG_CONTEXT: ${courseName ? courseName + ' > ' : ''}${sectionTitle}]
 Sen bir sınav hazırlık derin denetim uzmanısın (Müfettiş). Görevin, üretilen ders notlarını en ince mikro-detay seviyesinde, özellikle mevzuattaki yasal süreler, ceza miktarları, istisnalar, katalog suçlar ve rakamlar bazında kaynak metinle çapraz sorgulamak ve açık aramaktır.
 
 BÖLÜM BAŞLIĞI: "${sectionTitle}"
@@ -1808,7 +1822,7 @@ Sadece aşağıdaki JSON formatında bir çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, "verification")
+  const raw = await callAI(prompt, 1, "mufettis")
   try {
     const result = extractCleanJson(raw)
     const findings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> = (result.findings || []).map((f: any) => ({
@@ -1838,9 +1852,10 @@ export async function auditQuestionsAgainstSource(
   sourceContent: string,
   questions: Array<{ text: string; options: string[]; correct: string; explanation: string }>,
   sectionTitle: string,
+  courseName?: string,
   fileUri?: string
 ): Promise<{ passed: boolean; issues: string[]; missingTopics: string[] }> {
-  const prompt = `[LOG_CONTEXT: Soru Müfettişi - ${sectionTitle}]
+  const prompt = `[LOG_CONTEXT: ${courseName ? courseName + ' > ' : ''}${sectionTitle}]
 Sen bir sınav hazırlık soru denetim uzmanısın (Soru Müfettişi). Görevin, üretilen çoktan seçmeli soruları, cevap anahtarlarını ve açıklamaları kaynak resmi metinle karşılaştırarak bilgi doğruluğu, mantık hataları ve yapay zeka halüsinasyonları açısından denetlemektir.
 
 BÖLÜM BAŞLIĞI: "${sectionTitle}"
@@ -1866,7 +1881,7 @@ Sadece aşağıdaki JSON formatında çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, "verification")
+  const raw = await callAI(prompt, 1, "mufettis")
   try {
     const result = extractCleanJson(raw)
     return {
@@ -1911,7 +1926,7 @@ Sadece aşağıdaki JSON formatında çıktı ver:
 }
 `
 
-  const raw = await callAI(prompt, 1, "verification")
+  const raw = await callAI(prompt, 1, "mufettis")
   try {
     const result = extractCleanJson(raw)
     return {

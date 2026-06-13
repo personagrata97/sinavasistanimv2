@@ -20,7 +20,7 @@ export async function POST(req: Request) {
     const page = await browser.newPage();
     
     // HTML'i yükle (Tüm görseller ve fontlar yüklenene kadar bekle)
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
 
     // PDF oluştur (Sağ altta sayfa numarasıyla)
     const pdfBuffer = await page.pdf({
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     await browser.close();
     console.log(`[PDF] PDF successfully generated (${pdfBuffer.length} bytes).`);
 
-    return new NextResponse(pdfBuffer, {
+    return new NextResponse(pdfBuffer as any, {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${courseName ? courseName.replace(/[^a-z0-9]/gi, '_') : 'Ders_Notlari'}.pdf"`,

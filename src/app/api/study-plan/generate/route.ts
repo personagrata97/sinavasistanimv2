@@ -26,7 +26,7 @@ export async function POST(req: Request) {
       where: { id: user.id },
       data: { 
         targetExamDate: new Date(targetExamDate),
-        targetHours: targetHours ? Number(targetHours) : user.targetHours
+        targetHours: targetHours ? Number(targetHours) : (user.targetHours || undefined)
       }
     })
 
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
       sectionTitles: course.sections.map(s => s.title),
       sectionIds: course.sections.map(s => s.id),
       weakSectionIds,
-      targetHours: targetHours ? Number(targetHours) : user.targetHours
+      targetHours: targetHours ? Number(targetHours) : (user.targetHours || undefined)
     })
 
     // Veritabanına kaydet

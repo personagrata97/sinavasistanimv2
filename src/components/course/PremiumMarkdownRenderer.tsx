@@ -80,47 +80,59 @@ export function PremiumMarkdownRenderer({
     // 2. Eğer "İlgili Konuya Git" (autoScrollKeyword) çalıştırıldıysa:
     if (autoScrollKeyword && !searchTerm) {
       // Ana metinlere odaklan, blockquote (hikaye/örnek) kısımlarını aramadan dışla
-      const elements = containerRef.current.querySelectorAll('h1, h2, h3, h4, p, li, td, th');
-      
+      const elementsList = Array.from(containerRef.current.querySelectorAll('h1, h2, h3, h4, p, li, td, th')) as HTMLElement[];
+      let searchScope = elementsList;
+      let scopeStartElement: HTMLElement | null = null;
       let bestMatch: HTMLElement | null = null;
       let maxScore = 0;
 
-      // ✨ YENİ: DIRECT SOURCE MAPPING (KAYNAK İŞARETLEME) KONTROLÜ ✨
-      // Yapay zekanın "explanation" veya "back" alanına eklediği [KAYNAK BAŞLIĞI: Başlık Adı] etiketini yakala
+      // ✨ YENİ: KAPSAM KİLİTLİ HİBRİT ARAMA (SCOPE-LOCKED HYBRID SEARCH) ✨
+      // 1. Adım: Yapay zekanın eklediği [KAYNAK BAŞLIĞI: Başlık Adı] etiketini yakala
       const sourceMatch = autoScrollKeyword.match(/\[KAYNAK BAŞLIĞI:\s*(.*?)\]/i);
       if (sourceMatch && sourceMatch[1]) {
          const exactHeadingText = sourceMatch[1].trim().toLowerCase();
-         for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
+         for (let i = 0; i < searchScope.length; i++) {
+            const el = searchScope[i];
             if (el.tagName.match(/^H[1-6]$/)) {
                const text = (el.textContent || '').toLowerCase().trim();
-               // Başlık metniyle eşleşme kontrolü
                if (text === exactHeadingText || text.includes(exactHeadingText) || exactHeadingText.includes(text)) {
-                  bestMatch = el;
-                  maxScore = 10000; // Fuzzy match'i bypass etmesi için tavan puan
+                  scopeStartElement = el;
+                  
+                  // Kapsamı (Scope) bu başlık ile sonraki aynı veya üst düzey başlık arasına kilitle
+                  const currentLevel = parseInt(el.tagName[1]);
+                  const newScope: HTMLElement[] = [el]; // Aramaya başlığın kendisini de dahil et
+                  
+                  for (let j = i + 1; j < searchScope.length; j++) {
+                     const nextEl = searchScope[j];
+                     if (nextEl.tagName.match(/^H[1-6]$/)) {
+                        const nextLevel = parseInt(nextEl.tagName[1]);
+                        if (nextLevel <= currentLevel) {
+                           break; // Sonraki ana/eşdeğer başlığa geldik, kapsam bitti
+                        }
+                     }
+                     newScope.push(nextEl);
+                  }
+                  
+                  searchScope = newScope; // Arama uzayını daralttık!
                   break; 
                }
             }
          }
       }
 
-      // Arama kelimelerini küçük harfe çevir ve kelimelere ayır
+      // 2. Adım: Arama kelimelerini hazırla
       const stopWords = ['aşağıdakilerden', 'hangisi', 'yanlıştır', 'doğrudur', 'kaynak', 'metne', 'metin', 'metinde', 'metinden', 'göre', 'hangisidir', 'hangileri', 'ilgili', 'nedir', 'değildir', 'olamaz', 'olabilir', 'hakkında', '[kaynak', 'başlığı:'];
       const keywordTokens = autoScrollKeyword.toLowerCase().replace(/\[kaynak başlığı:.*?\]/g, '').split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
 
-      // Eğer Source Mapping ile kesin sonuç bulunamadıysa (veya etiketsiz eski bir kayıtsa) eski kelime arama motoruna (Fuzzy Match) düş:
-      if (!bestMatch) {
-
-      // Tüm elemanlarda en iyi eşleşmeyi bul
-      for (let i = 0; i < elements.length; i++) {
-        const el = elements[i] as HTMLElement;
+      // 3. Adım: Kilitlenmiş Kapsamda (veya tüm dokümanda) Bulanık Arama (Fuzzy Search)
+      for (let i = 0; i < searchScope.length; i++) {
+        const el = searchScope[i];
         const text = (el.textContent || '').toLowerCase();
         let score = 0;
         const cleanElText = text.trim();
         
-        // ✨ TABLO VE BAŞLIKLAR İÇİN MÜKEMMEL EŞLEŞME BONUSU ✨
+        // Tablo ve Başlıklar için tam eşleşme bonusu
         if ((el.tagName === 'TD' || el.tagName === 'TH' || el.tagName.match(/^H[1-6]$/)) && cleanElText.length >= 3) {
-            // Sadece tam kelime eşleşmesi (kelime sınırları ile)
             const escapedCleanEl = cleanElText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const exactMatchRegex = new RegExp(`\\b${escapedCleanEl}\\b`, 'i');
             if (exactMatchRegex.test(autoScrollKeyword)) {
@@ -128,18 +140,18 @@ export function PremiumMarkdownRenderer({
             }
         }
         
-        // Daha agresif bulanık arama (Fuzzy Match)
+        // Kelime kökü bazlı puanlama
         keywordTokens.forEach(token => {
-           if (token.length < 3 && !text.includes(token)) return; // Kısa kelimeleri (bağlaçları) atla
+           if (token.length < 3 && !text.includes(token)) return;
            const root = token.length > 5 ? token.substring(0, 5) : token;
            if (text.includes(root)) {
              score += token.length;
-             // Tablo hücrelerine ve başlıklara devasa bonus ver ki düz paragrafların önüne geçsinler
+             // Tablo hücrelerine ve başlıklara bonus
              if (el.tagName === 'TD' || el.tagName === 'TH' || el.tagName.match(/^H[1-6]$/)) {
-               score += token.length * 2; // Çarpanı düşürdüm ki alakasız kelimeler devleşmesin
+               score += token.length * 2; 
              }
              
-             // ✨ YENİ: VURGULU (STRONG/B) KELİME BONUSU ✨
+             // ✨ VURGULU (STRONG/B) KELİME BONUSU ✨
              const strongElements = el.querySelectorAll('strong, b');
              for (let j = 0; j < strongElements.length; j++) {
                if ((strongElements[j].textContent || '').toLowerCase().includes(root)) {
@@ -150,13 +162,17 @@ export function PremiumMarkdownRenderer({
            }
         });
         
-        // Puan eşitse, en son paragraf olanı falan alır. Sadece en yüksek puanlıyı alalım.
-        // Eşleşme olması için en az 4 puan (örn. 1 uzun veya 2 kısa kelime) yeterli.
+        // En yüksek puanı kaydediyoruz (eşleşme için en az 4 puan lazım)
         if (score > maxScore && score >= 4) {
            maxScore = score;
            bestMatch = el;
         }
       }
+
+      // Eğer kapsam kilitlendiği halde (veya genel aramada) yüksek puanlı eşleşme bulunamadıysa, 
+      // kapsam başlığını (scopeStartElement) varsayılan olarak kabul et!
+      if (!bestMatch && scopeStartElement) {
+         bestMatch = scopeStartElement;
       }
 
       // Eğer hiç eşleşme bulamadıysa, biraz daha toleranslı arayalım (en az 1 kelime kökü)

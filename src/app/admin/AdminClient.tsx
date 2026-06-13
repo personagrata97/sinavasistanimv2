@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
-import { Users, Activity, Target, Clock, ShieldAlert, Flame, AlertTriangle, CheckCircle2, BookOpen, Check, ChevronLeft, ChevronRight, Search, ShieldCheck, FileText, AlertCircle, Sparkles, X, Database, Zap, RefreshCw } from "lucide-react"
+import { Users, Bot, Activity, Target, Clock, ShieldAlert, Flame, AlertTriangle, CheckCircle2, BookOpen, Check, ChevronLeft, ChevronRight, Search, ShieldCheck, FileText, AlertCircle, Sparkles, X, Database, Zap, RefreshCw } from "lucide-react"
 import { resolveQuestion } from "@/lib/actions"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -927,7 +927,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                     <tbody>
                       {(() => {
                         const apiLogsList = apiLogs || []
-                        const filtered = apiLogsList.filter((l: any) => l.apiKey.toLowerCase().includes(apiSearch.toLowerCase()) || l.operation.toLowerCase().includes(apiSearch.toLowerCase()) || (l.courseSlug || "").toLowerCase().includes(apiSearch.toLowerCase()))
+                        const filtered = apiLogsList.filter((l: any) => l.apiKey.toLowerCase().includes(apiSearch.toLowerCase()) || l.operation.toLowerCase().includes(apiSearch.toLowerCase()) || (l.courseSlug || "").toLowerCase().includes(apiSearch.toLowerCase()) || (l.courseFullName || "").toLowerCase().includes(apiSearch.toLowerCase()))
                         const paginated = filtered.slice((apiPage - 1) * 10, apiPage * 10)
                         const totalPages = Math.ceil(filtered.length / 10) || 1
 
@@ -944,16 +944,20 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="font-bold text-sm text-slate-200">{log.apiKey}</div>
-                                  <div className="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[10px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/20 shadow-sm"><Sparkles className="w-3 h-3 text-blue-400" />
-                                    {log.model}
+                                  <div className="inline-flex items-center gap-1.5 mt-0.5 px-2 py-0.5 rounded text-[10px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/30 shadow-sm">
+                                    <Bot className="w-3 h-3 text-blue-400" />
+                                    <span>{log.model}</span>
                                   </div>
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="flex flex-col gap-1.5 min-w-[220px]">
                                     <div className="inline-flex items-center gap-1.5 w-fit px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 border border-white/10 text-slate-300">
-                                      {log.operation === 'verification' ? <><ShieldCheck className="w-3 h-3 text-emerald-400" /> DOĞRULAMA (MÜFETTİŞ)</> : 
-                                       log.operation === 'generation' ? <><FileText className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> : 
-                                       log.operation === 'notes_generation' ? <><FileText className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> :
+                                      {log.operation === 'verification' ? <><CheckCircle2 className="w-3 h-3 text-emerald-400" /> DOĞRULAMA (ESKİ)</> : 
+                                       log.operation === 'kontrolor' ? <><CheckCircle2 className="w-3 h-3 text-orange-400" /> KALİTE KONTROL (KONTROLÖR)</> :
+                                       log.operation === 'ground_truth' ? <><Target className="w-3 h-3 text-purple-400" /> ÇAPRAZ TEST (GROUND TRUTH)</> :
+                                       log.operation === 'mufettis' ? <><AlertTriangle className="w-3 h-3 text-red-500" /> DERİN DENETİM (MÜFETTİŞ)</> :
+                                       log.operation === 'generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> : 
+                                       log.operation === 'notes_generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> :
                                        log.operation === 'question_generation' ? <><Target className="w-3 h-3 text-purple-400" /> SORU HAVUZU ÜRETİMİ</> :
                                        log.operation === 'flashcard' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
                                        log.operation === 'flashcard_generation' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
