@@ -825,13 +825,6 @@ export async function generateCourseNotes(
 `
   }
 
-  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
-${getExamIntelligence(aiMode, courseName || sectionTitle)}
-
-${glossaryInstruction}
-
-${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
-
   let styleInstruction = "";
   let memoryTechniqueInstruction = "";
 
