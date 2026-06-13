@@ -4,7 +4,6 @@ import { prisma } from "./prisma"
 // ==================== AI ENGINE SETUP ====================
 
 // PRIMARY: Gemini (High Quota & Quality) — Multi-key rotation
-const MODEL_NAME = "gemini-2.5-flash"
 const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 const geminiKeys = (process.env.GEMINI_API_KEYS || geminiKey || "").split(",").filter(k => k.trim())
 let currentKeyIndex = 0 // Aktif key index'i
@@ -614,7 +613,7 @@ MODÜL 2 — UYUM YÖNETİMİ (bu konulardan bahsediyorsa "Modül 2"):
 • Yükümlülük denetimi, idari para cezaları
 • Eğitim yükümlülükleri
 
-JSON'a "module" alanı ekle: "Modül 1" 또는 "Modül 2"
+JSON'a "module" alanı ekle: "Modül 1" veya "Modül 2"
 ` : ""}
 
 Sadece şu formatta JSON döndür:
@@ -1457,7 +1456,7 @@ ${finalAudit.missingTopics.slice(0, backupCount).map((t, idx) => `${idx + 1}. ${
 SORU TİPLERİ VE BİLGİ DOĞRULUĞU KURALLARINA TAVİZSİZ UYUN.
 Her şıkkın neden yanlış olduğunu ve neden doğru olduğunu tek tek ve detaylı açıklayın.
 
-KAYNAK METİN: "${content.substring(0, 100000).replace(/"/g, "'")}"
+KAYNAK METİN: "${content.replace(/"/g, "'")}"
 
 Sadece JSON array döndür:
 [

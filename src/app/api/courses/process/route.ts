@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const session = await getServerSession(authOptions)
-    if (!session?.user?.email && body.secretToken !== "mufettis_onayi") {
+    if (!session?.user?.email && body.secretToken !== process.env.CRON_SECRET) {
       console.warn("[PROCESS] 🔴 Yetkisiz tetikleme engellendi.")
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 })
     }
@@ -1170,9 +1170,11 @@ async function processInBackground(slug: string, course: any) {
               // Olası formatlar: 
               // * **ABBR:** Definition
               // **ABBR:** Definition
+              // ### ABBR
               const match = cleanLine.match(/^(?:\*\s+)?\*\*([^:]+):\*\*\s*(.+)$/) ||
                             cleanLine.match(/^####\s+([^\(]+)(?:\([^\)]*\))?\s*$/) ||
-                            cleanLine.match(/^-\s+\*\*([^*\-—]+)\*\*\s*[—\-:]\s*(.+)$/)
+                            cleanLine.match(/^-\s+\*\*([^*\-—]+)\*\*\s*[—\-:]\s*(.+)$/) ||
+                            cleanLine.match(/^###\s+(?:\s*)?([^\(]+?)(?:\s*\([^\)]*\))?\s*$/)
               if (match) {
                 dict[match[1].trim()] = match[2].trim()
               }
@@ -1209,6 +1211,12 @@ async function processInBackground(slug: string, course: any) {
               continue // Mükerrer — atla
             }
             existingFronts.add(normalizedFront)
+            
+            // [KAYNAK BAŞLIĞI: ...] metnini temizle
+            if (card.back) {
+              card.back = card.back.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
+            }
+            
             try { await prisma.flashcard.create({ data: { courseId: course.id, sectionId: section.id, front: card.front, back: card.back, difficulty: card.difficulty || "medium" } }) } catch { }
           }
           if (dedupSkipped > 0) {
@@ -1221,6 +1229,12 @@ async function processInBackground(slug: string, course: any) {
             const normalizedText = q.text.trim().toLowerCase()
             if (existingTexts.has(normalizedText)) continue
             existingTexts.add(normalizedText)
+            
+            // [KAYNAK BAŞLIĞI: ...] metnini açıklamadan temizle
+            if (q.explanation) {
+              q.explanation = q.explanation.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
+            }
+            
             try { await prisma.question.create({ data: { courseId: course.id, sectionId: section.id, text: q.text, options: JSON.stringify(q.options), correct: q.correct, explanation: q.explanation, difficulty: q.difficulty || "medium", module: detectedModule } }) } catch { }
           }
 
