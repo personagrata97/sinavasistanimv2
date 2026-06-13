@@ -41,9 +41,11 @@ export async function generateAndInjectPatch(
     outline.push({ title: title.trim(), index: headingIndex++, depth: node.depth });
   });
 
+  let isFallback = false;
   if (outline.length === 0) {
     console.log(`[PATCH_ENGINE] ⚠️ Belgede hiç başlık bulunamadı. Fallback moduna geçiliyor.`);
     // Fallback: Tüm metni tek bir yama işlemine sok (Çok riskli ama başlık yoksa mecburi)
+    isFallback = true;
     outline.push({ title: "Genel Kapsam", index: 0, depth: 1 });
   }
 
@@ -124,8 +126,6 @@ Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık), gerek
 EKSİK BİLGİLER:
 ${facts.join('\n')}
 
-[GÖRSEL TEST MODU AKTİF]: Yeni eklediğin (yani yukarıdaki eksik bilgilerden gelen) kelimeleri, cümleleri veya maddeleri KESİNLİKLE <span style="color: #10b981;">...</span> etiketleri arasına alarak yeşil renkte göster!
-
 SADECE EKLENECEK MARKDOWN METNİNİ ÜRET. (Başına ve sonuna json vs yazma, direkt markdown ver).`;
       
       try {
@@ -169,22 +169,23 @@ SADECE EKLENECEK MARKDOWN METNİNİ ÜRET. (Başına ve sonuna json vs yazma, di
         }
         headingCounter++;
       }
-      
-      if (inTargetHeading) {
-        // Bu node hedef başlığın parçası
-        // stringify etmek yerine slice yapacağız, ama şimdilik remark() ile sadece o node'u stringe çevirelim
-        const fragmentText = import('remark').then(({ remark }) => remark().stringify({ type: 'root', children: [node] }));
-        // Asenkron stringify remark'ta zordur. Direkt substring almak daha güvenli (position kullanarak)
-      }
     }
-
+      
     if (chunkEndIndex === -1) chunkEndIndex = children.length;
 
     // Position ile ham stringden kesit alalım
-    if (chunkStartIndex !== -1) {
-      const startPos = children[chunkStartIndex].position.start.offset;
-      const endPos = chunkEndIndex < children.length ? children[chunkEndIndex].position.start.offset : currentMarkdown.length;
-      
+    let startPos = -1;
+    let endPos = -1;
+
+    if (isFallback) {
+      startPos = 0;
+      endPos = currentMarkdown.length;
+    } else if (chunkStartIndex !== -1) {
+      startPos = children[chunkStartIndex].position.start.offset;
+      endPos = chunkEndIndex < children.length ? children[chunkEndIndex].position.start.offset : currentMarkdown.length;
+    }
+
+    if (startPos !== -1) {
       const originalChunk = currentMarkdown.substring(startPos, endPos);
       
       console.log(`[PATCH_ENGINE] ✂️ Kesit alındı (${originalChunk.length} karakter). Yama ajanına gönderiliyor...`);
@@ -202,8 +203,6 @@ GÖREV: Mevcut kesiti al, eksik bilgileri içine kusursuzca (sanki ilk seferde y
 - Mevcut kesitteki hikayeler, tablolar veya listeler varsa ASLA BOZMA.
 - Eksik bilgi bir süreç/hiyerarşi gerektiriyorsa şema (mermaid) kullanabilirsin, tanım gerektiriyorsa tabloya ekleyebilirsin veya sadece doğal bir paragraf olarak yedirebilirsin.
 - Eksik bilgiyi körü körüne sonuna yapıştırma, mantıklı olan yere yedir.
-
-[GÖRSEL TEST MODU AKTİF]: Mevcut kesitteki eski kelimelere DOKUNMA (renklendirme). ANCAK dışarıdan yeni entegre ettiğin, eksik bilgilerden gelen cümleleri, kelimeleri veya tabloları/maddeleri KESİNLİKLE <span style="color: #10b981;">...</span> HTML etiketleri arasına alarak yeşil renkte göster!
 
 SADECE yenilenmiş kesiti Markdown formatında ver. Başka hiçbir açıklama yazma.
 `;

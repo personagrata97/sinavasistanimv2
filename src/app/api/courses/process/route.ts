@@ -586,7 +586,10 @@ async function processInBackground(slug: string, course: any) {
                     // DONDURMA VE YAMA KARAR MATRİSİ
                     console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}`);
                     
-                    if (contradictionCount === 0 && missingCount <= 4 && missingCount > 0 && kontrolorStructuralScore >= 85) {
+                    // Esnek Eşik: Yapısal puan ne kadar yüksekse o kadar çok eksiği yamalayabilir (Oransal hesaplama).
+                    // Örn: Puan 85 ise 7 eksiğe kadar, 90 ise 10 eksiğe kadar, 100 ise 15 eksiğe kadar yama yapar.
+                    const maxPatchLimit = Math.floor((kontrolorStructuralScore - 70) * 0.5); 
+                    if (contradictionCount === 0 && missingCount <= Math.max(4, maxPatchLimit) && missingCount > 0 && kontrolorStructuralScore >= 80) {
                       console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: 0 Çelişki, ${missingCount} Eksik, %${kontrolorStructuralScore} Puan. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
                       isSurgicalPatch = true;
                     } else {
