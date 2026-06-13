@@ -955,6 +955,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                       {log.operation === 'verification' ? <><CheckCircle2 className="w-3 h-3 text-emerald-400" /> DOĞRULAMA (ESKİ)</> : 
                                        log.operation === 'kontrolor' ? <><CheckCircle2 className="w-3 h-3 text-orange-400" /> KALİTE KONTROL (KONTROLÖR)</> :
                                        log.operation === 'ground_truth' ? <><Target className="w-3 h-3 text-purple-400" /> ÇAPRAZ TEST (GROUND TRUTH)</> :
+                                      log.operation === 'cerrahi_yama' ? <><Sparkles className="w-3 h-3 text-emerald-400" /> CERRAHİ YAMA (AST)</> :
                                        log.operation === 'mufettis' ? <><AlertTriangle className="w-3 h-3 text-red-500" /> DERİN DENETİM (MÜFETTİŞ)</> :
                                        log.operation === 'generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> : 
                                        log.operation === 'notes_generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> :

@@ -133,8 +133,8 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               }} />
             </div>
 
-            {/* Step 2: Kalite Kontrolörü */}
-            <div className="flex flex-col items-center gap-2 z-10 w-16">
+            {/* Step 2: Kontrolör & Soru Testi */}
+            <div className="flex flex-col items-center gap-2 z-10 w-20">
               <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
                 isSkipped ? "bg-slate-500/10 border-slate-500/50 text-slate-400" :
                 isExcellent ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
@@ -142,11 +142,11 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               }`}>
                 <Bot className="w-4 h-4" />
               </div>
-              <span className={`text-[9px] font-black tracking-widest uppercase text-center ${
+              <span className={`text-[9px] font-black tracking-widest uppercase text-center leading-tight ${
                 isSkipped ? "text-slate-500" :
                 isExcellent ? "text-emerald-500" :
                 "text-amber-500"
-              }`}>Kontrolör</span>
+              }`}>Kontrolör<br/><span className="text-[7px] text-slate-500 opacity-70">(+ Ground Truth)</span></span>
             </div>
 
             {/* Line 2 -> 3 */}
@@ -176,6 +176,28 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                 isExcellent ? "text-blue-500" :
                 "text-slate-600"
               }`}>Müfettiş</span>
+            </div>
+
+            {/* Line 3 -> 4 */}
+            <div className="flex-1 h-0.5 mt-4 mx-1 bg-white/[0.05] rounded-full relative overflow-hidden">
+              <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-1000" style={{
+                width: hasMufettisIssues ? "100%" : "0%",
+                opacity: 1
+              }} />
+            </div>
+
+            {/* Step 4: Cerrahi Yama */}
+            <div className="flex flex-col items-center gap-2 z-10 w-16">
+              <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
+                hasMufettisIssues ? "bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.15)] animate-pulse" :
+                "bg-white/[0.02] border-white/[0.05] text-slate-600"
+              }`}>
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <span className={`text-[9px] font-black tracking-widest uppercase text-center ${
+                hasMufettisIssues ? "text-purple-500" :
+                "text-slate-600"
+              }`}>Cerrahi<br/>Yama</span>
             </div>
           </div>
           
@@ -251,16 +273,25 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               ))}
               
               {mufettisIssues.map((c: string, idx: number) => (
-                <li key={`ct-${idx}`} className="leading-relaxed">
-                  <span className="text-red-500 font-bold block mb-0.5">Bilgi Hatası:</span> {c.replace(/\[(?:MÜFETTİŞ (?:EKSİĞİ|HATASI)|CRITICAL|MEDIUM|LOW)\]\s*/g, "")}
+                <li key={`mc-${idx}`} className="leading-relaxed">
+                  <span className="text-red-400 font-bold block mb-0.5">Mevzuat/Mantık Hatası:</span> {c.replace(/\[(?:MÜFETTİŞ (?:EKSİĞİ|HATASI)|CRITICAL|MEDIUM|LOW)\]\s*/g, "")}
                 </li>
               ))}
               {issuesObj.auditResult?.contradictions?.map((c: string, idx: number) => (
-                <li key={`cta-${idx}`} className="leading-relaxed">
-                  <span className="text-red-500 font-bold block mb-0.5">Bilgi Hatası:</span> {c.replace(/\[(?:MÜFETTİŞ (?:EKSİĞİ|HATASI)|CRITICAL|MEDIUM|LOW)\]\s*/g, "")}
+                <li key={`mca-${idx}`} className="leading-relaxed">
+                  <span className="text-red-400 font-bold block mb-0.5">Mevzuat/Mantık Hatası:</span> {c.replace(/\[(?:MÜFETTİŞ (?:EKSİĞİ|HATASI)|CRITICAL|MEDIUM|LOW)\]\s*/g, "")}
                 </li>
               ))}
             </ul>
+            
+            {/* Cerrahi Yama İndikatörü */}
+            <div className="mt-4 pt-3 border-t border-red-500/20 bg-purple-500/10 p-3 rounded-lg flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-[10px] font-black text-purple-400 uppercase tracking-widest mb-1">Cerrahi Yama Aktif</div>
+                <div className="text-[10px] text-purple-300/80">Sistem, notları sıfırdan yazmak yerine sadece yukarıdaki eksikleri orijinal kaynak PDF ile doğrulayarak mevcut nota akıllıca zerk ediyor. (AST Injection)</div>
+              </div>
+            </div>
           </div>
         )}
 

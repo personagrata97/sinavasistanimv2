@@ -246,7 +246,7 @@ export function getDisciplineExamples(isSecurity: boolean, isMasak: boolean) {
 
 // ==================== HELPERS ====================
 
-function extractCleanJson(raw: string): any {
+export function extractCleanJson(raw: string): any {
   // Temizlik: BOM, kontrol karakterleri, thinking bloğu
   let cleaned = raw
     .replace(/^\uFEFF/, '')           // BOM kaldır
@@ -426,7 +426,7 @@ Kurallar:
 }
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
-async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" | "kontrolor" | "ground_truth" | "mufettis" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
+export async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" | "kontrolor" | "ground_truth" | "mufettis" | "cerrahi_yama" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
   const activeKey = getNextGeminiKey()
 
   if (activeKey) {

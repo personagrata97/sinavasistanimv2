@@ -322,6 +322,18 @@ export async function reprocessCourse(slug: string) {
       }
     })
 
+    // Sinyal Gönder: Çalışan bir arka plan işçisi varsa hemen dursun (Kill Switch)
+    const globalAny = global as any;
+    if (!globalAny.cancelSignals) {
+      globalAny.cancelSignals = {};
+    }
+    globalAny.cancelSignals[course.name] = true;
+
+    // Bekleyen aktif process kilidini kaldır
+    if (globalAny.activeProcessing) {
+      globalAny.activeProcessing = globalAny.activeProcessing.filter((name: string) => name !== course.name);
+    }
+
     return { success: true }
   } catch (error: any) {
     return { error: error.message }

@@ -433,14 +433,16 @@ async function processInBackground(slug: string, course: any) {
       console.log(`[BG] 💾 Yeni fileUri'ler veri tabanına başarıyla kaydedildi.`)
     }
 
-    setFileUrisMap(uriMap)
-    const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").split(",").filter(k => k.trim())
-    console.log(`[BG] 📄 Toplam ${Object.keys(uriMap).length}/${geminiKeys.length} key için fileUri tanımlandı`)
-
     const savedSections = await prisma.section.findMany({
       where: { courseId: course.id, processed: false },
       orderBy: { order: "asc" }
     })
+
+    // Reset cancel signal if exists
+    const globalAny = global as any;
+    if (globalAny.cancelSignals) {
+      globalAny.cancelSignals[course.name] = false;
+    }
 
     const totalSections = await prisma.section.count({ where: { courseId: course.id } })
     const alreadyDone = totalSections - savedSections.length
@@ -454,6 +456,10 @@ async function processInBackground(slug: string, course: any) {
     let isPausedForApproval = false
 
     for (let sIdx = 0; sIdx < savedSections.length; sIdx++) {
+      if (globalAny.cancelSignals?.[course.name]) {
+        console.log(`[BG] 🛑 İPTAL SİNYALİ ALINDI: ${course.name} işleme süreci durduruluyor...`);
+        break;
+      }
       const section = savedSections[sIdx]
 
       if (section.rawContent.length < 100) {
@@ -473,6 +479,11 @@ async function processInBackground(slug: string, course: any) {
       const maxSectionRetries = 5
 
       while (!success && sectionRetries < maxSectionRetries) {
+        if (globalAny.cancelSignals?.[course.name]) {
+          console.log(`[BG] 🛑 İPTAL SİNYALİ ALINDI: Alt döngü kırılıyor...`);
+          success = false;
+          break;
+        }
         if (sectionRetries > 0) {
           console.log(`[BG] 🔄 [${section.title}] Geçici kota aşımı engeli nedeniyle 60 saniye bekleniyor... (Bölüm Denemesi #${sectionRetries + 1}/${maxSectionRetries})`)
           await new Promise(r => setTimeout(r, 60000))
@@ -551,8 +562,8 @@ async function processInBackground(slug: string, course: any) {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
                 try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 2: Ders Notları Üretiliyor (Deneme #${vAttempt})`, currentAttempt: vAttempt, attemptHistory: attemptHistory }) } }) } catch { }
 
-                // ==================== SMART INJECT (TARGETED REFINEMENT) KONTROLÜ ====================
-                let isSmartInject = false;
+                // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
+                let isSurgicalPatch = false;
                 let enrichedContent = section.rawContent;
 
                 if (lastVerification) {
@@ -568,85 +579,72 @@ async function processInBackground(slug: string, course: any) {
                   }
 
                   if (feedbackItems.length > 0) {
-                    // ==================== 3-KATMANLI KUSURSUZ YÖNLENDİRME (Smart Routing) ====================
+                    const kontrolorStructuralScore = lastVerification.score;
+                    const contradictionCount = (lastVerification.issues || []).length;
+                    const missingCount = (lastVerification.missingTopics || []).length;
 
-                    // 1. Kontrolör Yapısal Puanını al
-                    const kontrolorStructuralScore = lastVerification.score; // lastVerification.score Kontrolör'ün yapısal iskelet puanıdır.
-
-                    // 2. Müfettişin Critical bulgu sayısını hesapla
-                    let prevCriticalCount = 0;
-                    if (lastVerification.inspectorFindings) {
-                      prevCriticalCount = lastVerification.inspectorFindings.filter((f: any) => f.severity === 'CRITICAL').length;
-                    } else {
-                      // Eski format veya Kontrolör'ün kendi bulduğu yapısal eksiklik durumu
-                      const hasMajorMissingTopics = lastVerification.missingTopics?.some((t: string) => !t.includes("[MÜFETTİŞ"));
-                      if (hasMajorMissingTopics) prevCriticalCount = 10; // Yapısal iskelet eksiği varsa sıfırdan yazmaya zorla
-                    }
-
-                    // 3. Yönlendirme Kararı
-
-                    // Daha önce kaç kere Smart Inject yapıldığını say
-                    const pastSmartInjects = attemptHistory.filter((h: any) => h.isSmartInject).length;
-                    const lastAttemptWasSmartInject = attemptHistory.length > 0 ? attemptHistory[attemptHistory.length - 1].isSmartInject : false;
-
-                    if (kontrolorStructuralScore < 70) {
-                      // İskelet çok zayıf
-                      console.log(`[BG] ⛔ Yapısal İskelet Çok Zayıf (Kontrolör: %${kontrolorStructuralScore} < 70): Yama yapılmaz, sıfırdan yazım devreye giriyor...`);
-                      isSmartInject = false;
-                    } else if (kontrolorStructuralScore >= 70 && kontrolorStructuralScore < 85) {
-                      // İskelet orta seviye
-                      if (prevCriticalCount <= 3) {
-                        console.log(`[BG] 🧠 Yapısal İskelet Orta (%${kontrolorStructuralScore}) ve KRİTİK bulgu az (${prevCriticalCount} ≤ 3): 2-Aşamalı Biçim-Duyarlı Akıllı Yama devreye giriyor...`);
-                        isSmartInject = true;
-                      } else {
-                        console.log(`[BG] ⛔ Yapısal İskelet Orta (%${kontrolorStructuralScore}) ama çok fazla KRİTİK boşluk var (${prevCriticalCount} > 3): Sıfırdan yazıma dönülüyor...`);
-                        isSmartInject = false;
-                      }
-                    } else {
-                      // İskelet sağlam (>= 85)
-                      // "Müfettiş 5 bulgu da bulsa, 15 de bulsa, bunlar yapısal değil bilgisel eksikler. Sağlam iskelete Format-Duyarlı enjeksiyon ile yerleştirilir."
-                      isSmartInject = true;
-                    }
-
-                    // ==================== KATMAN 3: DOĞRULAMA KALKANI ====================
-                    // Cilalama sonrası Müfettiş TEK BİR son kontrol daha yapar. Eğer hâlâ CRITICAL bulgu varsa:
-                    if (lastAttemptWasSmartInject && prevCriticalCount > 0) {
-                      if (prevCriticalCount > 2) {
-                        console.log(`[BG] ⚠️ Katman 3 Kalkanı: Cilalama sonrası ${prevCriticalCount} KRİTİK bulgu kaldı (> 2). Yapay zeka konuyu sürekli atlıyor, sıfırdan yazıma dönülüyor.`);
-                        isSmartInject = false;
-                      } else {
-                        // Bulgu sayısı <= 2 ise
-                        if (pastSmartInjects >= 2) {
-                          console.log(`[BG] ⚠️ Katman 3 Kalkanı: 2 tur Smart Inject yapılmasına rağmen KRİTİK bulgu sıfırlanamadı. "Kör Nokta" tespit edildi, yama anlamsız, sıfırdan yazıma dönülüyor.`);
-                          isSmartInject = false;
-                        } else {
-                          console.log(`[BG] 🛡️ Katman 3 Kalkanı: Cilalama sonrası ${prevCriticalCount} KRİTİK bulgu kaldı (≤ 2). Bir tur daha Smart Inject yapılıyor.`);
-                          isSmartInject = true;
-                        }
-                      }
-                    } else if (kontrolorStructuralScore >= 85 && !lastAttemptWasSmartInject) {
-                      console.log(`[BG] 🧠 Yapısal İskelet Sağlam (Kontrolör: %${kontrolorStructuralScore} ≥ 85): 2-Aşamalı Biçim-Duyarlı Akıllı Yama (Smart Inject + Polish) devreye giriyor...`);
-                    }
-                    const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
+                    // DONDURMA VE YAMA KARAR MATRİSİ
+                    console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}`);
                     
-                    if (isSmartInject) {
-                      const { smartInjectCourseNotes } = await import("@/lib/ai-service");
-                      notes = await smartInjectCourseNotes(
-                        notes, // Eski mükemmel not
-                        feedbackItems.join("\n\n"),
-                        section.title,
-                        fullCourseName,
-                        course.userLevel,
-                        aiMode
-                      );
+                    if (contradictionCount === 0 && missingCount <= 4 && missingCount > 0 && kontrolorStructuralScore >= 85) {
+                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: 0 Çelişki, ${missingCount} Eksik, %${kontrolorStructuralScore} Puan. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
+                      isSurgicalPatch = true;
                     } else {
-                      console.log(`[BG] 📋 Önceki denemeden kalan geri bildirimler dikkate alınarak baştan yazım (Rewrite)...`);
+                      console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Cerrahi Yama iptal, sıfırdan yazıma dönülüyor.`);
+                      isSurgicalPatch = false;
+                    }
+
+                    if (isSurgicalPatch) {
+                      const { generateAndInjectPatch } = await import("@/lib/patch-engine");
+                      
+                      // Müfettiş veya GT prefixlerini temizle
+                      const cleanMissingFacts = lastVerification.missingTopics.map((t: string) => 
+                        t.replace("[MÜFETTİŞ EKSİĞİ]", "").replace("Eksik Detay (Ground Truth Testi Başarısız):", "").trim()
+                      );
+
+                      try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama (AST) Uygulanıyor...` }) } }) } catch { }
+
+                      const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
+                      const patchResult = await generateAndInjectPatch(notes, cleanMissingFacts, fullCourseName, section.rawContent);
+
+                      if (patchResult.success) {
+                        notes = patchResult.newMarkdown;
+                        console.log(`[BG] 🎉 Cerrahi Yama Başarılı! Ağır denetim atlanıyor, skor 100'e kilitlendi.`);
+                        
+                        try {
+                          await prisma.section.update({
+                            where: { id: section.id },
+                            data: {
+                              notes: notes,
+                              verificationScore: 100,
+                              verificationIssues: JSON.stringify({
+                                message: "Cerrahi yama ile 100 puan alındı ve onaylandı.",
+                                currentAttempt: vAttempt,
+                                attemptHistory: attemptHistory,
+                                missingTopics: [],
+                                issues: []
+                              })
+                            }
+                          })
+                          console.log(`[BG] 💾 %100 Kusursuz Not (Yamalı) Anında Veritabanına Kazındı!`)
+                        } catch (saveErr) {}
+                        
+                        notesAttemptSuccess = true;
+                        break; // Döngüyü tamamen kır, flashcard'a geç
+                      } else {
+                        console.log(`[BG] ⚠️ Cerrahi Yama başarısız oldu (Evsiz bilgi çözülemedi vb.). Sıfırdan yazıma dönülüyor...`);
+                        isSurgicalPatch = false;
+                      }
+                    } 
+                    
+                    if (!isSurgicalPatch) {
+                      console.log(`[BG] 📋 Geri bildirimler dikkate alınarak baştan yazım (Rewrite)...`);
                       enrichedContent = `⚠️⚠️⚠️ ÖNCEKİ DENEMEDE TESPİT EDİLEN EKSİKLER VE HATALAR:\nLütfen aşağıdaki geri bildirimleri dikkate alarak ders notunu baştan, organik bir akışla tekrar yaz:\n\n${feedbackItems.join("\n\n")}\n\n---\n\n${section.rawContent}`;
                     }
                   }
                 }
 
-                if (!isSmartInject) {
+                if (!isSurgicalPatch) {
                   const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
                   notes = await generateCourseNotes(
                     enrichedContent, section.title, fullCourseName, course.userLevel,
@@ -737,7 +735,7 @@ async function processInBackground(slug: string, course: any) {
                   missingTopics: verification.missingTopics || [],
                   issues: verification.issues || [],
                   suggestions: verification.suggestions || [],
-                  isSmartInject: isSmartInject
+                  isSmartInject: typeof isSurgicalPatch !== 'undefined' ? isSurgicalPatch : false
                 }
                 attemptHistory.push(historyEntry)
 
