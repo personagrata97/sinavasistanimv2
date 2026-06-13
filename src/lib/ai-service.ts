@@ -156,7 +156,7 @@ ${modeSpecificRules}
 3. ⚠️ KESİN KURAL: GEREKSİZ GİRİŞ/ÇIKIŞ CÜMLELERİ KESİNLİKLE YASAKTIR: "İşte notlarınız", "Başarılar dilerim", "Önemli noktalar şunlardır" gibi yapay zeka gevezelikleri KESİNLİKLE YAPMAYIN. Doğrudan bilgiye girin.
 - META KELİMELER YASAKTIR: Cümlelerinizde "Kaynak metinde...", "Bu PDF'te...", "Orijinal dokümana göre...", "Sunulan metin...", "Ders notunda..." gibi dışarıdan okunduğunda yapay duran kalıpları KESİNLİKLE KULLANMAYIN. Sanki o kitabı doğrudan siz yazmışsınız gibi birinci ağızdan otoriter ve net olun.
 - 🛠️ OCR VE HARF HATALARI KURALI (ÇOK KRİTİK): Optik okuma kaynaklı saçma boşlukları (örn: "W ireless F idelity", "B anka") GERÇEK BİR HATA SANIP ASLA UYARI DÜŞMEYİN, bunları sessizce "Wireless Fidelity" olarak düzeltin.
-- ⚠️ GERÇEK YAZIM/BİLGİ HATASI KURALI: Sadece kurumun orijinal metnindeki "gerçek" harf hatalarını veya yasal çelişkileri (örn: "Asynchronous" yazması gerekirken "Asynchrous" yazması) KESİNLİKLE yakalayın ve vurgulayın. Ancak bunu yaparken ASLA "kaynak metin", "pdf" gibi kelimeler kullanmayın. Uyarıyı şu profesyonel şablonla verin: "(⚠️ Önemli Detay: SPL'nin resmi çalışma notlarında bu terim [Hatalı Hal] olarak geçmektedir, ancak literatürdeki/mevzuattaki doğrusu [Doğru Hal] şeklindedir.)"
+- ⚠️ GERÇEK YAZIM/BİLGİ HATASI KURALI: Sadece kurumun orijinal metnindeki "gerçek" harf hatalarını veya yasal çelişkileri (örn: "Asynchronous" yazması gerekirken "Asynchrous" yazması) KESİNLİKLE yakalayın ve vurgulayın. Ancak bunu yaparken ASLA "kaynak metin", "pdf" gibi kelimeler kullanmayın. Uyarıyı şu profesyonel şablonla verin: "(⚠️ Önemli Detay: ${courseName ? `${courseName.split(">")[0]?.trim()} kaynak notlarında` : "Sınavın kaynak notlarında"} bu terim [Hatalı Hal] olarak geçmektedir, ancak literatürdeki/mevzuattaki doğrusu [Doğru Hal] şeklindedir.)"
 4. Bir formül veya rakam kaynak metinde yoksa, onu soru/not/karta KOYMA.
 5. "Kesin çıkar", "muhakkak sorulur" gibi doğrulanamayan ifadeler KULLANMA.
 6. Günlük hayattan verilecek örnekler ve hikayeler (senaryolar) mantıksal kurallara, finansal ve hukuki gerçekliğe %100 uygun olmalıdır. Örnekler hem akılda kalıcı hem de mantıken/hukuken kusursuz olmalıdır.
@@ -883,6 +883,7 @@ Sana verilen metnin içinde [GÖRSEL İÇERİKLER] başlığı altında tarif ed
 2. Tarif edilen formülleri, hesaplama örneklerini ve kutu içi (box) uyarıları atlama.
 Metin içindeki hiçbir görsel tarifini atlama. Her biri sınavda sorulabilir.
 
+${!isGlossary ? `
 3. GÖRSELLEŞTİRME (NOTLARIN ALBENİSİNİ BELİRLER — ÇOK ÖNEMLİ):
    Notları görsel açıdan zengin ve çekici yap. Dümdüz paragraflarla dolu, göz yoran notlar DEĞERSİZDİR.
    Her fırsatta görselleştir, ama içerikle uyumsuz zorlama görsel EKLEME:
@@ -891,7 +892,7 @@ Metin içindeki hiçbir görsel tarifini atlama. Her biri sınavda sorulabilir.
    - Önemli bilgiler → **Emoji kutucuğu** (⚠️, 💡, 📌, 🔑)
    - Listeler → **Madde işaretli liste**
    🎯 HEDEF: Bir bölümde içerik uygunsa en az 2-3 tablo ve en az 1 Mermaid diyagramı olsun. Ama içerik gerektirmiyorsa zorlama yapma — içerik uygunluğu her şeyden önemli.
-
+` : ''}
 ${memoryTechniqueInstruction}
 
 DERS: ${courseName}
@@ -902,14 +903,14 @@ BÖLÜM: "${sectionTitle}"
 2. ETİKETLEME (ÇOK ÖNEMLİ): Her ana başlığın yanına konunun ait olduğu sınav modülünü köşeli parantez içinde yaz ${disc.labelExample}.
 3. DÜZ YAZI YAZMA: Her bilgiyi görsel bir formatta sun:
    - Karşılaştırmalar → **Markdown Tablosu** (en az 2-3 tablo olmalı)
-   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid diyagramlarında tüm düğüm isimlerini İSTİSNASIZ OLARAK köşeli parantez ve çift tırnak içine al (örn: A["İhraççı Şirket"] --> B["Kurul"]). Bu kurala uymazsan UI çöker!)
+${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid diyagramlarında tüm düğüm isimlerini İSTİSNASIZ OLARAK köşeli parantez ve çift tırnak içine al (örn: A["İhraççı Şirket"] --> B["Kurul"]). Bu kurala uymazsan UI çöker!)` : ''}
    - Önemli bilgiler → **Emoji kutucukları** (⚠️, 💡, 📌, 🔑)
    - Listeler → **Madde işaretli liste**
 4. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
 5. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
 6. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
 7. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
-8. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. Günlük hayattan gerçekçi ve somut örnekler ver ancak KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR).
+8. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR). Asla hikayeleştirme veya laubali senaryolar uydurma.
 9. Hedef: 10 sayfalık bir PDF bölümünün notu ~8 sayfa olmalı. Yoğun ama EKSİKSİZ.
 
 🔴 SAYFA BAZLI TARAMA TALİMATI (EN KRİTİK KURAL):
@@ -926,21 +927,20 @@ Her sayfa için şu kontrol listesini uygula:
 ${visualRulesInstruction}
 
 📋 HER KAVRAM İÇİN FORMAT:
-- **[Resmi Terim]:** [Resmi tanım - kaynak metindeki cümleyi BİREBİR kopyala, TEK KELİME değiştirme] → 💡 *[Konuyla tam uyumlu, günlük hayattan akılda kalıcı 1-2 cümlelik benzetme/örnek]*
+- **[Resmi Terim]:** [Resmi tanım - kaynak metindeki cümleyi BİREBİR kopyala, TEK KELİME değiştirme]
 
-‼️ KRİTİK: Tanım cümlesini asla sadeleştirme, kısaltma veya kendi cümlenle anlatma. Sınavda "aşağıdakilerden hangisi X'in tanımıdır?" diye birebir bu cümle sorulabilir. Tanımı AYNEN yaz, sonra → 💡 ile kendi örneklerini ekle.
+‼️ KRİTİK: Tanım cümlesini asla sadeleştirme, kısaltma veya kendi cümlenle anlatma. Sınavda "aşağıdakilerden hangisi X'in tanımıdır?" diye birebir bu cümle sorulabilir. Tanımı AYNEN yaz.
 
 ÖRNEK:
-- **İhraççı:** Sermaye piyasası araçlarını ihraç eden, ihraç etmek üzere Kurula başvuruda bulunan veya sermaye piyasası araçları halka arz edilen tüzel kişilerdir. → 💡 *Bir fabrika düşün: ürün (hisse) üreten ve markete (borsaya) koyan şirket.*
+- **İhraççı:** Sermaye piyasası araçlarını ihraç eden, ihraç etmek üzere Kurula başvuruda bulunan veya sermaye piyasası araçları halka arz edilen tüzel kişilerdir.
 
 ⚠️ KESİN KURALLAR:
 1. Resmi terimleri KESİNLİKLE değiştirme. Sınavda birebir bu terimler sorulur.
-2. Tanım cümlelerini kaynak metinden BİREBİR al.
+2. Tanım cümlelerini kaynak metinden BİREBİR al. Asla hikayeleştirme veya fiktif karakterler kullanma.
 3. Sayısal sınırlar, oranlar ve tarihler MUTLAKA yaz. BUNLAR SIKÇA SORULUR.
 4. Formüller varsa formülü yaz + sayısal örnek ile adım adım çöz.
 5. Benzer kavramlar arasındaki farkı TABLO ile göster.
-6. 💡 örnekleri konuyla TAM UYUMLU olsun.
-7. Cevabı ASLA yarıda kesme.
+6. Cevabı ASLA yarıda kesme.
 8. İSTİSNALARI ve ÖZEL DURUMLARI mutlaka belirt.
 9. 🇹🇷 DİL KALİTESİ: Türkçe dil bilgisi, kelime dizilimi ve akıcılığa %100 uy. İngilizce'den doğrudan çevrilmiş gibi duran yapay veya ters yapılar ("Özeti [Konu]", "Sözlüğü [Konu]", "Notları [Konu]") KESİNLİKLE kullanma. Her zaman doğal ve düzgün bir Türkçe ile akıcı cümleler kur.
 
@@ -971,16 +971,14 @@ Metni 3 veya 4 ana alt başlığa (Konuya) böl. Her bir alt başlık altında, 
 
 ### ## 🏢 Konu 1: [Birinci Ana Konu Adı] [[İlgili Mevzuat/Sınav Modülü Başlığı]]
 (Bu konunun kapsamını ve önemini açıklayan kısa bir giriş)
-*   **Kavram Tanımları ve Mikro-Senaryolar:** Konu altındaki her bir kritik terimi, resmi yasal tanımıyla (aynen kaynak metinden) ver. Hemen ardından, her bir yasal kuralın/terimin altına günlük hayattan gerçekçi, somut ve **💡 Benzetme** ile en fazla 3-5 cümlelik çok net, somut ve pratik bir **🎬 Mikro-Senaryo / Örnek Olay** yerleştir.
+*   **Kavram Tanımları:** Konu altındaki her bir kritik terimi, resmi yasal tanımıyla (aynen kaynak metinden) ver. KESİNLİKLE hikaye, senaryo veya kurgusal karakterler (Ahmet, Mehmet) uydurma. Sadece saf ve profesyonel mevzuat bilgisini aktar.
     - *Örn format:*
       - **Resmi Terim Adı:** Orijinal yasal tanım cümleleri...
-        - 💡 *Benzetme:* Terimi akılda tutacak günlük hayattan gerçekçi ve somut benzetme.
-        - 🎬 *Mikro-Senaryo - [Kısa Başlık]:* Bu kuralın/sürenin pratikte nasıl işlediğini anlatan 3-5 cümlelik mini olay örgüsü. (⚠️ KESİN KURAL: Başlığın hemen ardına mutlaka iki nokta ve tire ":**" koyarak kalın başlık kapandıktan sonra kelimelerin birbirine yapışmasını engelle! Örn: "🎬 *Mikro-Senaryo - Ali Bey'in İhlali:* Ali Bey...")
 *   📊 **Karşılaştırma / Bilgi Tablosu:** İçerikte karşılaştırılacak kavramlar, süreler, limitler veya kurallar varsa bunları şık bir Markdown tablosuna dök. Tablo için uygun malzeme varsa KESİNLİKLE atlama — ama içerikle alakasız zorlama tablo da ekleme.
 *   🔄 **Süreç Akışı (Mermaid.js):** Konuda kronolojik bir süreç, karar ağacı veya hiyerarşi varsa Mermaid diyagramı çiz. DİKKAT: Sözdizimi hatası olmaması için düğüm metinlerini KESİNLİKLE tırnak içine al (Örn: A["Örnek Metin"]). Görsel zenginlik notun albenisini artırır — fırsat varsa çiz, yoksa zorlama.
 
 ### ## 🏢 Konu 2: [İkinci Ana Konu Adı] [[İlgili Mevzuat/Sınav Modülü Başlığı]]
-(Bu konuya özel tüm yasal tanımlar, senaryolar, tablolar, formüller ve şemalar burada bir arada akacaktır...)
+(Bu konuya özel tüm yasal tanımlar, tablolar, formüller ve şemalar burada bir arada akacaktır...)
 
 ### ## Konu 3: ...
 `}
@@ -1148,7 +1146,7 @@ export async function generateFlashcards(
   - Kart 3: "Hangi durumlarda ihraççı SPK'ya başvurmak zorundadır?" (uygulama)`;
 
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
-  ${getExamIntelligence(aiMode)}
+  ${getExamIntelligence(aiMode, courseName)}
 
   ${instructionLimit}
   SAYFA ARALIĞI: ${pageStart} ile ${pageEnd}. sayfalar arasındaki konu kapsamı.
@@ -1309,7 +1307,7 @@ export async function generateQuestions(
     }
 
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
-${getExamIntelligence(aiMode)}
+${getExamIntelligence(aiMode, courseName)}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"
@@ -1467,7 +1465,7 @@ Tüm kurallara ve şablon formatına %100 uyarak soruları yeniden sıfırdan ü
       console.log(`[YEDEK_GÜÇ] ⚡ Yedek güç devreye giriyor! Test edilmeden geçilen ${backupCount} eksik konu için hedeflenmiş yedek sorular üretiliyor...`)
 
       const backupPrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
-${getExamIntelligence(aiMode)}
+${getExamIntelligence(aiMode, courseName)}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"

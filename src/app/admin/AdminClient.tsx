@@ -969,16 +969,18 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                       {(() => {
                                         const nameToParse = log.courseFullName || log.courseSlug || "";
                                         const parts = nameToParse.includes(" > ") ? nameToParse.split(" > ") : nameToParse.split(" - ");
-                                        const program = parts.length > 2 ? parts[0] : (parts.length === 2 ? parts[0] : (nameToParse || "-"));
-                                        const ders = parts.length > 2 ? parts[1] : (parts.length === 2 ? parts[1] : "-");
+                                        const program = parts.length > 1 ? parts[0] : "-";
+                                        const ders = parts.length > 2 ? parts[1] : (parts.length === 2 ? parts[1] : parts[0] || "-");
                                         const konu = parts.length > 2 ? parts.slice(2).join(" > ") : "-";
                                         
                                         return (
                                           <>
-                                            <div className="text-[10px] text-slate-500 flex items-center gap-1">
-                                              <span className="font-semibold text-slate-400 w-11">Lisans:</span> 
-                                              <span className="truncate max-w-[180px]">{program.trim()}</span>
-                                            </div>
+                                            {program !== "-" && (
+                                              <div className="text-[10px] text-slate-500 flex items-center gap-1">
+                                                <span className="font-semibold text-slate-400 w-11">Lisans:</span> 
+                                                <span className="truncate max-w-[180px]">{program.trim()}</span>
+                                              </div>
+                                            )}
                                             {ders !== "-" && (
                                               <div className="text-[10px] text-indigo-300 flex items-center gap-1">
                                                 <span className="font-semibold text-slate-400 w-11">Ders:</span> 
