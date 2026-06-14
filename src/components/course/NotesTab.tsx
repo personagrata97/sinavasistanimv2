@@ -995,22 +995,56 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                           <BookOpen className="w-3 h-3" /> {section.module}
                         </span>
                       )}
-                      {isAdmin && section.verificationScore != null && section.notes && (
-                        <span 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveScoreSection(section);
-                          }}
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center gap-1 ${
-                            section.verificationScore === -1 ? "bg-slate-500/10 text-slate-400 border border-slate-500/20" :
-                            section.verificationScore >= 95 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-md shadow-emerald-950/20 hover:bg-emerald-500/20" :
-                            section.verificationScore >= 70 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20" :
-                            "bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
-                          }`}
-                        >
-                          <><ShieldCheck className="w-3 h-3" /> {section.verificationScore === -1 ? "Atlandı" : `%${section.verificationScore}`}</>
-                        </span>
-                      )}
+                      {isAdmin && (() => {
+                        let attempt = 1;
+                        let currentMicroPhase = null;
+                        try {
+                          const issues = JSON.parse(section.verificationIssues || "{}");
+                          attempt = issues.currentAttempt || (issues.attemptHistory?.length > 0 ? issues.attemptHistory.length : 1);
+                          currentMicroPhase = issues.currentMicroPhase;
+                        } catch(e) {}
+
+                        const showScore = section.verificationScore != null && section.notes;
+                        const showAttempt = showScore || (!section.processed && attempt > 0);
+
+                        if (!showScore && !currentMicroPhase) return null;
+
+                        return (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* Deneme Badge */}
+                            {showAttempt && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide uppercase bg-amber-500/10 text-amber-500/90 border border-amber-500/20">
+                                Kalite Kontrol: Deneme #{attempt}
+                              </span>
+                            )}
+                            
+                            {/* Score Badge */}
+                            {showScore && (
+                              <span 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveScoreSection(section);
+                                }}
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center gap-1 ${
+                                  section.verificationScore === -1 ? "bg-slate-500/10 text-slate-400 border border-slate-500/20" :
+                                  section.verificationScore >= 95 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-md shadow-emerald-950/20 hover:bg-emerald-500/20" :
+                                  section.verificationScore >= 70 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20" :
+                                  "bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
+                                }`}
+                              >
+                                <ShieldCheck className="w-3 h-3" /> {section.verificationScore === -1 ? "Atlandı" : `Skor: %${section.verificationScore}`}
+                              </span>
+                            )}
+
+                            {/* Live Status Badge */}
+                            {!section.processed && currentMicroPhase && (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide text-blue-400 bg-blue-500/10 border border-blue-500/20 flex items-center gap-1.5 ml-1">
+                                <RefreshCw className="w-3 h-3 animate-spin" /> {currentMicroPhase}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </div>
                     {isAdmin && (
                       <span className="text-[10px] text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full mt-1 inline-block">

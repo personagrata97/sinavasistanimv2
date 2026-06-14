@@ -1531,40 +1531,6 @@ function OverviewTab({
                     <div>
                       <h4 className="text-sm font-bold">{formatTitle(section.title, i, section.notes, section.module)}</h4>
                       {isAdmin && <p className="text-[11px] text-slate-500">Sayfa {section.pageStart}-{section.pageEnd}</p>}
-                      {(() => {
-                        if (!isSectionProcessed && currentVerificationScore !== null && currentVerificationScore !== undefined) {
-                          try {
-                            const issues = typeof currentVerificationIssues === "string" 
-                              ? JSON.parse(currentVerificationIssues) 
-                              : currentVerificationIssues;
-                            
-                            if (issues && issues.currentAttempt) {
-                              return (
-                                <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                    Kalite Kontrol: Deneme #{issues.currentAttempt}
-                                  </span>
-                                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                                    currentVerificationScore >= 95 
-                                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                                      : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                                  }`}>
-                                    Skor: %{currentVerificationScore}
-                                  </span>
-                                  {issues.isCheckingAgain && (
-                                    <span className="text-[9px] text-slate-500 font-medium italic animate-pulse">
-                                      (%95 altında kaldı, baştan optimize ediliyor...)
-                                    </span>
-                                  )}
-                                </div>
-                              )
-                            }
-                          } catch (e) {
-                            return null;
-                          }
-                        }
-                        return null;
-                      })()}
                     </div>
                   </div>
                   <div>

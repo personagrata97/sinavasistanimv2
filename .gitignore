@@ -67,3 +67,4 @@ test-output.txt
 /uploads/
 /public/uploads/
 /public/audio/
+*.log

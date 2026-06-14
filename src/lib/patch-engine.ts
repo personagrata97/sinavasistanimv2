@@ -18,7 +18,8 @@ export async function generateAndInjectPatch(
   markdownContent: string,
   missingFacts: string[],
   fullCourseName: string,
-  rawContent: string
+  rawContent: string,
+  sectionTitle: string
 ): Promise<{ success: boolean; newMarkdown: string; failedFacts: string[] }> {
   console.log(`[PATCH_ENGINE] 🚀 Yama motoru başlatılıyor. Toplam eksik: ${missingFacts.length}`);
 
@@ -54,7 +55,7 @@ export async function generateAndInjectPatch(
 
   // 3. Micro-Finder (Yer Tespit Ajanı)
   console.log(`[PATCH_ENGINE] 🕵️‍♂️ Micro-Finder: Eksik bilgilerin rotası çiziliyor...`);
-  const finderPrompt = `[LOG_CONTEXT: ${fullCourseName} - YER TESPİTİ]
+  const finderPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
 Sen bir yer tespit ajanısın. Aşağıda bir ders notunun "Başlık İskeleti" ve nota eklenmesi unutulmuş "Eksik Bilgiler" listesi var.
 Görev: Her eksik bilginin mantıksal olarak hangi başlığın (ID) altına eklenmesi gerektiğini bul. Eğer hiçbir başlık uygun değilse, tamamen yeni bir alt konuysa ID olarak -1 ver (Evsiz Bilgi).
 
@@ -114,14 +115,30 @@ SADECE şu JSON formatında cevap ver:
   for (const [targetId, facts] of groupedFacts.entries()) {
     console.log(`[PATCH_ENGINE] 🛠️ Düğüm ID: ${targetId} işleniyor. Eklenecek ${facts.length} bilgi var.`);
     
+    const isGlossary = sectionTitle.toLocaleLowerCase('tr-TR').includes("kısaltma") || sectionTitle.toLocaleLowerCase('tr-TR').includes("sözlük");
     const tempAst = remark().parse(currentMarkdown);
     
     if (targetId === -1) {
       // Evsiz Bilgiler (En alta yeni bölüm olarak ekle)
       console.log(`[PATCH_ENGINE] 🏠 Evsiz Bilgi (Orphan Fact) tespiti. Yeni modül üretiliyor...`);
-      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} - YENİ MODÜL]
+      
+      const glossaryConstraints = isGlossary ? `
+🚨 KISALTMALAR / SÖZLÜK BÖLÜMÜ KURALLARI:
+- Bu bölüm bir kısaltma/sözlük listesidir! KESİNLİKLE hikaye, analoji, derin analiz (örn: Kurumsal Yapı Analizi) YAZMA!
+- ASLA MERMAID (AKIŞ ŞEMASI) ÇİZME!
+- Eksik olan bu bilgiyi SADECE mevcut formata uygun, sade bir şekilde listeye/tabloya dahil et.
+` : `gerekirse açıklayıcı bir tablo veya hikaye/analoji içeren profesyonel bir Markdown modülü üret.`;
+
+      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
 Aşağıdaki bilgiler notta tamamen unutulmuş ve eklenecek mevcut bir başlık yok.
-Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık), gerekirse açıklayıcı bir tablo veya hikaye/analoji içeren profesyonel bir Markdown modülü üretmeni istiyorum.
+Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık) bir Markdown modülü üretmeni istiyorum.
+
+${glossaryConstraints}
+
+⚠️ GEÇİCİ TEST KURALI: Eklediğin tüm metinleri ve bilgileri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap. Kesinlikle unutma!
+
+🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
+Eksik bilgileri eklerken kaynak metinde yazar veya dizgi kaynaklı bir hata (Standart/Standard gibi harf, imla veya telaffuz farklılığı) fark edersen, KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Asla "Doğrusu budur" diye ukalalık yapma. SADECE yanlış kanun veya ceza miktarı gibi yasal/sayısal hatalarda parantez içinde uyarı ekleyebilirsin.
 
 EKSİK BİLGİLER:
 ${facts.join('\n')}
@@ -129,7 +146,7 @@ ${facts.join('\n')}
 SADECE EKLENECEK MARKDOWN METNİNİ ÜRET. (Başına ve sonuna json vs yazma, direkt markdown ver).`;
       
       try {
-        const newModule = await callAI(writerPrompt, 1, "cerrahi_yama"); // Hızlı model kullanabiliriz
+        const newModule = await callAI(writerPrompt, 1, "notes_generation"); // Micro-Writer yüksek zekalı model kullanmalı
         currentMarkdown += `\n\n${newModule.trim()}\n`;
         console.log(`[PATCH_ENGINE] ✅ Evsiz modül belge sonuna başarıyla eklendi.`);
       } catch (err) {
@@ -190,7 +207,7 @@ SADECE EKLENECEK MARKDOWN METNİNİ ÜRET. (Başına ve sonuna json vs yazma, di
       
       console.log(`[PATCH_ENGINE] ✂️ Kesit alındı (${originalChunk.length} karakter). Yama ajanına gönderiliyor...`);
 
-      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} - CERRAHİ YAMA]
+      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
 Sen bir cerrahi yama (surgical patch) uzmanısın. Ders notunun belli bir paragrafı (Mevcut Metin) ve oraya ustaca kaynaştırılması gereken yeni bilgiler (Eksik Bilgiler) sana veriliyor.
 
 MEVCUT KESİT:
@@ -204,11 +221,16 @@ GÖREV: Mevcut kesiti al, eksik bilgileri içine kusursuzca (sanki ilk seferde y
 - Eksik bilgi bir süreç/hiyerarşi gerektiriyorsa şema (mermaid) kullanabilirsin, tanım gerektiriyorsa tabloya ekleyebilirsin veya sadece doğal bir paragraf olarak yedirebilirsin.
 - Eksik bilgiyi körü körüne sonuna yapıştırma, mantıklı olan yere yedir.
 
+🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
+Eksik bilgileri eklerken kaynak metinde yazar veya dizgi kaynaklı bir hata (Standart/Standard gibi harf, imla veya telaffuz farklılığı) fark edersen, KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Asla "Doğrusu budur" diye ukalalık yapma. SADECE yanlış kanun veya ceza miktarı gibi yasal/sayısal hatalarda parantez içinde uyarı ekleyebilirsin.
+
+⚠️ GEÇİCİ TEST KURALI: Cümlelerin akışını bozmadan, içine yedirdiğin ve yeni eklediğin tüm kelimeleri/cümleleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkte parlamasını sağla. Mevcut kesitteki orijinal metinlere bu etiketi ekleme.
+
 SADECE yenilenmiş kesiti Markdown formatında ver. Başka hiçbir açıklama yazma.
 `;
 
       try {
-        let patchedChunk = await callAI(writerPrompt, 1, "cerrahi_yama");
+        let patchedChunk = await callAI(writerPrompt, 1, "notes_generation");
         patchedChunk = patchedChunk.replace(/^```markdown/g, '').replace(/```$/g, '').trim();
         
         // String değişimi

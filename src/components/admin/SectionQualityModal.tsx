@@ -54,6 +54,8 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const suggestions = issuesObj.suggestions || []
   const attemptHistory = issuesObj.attemptHistory || []
   const actualAttempt = issuesObj.currentAttempt || (attemptHistory.length > 0 ? attemptHistory.length : 1)
+  const currentMicroPhase = issuesObj.currentMicroPhase || null
+  const isProcessing = !section.processed && currentMicroPhase != null
   const hasMufettisPassed = score === 100 || issuesObj.auditResult?.passed === true || issuesObj.auditResult?.passed === "true"
 
   const kontrolorMissing = allMissingTopics.filter((t: string) => !t.includes("[MÜFETTİŞ"))
@@ -63,9 +65,23 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const mufettisIssues = allValidationIssues.filter((t: string) => t.includes("[MÜFETTİŞ"))
 
   const hasKontrolorIssues = kontrolorMissing.length > 0 || kontrolorIssues.length > 0 || suggestions.length > 0
-  // Müfettiş hatası var mı? (Eski auditResult mantığı veya yeni prefix mantığı)
   const hasMufettisIssues = (mufettisMissing.length > 0 || mufettisIssues.length > 0) || (issuesObj.auditResult?.missingDetails?.length > 0) || (issuesObj.auditResult?.contradictions?.length > 0)
   const hasAnyIssues = hasKontrolorIssues || hasMufettisIssues
+
+  // Live Sync Stepper Logic
+  const strPhase = currentMicroPhase ? currentMicroPhase.toLowerCase() : "";
+  const isLiveUretim = isProcessing && (strPhase.includes("üretiliyor") || strPhase.includes("generation"));
+  const isLiveKontrolor = isProcessing && (strPhase.includes("kalite kontrolörü") || strPhase.includes("değerlendiriyor") || strPhase.includes("puanlıyor"));
+  const isLiveMufettis = isProcessing && (strPhase.includes("müfettiş") || strPhase.includes("denetim"));
+  const isLiveYama = isProcessing && (strPhase.includes("cerrahi yama") || strPhase.includes("ast") || strPhase.includes("patch"));
+
+  const isKontrolorPulsing = isLiveKontrolor || (!isProcessing && !isSkipped && !isExcellent && !hasMufettisIssues && !hasMufettisPassed);
+  const isKontrolorCompleted = isSkipped || isLiveMufettis || isLiveYama || isExcellent || hasMufettisPassed || hasMufettisIssues;
+  
+  const isMufettisPulsing = isLiveMufettis || (!isProcessing && isExcellent && !hasMufettisPassed && !hasMufettisIssues);
+  const isMufettisCompleted = isSkipped || isLiveYama || hasMufettisPassed || hasMufettisIssues;
+
+  const isYamaPulsing = isLiveYama || (!isProcessing && hasMufettisIssues && !hasMufettisPassed);
 
   return (
     <Modal
@@ -137,22 +153,24 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             <div className="flex flex-col items-center gap-2 z-10 w-20">
               <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
                 isSkipped ? "bg-slate-500/10 border-slate-500/50 text-slate-400" :
-                isExcellent ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
-                "bg-amber-500/10 border-amber-500/50 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.15)] animate-pulse"
+                isKontrolorCompleted ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
+                isKontrolorPulsing ? "bg-amber-500/10 border-amber-500/50 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.15)] animate-pulse" :
+                "bg-white/[0.02] border-white/[0.05] text-slate-600"
               }`}>
                 <Bot className="w-4 h-4" />
               </div>
               <span className={`text-[9px] font-black tracking-widest uppercase text-center leading-tight ${
                 isSkipped ? "text-slate-500" :
-                isExcellent ? "text-emerald-500" :
-                "text-amber-500"
-              }`}>Kontrolör<br/><span className="text-[7px] text-slate-500 opacity-70">(+ Ground Truth)</span></span>
+                isKontrolorCompleted ? "text-emerald-500" :
+                isKontrolorPulsing ? "text-amber-500" :
+                "text-slate-600"
+              }`}>Kontrolör<br/><span className="text-[7px] opacity-70">(+ Ground Truth)</span></span>
             </div>
 
             {/* Line 2 -> 3 */}
             <div className="flex-1 h-0.5 mt-4 mx-1 bg-white/[0.05] rounded-full relative overflow-hidden">
               <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-emerald-500 to-blue-500 transition-all duration-1000" style={{
-                width: isSkipped ? "100%" : hasMufettisPassed ? "100%" : isExcellent ? "50%" : "0%",
+                width: isSkipped ? "100%" : isMufettisCompleted ? "100%" : isMufettisPulsing ? "50%" : "0%",
                 opacity: isSkipped ? 0.3 : 1,
                 filter: isSkipped ? "grayscale(100%)" : "none"
               }} />
@@ -162,18 +180,18 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             <div className="flex flex-col items-center gap-2 z-10 w-16">
               <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
                 isSkipped ? "bg-slate-500/10 border-slate-500/50 text-slate-400" :
-                hasMufettisPassed ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
-                hasMufettisIssues ? "bg-red-500/10 border-red-500/50 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.15)] animate-pulse" :
-                isExcellent ? "bg-blue-500/10 border-blue-500/50 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse" :
+                hasMufettisPassed && !isProcessing ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
+                isMufettisCompleted ? "bg-red-500/10 border-red-500/50 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.15)]" :
+                isMufettisPulsing ? "bg-blue-500/10 border-blue-500/50 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse" :
                 "bg-white/[0.02] border-white/[0.05] text-slate-600"
               }`}>
                 <ShieldCheck className="w-4 h-4" />
               </div>
               <span className={`text-[9px] font-black tracking-widest uppercase text-center ${
                 isSkipped ? "text-slate-500" :
-                hasMufettisPassed ? "text-emerald-500" :
-                hasMufettisIssues ? "text-red-500" :
-                isExcellent ? "text-blue-500" :
+                hasMufettisPassed && !isProcessing ? "text-emerald-500" :
+                isMufettisCompleted ? "text-red-500" :
+                isMufettisPulsing ? "text-blue-500" :
                 "text-slate-600"
               }`}>Müfettiş</span>
             </div>
@@ -181,7 +199,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             {/* Line 3 -> 4 */}
             <div className="flex-1 h-0.5 mt-4 mx-1 bg-white/[0.05] rounded-full relative overflow-hidden">
               <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-1000" style={{
-                width: hasMufettisIssues ? "100%" : "0%",
+                width: isMufettisCompleted && (isYamaPulsing || (!isProcessing && hasMufettisIssues)) ? "100%" : "0%",
                 opacity: 1
               }} />
             </div>
@@ -189,13 +207,14 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             {/* Step 4: Cerrahi Yama */}
             <div className="flex flex-col items-center gap-2 z-10 w-16">
               <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
-                hasMufettisIssues ? "bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.15)] animate-pulse" :
+                isYamaPulsing ? "bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.15)] animate-pulse" :
+                (!isProcessing && hasMufettisIssues) ? "bg-purple-500/10 border-purple-500/50 text-purple-400" :
                 "bg-white/[0.02] border-white/[0.05] text-slate-600"
               }`}>
                 <Sparkles className="w-4 h-4" />
               </div>
               <span className={`text-[9px] font-black tracking-widest uppercase text-center ${
-                hasMufettisIssues ? "text-purple-500" :
+                isYamaPulsing || (!isProcessing && hasMufettisIssues) ? "text-purple-500" :
                 "text-slate-600"
               }`}>Cerrahi<br/>Yama</span>
             </div>
@@ -204,19 +223,38 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
           {/* Status Label (Current Attempt or Pass status) */}
           <div className="mt-5 text-center flex justify-center">
             <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+              isProcessing ? "bg-blue-500/10 text-blue-400 border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse" :
               isSkipped ? "bg-slate-500/5 text-slate-400 border-slate-500/20" :
               hasMufettisPassed ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5" :
               hasMufettisIssues ? "bg-red-500/10 text-red-400 border-red-500/20" :
               isExcellent ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
               "bg-amber-500/10 text-amber-400 border-amber-500/20"
             }`}>
-              {isSkipped ? "DOĞRULAMA BYPASS EDİLDİ" :
-                hasMufettisPassed ? ( actualAttempt === 1 ? "ONAYLANDI (1. TUR)" : `ONAYLANDI (${actualAttempt}. TUR)` ) :
-                hasMufettisIssues ? "ONAYDAN GEÇMEDİ (EKSİKLER VAR)" :
-                isExcellent ? "MÜFETTİŞ (İNSAN) ONAYI BEKLENİYOR" :
-                `${actualAttempt}. KALİTE DÖNGÜSÜ DEVAM EDİYOR`}
+              {isProcessing ? "YAPAY ZEKA MOTORU ÇALIŞIYOR" :
+               isSkipped ? "DOĞRULAMA BYPASS EDİLDİ" :
+               hasMufettisPassed ? ( actualAttempt === 1 ? "ONAYLANDI (1. TUR)" : `ONAYLANDI (${actualAttempt}. TUR)` ) :
+               hasMufettisIssues ? "ONAYDAN GEÇMEDİ (EKSİKLER VAR)" :
+               isExcellent ? "MÜFETTİŞ (İNSAN) ONAYI BEKLENİYOR" :
+               `${actualAttempt}. KALİTE DÖNGÜSÜ DEVAM EDİYOR`}
             </div>
           </div>
+          
+          {/* Live Operation Radar */}
+          {isProcessing && (
+            <div className="mt-4 p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 text-left flex items-start gap-3">
+              <RefreshCw className="w-5 h-5 text-blue-400 animate-spin shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping"></span>
+                  CANLI OPERASYON MERKEZİ
+                </h4>
+                <p className="text-[11px] text-blue-300/80 font-medium leading-relaxed">
+                  Şu anda Arka Plan Yapay Zeka Motoru devrede. Canlı durum: <br />
+                  <span className="text-white font-bold">{currentMicroPhase}</span>
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {hasKontrolorIssues && (

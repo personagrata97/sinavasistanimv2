@@ -32,8 +32,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Sadece PDF dosyaları kabul edilir." }, { status: 400 })
     }
 
-    // Güvenlik: Dosya boyutu kontrolü (maks 150MB - Sadece Admin)
-    const MAX_FILE_SIZE = 150 * 1024 * 1024 // 150MB
+    // Güvenlik: Dosya boyutu kontrolü (maks 50MB - Sadece Admin)
+    const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json({ error: `Dosya boyutu çok büyük. Maksimum ${MAX_FILE_SIZE / 1024 / 1024}MB desteklenmektedir.` }, { status: 400 })
     }

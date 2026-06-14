@@ -1,45 +1,17 @@
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../src/lib/prisma';
 
-const prisma = new PrismaClient();
-
-async function checkStatus() {
-  const courses = await prisma.course.findMany({
-    include: {
-      sections: {
-        select: {
-          id: true,
-          title: true,
-          processed: true,
-          verificationScore: true,
-          verificationIssues: true
-        }
-      }
-    }
+async function run() {
+  const course = await prisma.course.findUnique({
+    where: { slug: 'bd-bilgi-sistemleri-guvenligi' },
+    select: { status: true, processedPages: true, totalPages: true, name: true, _count: { select: { flashcards: true, questions: true, sections: true } } }
   });
-
-  const targetCourses = courses.filter((c: any) => c.name.toLowerCase().includes("bilgi sistem"));
-
-  if (targetCourses.length === 0) {
-    console.log("Bilgi Sistemleri ile ilgili kurs bulunamadı.");
-  } else {
-    targetCourses.forEach((c: any) => {
-      console.log(`\nKurs: ${c.name} (Slug: ${c.slug}) | Status: ${c.status}`);
-      const processedCount = c.sections.filter((s: any) => s.processed).length;
-      console.log(`Bölümler: ${processedCount}/${c.sections.length} tamamlandı.`);
-      
-      c.sections.forEach((s: any) => {
-        let phase = "";
-        try {
-           if (s.verificationIssues) {
-              const issues = JSON.parse(s.verificationIssues);
-              if (issues.currentMicroPhase) phase = ` [${issues.currentMicroPhase}]`;
-           }
-        } catch(e) {}
-
-        console.log(`  - ${s.processed ? '[TAMAMLANDI]' : '[BEKLİYOR]'} ${s.title} (Score: ${s.verificationScore || 'N/A'})${phase}`);
-      });
-    });
-  }
+  console.log("Course status:", course);
+  
+  const sections = await prisma.section.findMany({
+    where: { courseId: course?.id }
+  });
+  console.log("Sections count:", sections.length);
+  const processedCount = sections.filter(s => s.processed).length;
+  console.log("Processed sections:", processedCount);
 }
-
-checkStatus().catch(console.error).finally(() => prisma.$disconnect());
+run().catch(console.error);

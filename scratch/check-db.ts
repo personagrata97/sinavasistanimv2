@@ -1,26 +1,19 @@
-import { PrismaClient } from '@prisma/client'
-const prisma = new PrismaClient()
+import { prisma } from '../src/lib/prisma';
 
-async function main() {
-  const course = await prisma.course.findFirst({
+async function run() {
+  const course = await prisma.course.findUnique({
     where: { slug: 'bd-bilgi-sistemleri-guvenligi' },
     include: {
-      sections: {
-        select: { id: true, title: true, status: true, qualityScore: true }
+      _count: {
+        select: { flashcards: true, questions: true }
       }
     }
-  })
+  });
+  console.log("Course _count:", course?._count);
   
-  if (!course) {
-    console.log("Course not found");
-    return;
-  }
-  
-  console.log(`Course Status: ${course.status}`);
-  console.log("Sections:");
-  course.sections.forEach((s, i) => {
-    console.log(`${i+1}. ${s.title}: ${s.status} (Score: ${s.qualityScore})`);
-  })
+  const totalCards = await prisma.flashcard.count({ where: { courseId: course?.id } });
+  const totalQuestions = await prisma.question.count({ where: { courseId: course?.id } });
+  console.log("Actual flashcards count:", totalCards);
+  console.log("Actual questions count:", totalQuestions);
 }
-
-main().catch(console.error).finally(() => prisma.$disconnect())
+run().catch(console.error);

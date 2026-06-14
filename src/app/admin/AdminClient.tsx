@@ -993,7 +993,9 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                               <div className="text-[10px] text-emerald-400/80 flex items-center gap-1">
                                                 <span className="font-semibold text-slate-400 w-11">Konu:</span> 
                                                 <Tooltip content={konu.trim()}>
-                                                  <span className="truncate max-w-[180px] cursor-help">{konu.trim()}</span>
+                                                  <span className="truncate max-w-[180px] cursor-help">
+                                                    {konu.trim().split(' ').map(w => w.charAt(0).toLocaleUpperCase('tr-TR') + w.slice(1).toLocaleLowerCase('tr-TR')).join(' ')}
+                                                  </span>
                                                 </Tooltip>
                                               </div>
                                             )}

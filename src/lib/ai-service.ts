@@ -156,7 +156,7 @@ ${modeSpecificRules}
 3. ⚠️ KESİN KURAL: GEREKSİZ GİRİŞ/ÇIKIŞ CÜMLELERİ KESİNLİKLE YASAKTIR: "İşte notlarınız", "Başarılar dilerim", "Önemli noktalar şunlardır" gibi yapay zeka gevezelikleri KESİNLİKLE YAPMAYIN. Doğrudan bilgiye girin.
 - META KELİMELER YASAKTIR: Cümlelerinizde "Kaynak metinde...", "Bu PDF'te...", "Orijinal dokümana göre...", "Sunulan metin...", "Ders notunda..." gibi dışarıdan okunduğunda yapay duran kalıpları KESİNLİKLE KULLANMAYIN. Sanki o kitabı doğrudan siz yazmışsınız gibi birinci ağızdan otoriter ve net olun.
 - 🛠️ OCR VE HARF HATALARI KURALI (ÇOK KRİTİK): Optik okuma kaynaklı saçma boşlukları (örn: "W ireless F idelity", "B anka") GERÇEK BİR HATA SANIP ASLA UYARI DÜŞMEYİN, bunları sessizce "Wireless Fidelity" olarak düzeltin.
-- ⚠️ GERÇEK YAZIM/BİLGİ HATASI KURALI: Sadece kurumun orijinal metnindeki "gerçek" harf hatalarını veya yasal çelişkileri (örn: "Asynchronous" yazması gerekirken "Asynchrous" yazması) KESİNLİKLE yakalayın ve vurgulayın. Ancak bunu yaparken ASLA "kaynak metin", "pdf" gibi kelimeler kullanmayın. Uyarıyı şu profesyonel şablonla verin: "(⚠️ Önemli Detay: ${courseName ? `${courseName.split(">")[0]?.trim()} kaynak notlarında` : "Sınavın kaynak notlarında"} bu terim [Hatalı Hal] olarak geçmektedir, ancak literatürdeki/mevzuattaki doğrusu [Doğru Hal] şeklindedir.)"
+- ⚠️ GERÇEK YAZIM/BİLGİ HATASI (INLINE) KURALI: Sadece kurumun orijinal metnindeki "gerçek" harf hatalarını veya yasal çelişkileri (örn: "Asynchronous" yazması gerekirken "Asynchrous" yazması) KESİNLİKLE yakalayın ve vurgulayın. Ancak bu uyarıyı KESİNLİKLE belgenin en altına toplu bir liste olarak ("Ekstra Dikkat Edilmesi Gereken Hususlar" vb.) YAZMAYIN. İlgili kavramın/kısaltmanın açıklandığı cümlenin veya tablodaki satırın hemen yanına iliştirin (satır içi uyarı). Uyarıyı şu profesyonel şablonla verin: "(⚠️ Önemli Detay: ${courseName ? `${courseName.split(">")[0]?.trim()} kaynak notlarında` : "Sınavın kaynak notlarında"} bu terim [Hatalı Hal] olarak geçmektedir, ancak literatürdeki/mevzuattaki doğrusu [Doğru Hal] şeklindedir.)"
 4. Bir formül veya rakam kaynak metinde yoksa, onu soru/not/karta KOYMA.
 5. "Kesin çıkar", "muhakkak sorulur" gibi doğrulanamayan ifadeler KULLANMA.
 6. Günlük hayattan verilecek örnekler ve hikayeler (senaryolar) mantıksal kurallara, finansal ve hukuki gerçekliğe %100 uygun olmalıdır. Örnekler hem akılda kalıcı hem de mantıken/hukuken kusursuz olmalıdır.
@@ -308,7 +308,7 @@ export function extractCleanJson(raw: string): any {
 }
 
 // ==================== PRISTINE MARKDOWN OCR (GÖZCÜ KATMANI) ====================
-export async function extractPerfectMarkdownOCR(fileUrisInput: string | null, pageStart: number, pageEnd: number): Promise<string> {
+export async function extractPerfectMarkdownOCR(fileUrisInput: string | null, pageStart: number, pageEnd: number, courseName: string = "PDF Okuma (OCR)"): Promise<string> {
   const prompt = `Ekteki PDF dosyasının ${pageStart} ile ${pageEnd}. sayfaları arasındaki TÜM İÇERİĞİ (metin, tablo, şema, resim, grafik) detaylıca okuyup kusursuz bir Markdown metnine çevir.
 Kurallar:
 1. Hiçbir cümleyi, tabloyu veya listeyi atlama. Her detayı koru.
@@ -376,7 +376,7 @@ Kurallar:
             apiKey: `Key #${currentKeyIndex + 1}`,
             model: "gemini-2.5-flash",
             operation: "ocr_extraction",
-            courseSlug: "PDF Okuma (OCR)",
+            courseSlug: courseName,
             status: "SUCCESS",
             durationMs: Date.now() - startTime
           }
@@ -399,7 +399,7 @@ Kurallar:
           apiKey: `Key #${currentKeyIndex + 1}`,
           model: "gemini-2.5-flash",
           operation: "ocr_extraction",
-          courseSlug: "PDF Okuma (OCR)",
+          courseSlug: courseName,
           status: errStatus,
           durationMs: Date.now() - startTime
         }
@@ -724,8 +724,8 @@ export async function generateCourseNotes(
   previousContext?: string
 ): Promise<string> {
   // (OCR ŞART olduğu için fileUri asla iptal edilmez)
-  const isBibliography = sectionTitle.toLowerCase().includes("kaynakça") || sectionTitle.toLowerCase().includes("referans") || sectionTitle.toLowerCase().includes("bibliography")
-  const isGlossary = sectionTitle.toLowerCase().includes("kısaltma") || sectionTitle.toLowerCase().includes("terimler") || sectionTitle.toLowerCase().includes("sözlük") || sectionTitle.toLowerCase().includes("glossary")
+  const isBibliography = sectionTitle.toLocaleLowerCase('tr-TR').includes("kaynakça") || sectionTitle.toLocaleLowerCase('tr-TR').includes("referans") || sectionTitle.toLocaleLowerCase('tr-TR').includes("bibliography")
+  const isGlossary = sectionTitle.toLocaleLowerCase('tr-TR').includes("kısaltma") || sectionTitle.toLocaleLowerCase('tr-TR').includes("terimler") || sectionTitle.toLocaleLowerCase('tr-TR').includes("sözlük") || sectionTitle.toLocaleLowerCase('tr-TR').includes("glossary")
 
   // Çıktı limiti 65536 token'a yükseltildiği için tüm bölümler 15000 karaktere kadar
   // tek seferde işlenebilir. Bu, parça birleştirme sırasında oluşan içerik kaybını tamamen önler.
@@ -908,6 +908,11 @@ ${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diy
    - Listeler → **Madde işaretli liste**
 4. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
 5. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
+6. 🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
+   Kaynak metinde yazar veya dizgi kaynaklı bir hata fark edersen, şu filtreye göre davran:
+   - A) TRIVIAL (Önemsiz/Şekilsel) Hatalar: Harf eksikliği, imla hatası, İngilizce-Türkçe kelime veya telaffuz farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous'). KURAL: Bunlar için KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Trivial hataların varlığını tamamen yok say, "Dikkat: kaynakta şu kelime yanlış yazılmış" diyerek metnin hiçbir yerinde liste yapma!
+   - B) CRITICAL (Kritik/Yasal) Hatalar: Yanlış kanun numarası (610 yerine 6102), yanlış ceza miktarı, yanlış tarih. KURAL: Sadece bu tür öğrenciye sınav kaybettirecek hayati/yasal hatalarda kaynağı aynen yazıp hemen yanına *(Not: Mevzuata göre doğrusu şudur)* diye kısa ve öz bir uyarı ekle. KESİNLİKLE sayfa sonuna ayrı bir başlık açma, uyarıyı kelimenin geçtiği yerde parantez içinde yap.
+${isGlossary ? '6.5 ⚠️ SÖZLÜK/KISALTMA KURALI: Bu sayfa sadece bir sözlük olduğu için ASLA en alta "Ekstra Dikkat Edilmesi Gereken Hususlar", "Özet", "Analiz" gibi ek başlıklar AÇMA! Sadece listeyi/tabloyu ver ve bitir.' : ''}
 6. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
 7. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
 8. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR). Asla hikayeleştirme veya laubali senaryolar uydurma.
@@ -1728,6 +1733,9 @@ PUAN KIRAN DURUMLAR VE ASİMETRİK CEZA MATEMATİĞİ (KESİN KURAL):
 PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL):
 - Tanımın kendi cümleleriyle basitleştirilerek veya eşanlamlı kelimelerle anlatılması (Birebir kelime ezberi arama!) ✅
 - Eğlenceli örnekler, hikayeler, benzetmeler eklenmesi ✅
+- 🚨 KAYNAK HATASI YÖNETİMİ (TRIVIAL vs CRITICAL):
+  - A) Trivial (Şekilsel) Hatalar: Yazarın, kaynak metindeki basit bir harf/imla/telaffuz hatasını (örn: 'Standard' yerine 'Standart', Asynchronous yerine Asynchrous) KESİNLİKLE düzeltmemesi ve uyarı eklememesi BEKLENEN KURALDIR. Yazarın kaynağa birebir sadık kalıp "Standart" olarak bırakması BİR HATA DEĞİLDİR! "Yazar bunu düzeltmemiş, kaynak hatası notlara aktarılmış" DİYEREK KESİNLİKLE PUAN KIRMA, bunu "issues" listesine ASLA YAZMA!
+  - B) Critical (Yasal/Sayısal) Hatalar: Kaynaktaki yanlış kanun numarası (610 yerine 6102) gibi hayati hataların yazar tarafından "Not: Mevzuata göre doğrusu şudur" diye düzeltilmesi takdir edilir ve ceza sebebi değildir.
 - İçeriğin farklı sırayla organize edilmesi ✅
 - Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
 - Kaynak metindeki dolgu cümlelerinin atlanması ✅

@@ -1,0 +1,45 @@
+=== CONVERSATION 1: d875... (Ended 19:26) ===
+Other open documents:
+- /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+</ADDITIONAL_METADATA>
+<USER_REQUEST>
+TOOLTİPLER AÇILIR FİLTRELER VS MERKEEZİ BİLEŞEN OLSUN BAK GÖZDEN KAÇMASIN TARAYICI FİLTRESİ TOOLTİPİ İSTEMİYORUM
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-12T19:24:20+03:00.
+
+The user's current state is as follows:
+Active Document: /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+Cursor is on line: 1
+Other open documents:
+- /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+</ADDITIONAL_METADATA>
+
+=== CONVERSATION 2: 7a8d... (Ended 19:45) ===
+<USER_REQUEST>
+orda mısın
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-12T19:44:57+03:00.
+
+The user's current state is as follows:
+Active Document: /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+Cursor is on line: 1
+Other open documents:
+- /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Gemini 3.1 Pro (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>
+
+=== CONVERSATION 3: 9705... (CURRENT) ===
+<USER_REQUEST>
+OLUMHALA VERİFİCATİON GENERATİON YAZIYOR TÜRKÇE YAZ LAN! AYRICA HANGİ SINAV VE HANGİ DERS???? "Kota Aşımı (429) limit dolduğunda dinlenmeye çekildiğini, Erişim Engeli (403) ise anahtarın geçersiz olduğunu gösterir." ANAHTAR GEÇERSİZ NE DEMEK ABİ GEÇERSİZCE HİÇ KULLANAMAYIZ MANTIKEN. ADAM GİBİ YAZ O CÜMLEYİ İSİMLENDİRMELERİ. NEYE ERİŞİM ENGELİ. TOOLTİPLER AÇILIR FİLTRELER VS MERKEEZİ BİLEŞEN OLSUN BAK GÖZDEN KAÇMASIN TARAYICI FİLTRESİ TOOLTİPİ İSTEMİYORUM. PAGETTOLBAR SAYFADAKİ HER LEYİ KAPSIYOR MU? AYRICA SKORKARTLSRDA KALAN LİMİT VS GÖRÜNSE DOLULUK GİBİ ŞIK ŞEKİLDE
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-12T19:46:41+03:00.
+
+The user's current state is as follows:
+Active Document: /Users/selimkaya/.gemini/antigravity/scratch/spl-study-assistant-v2/src/components/course/PremiumMarkdownRenderer.tsx (LANGUAGE_TSX)
+Cursor is on line: 1
+Other open documents:
