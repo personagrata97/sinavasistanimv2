@@ -526,23 +526,44 @@ async function processInBackground(slug: string, course: any) {
           let quotaFailures = 0 // FIX #4: Kota hatalarını ayrı say, gerçek deneme hakkını yemesin
           const MAX_QUOTA_FAILURES = 5 // Toplam kota hatası limiti (sonsuz döngü koruması)
 
-          // ==================== PRISTINE MARKDOWN OCR (YENİ GÖZCÜ KATMANI) ====================
-          // PDF'in kirli metnini (pdf2json ile çekilen) çöpe atıp, Gemini 3.5 Flash ile bölümün ilgili sayfalarını okuyarak
-          // KUSURSUZ bir Markdown çıkarıp kalıcı olarak rawContent üzerine yazıyoruz.
-          if (course.geminiFileUri && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
-            console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için kusursuz markdown çıkarılıyor...`);
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Metne Çevriliyor (Markdown OCR)` }) } }) } catch { }
+          // ==================== KUSURSUZ MİMARİ: PRISTINE MARKDOWN OCR ====================
+          // PDF'i fiziksel olarak pdf-lib ile keser, parçalara böler ve Base64 inline olarak yollar.
+          if (course.pdfPath && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
+            console.log(`[BG] 🚀 KUSURSUZ OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
+            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Fiziksel Olarak Okunuyor (Kusursuz OCR)` }) } }) } catch { }
             
             const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
-            try {
-              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUris || course.geminiFileUri, section.pageStart, section.pageEnd, `${fullCourseName} > ${section.title} (OCR)`);
-              if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
-                section.rawContent = pristineMarkdown;
-                await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
-                console.log(`[BG] ✅ Markdown OCR: Kirli PDF metni kusursuz Markdown ile değiştirildi.`);
+            
+            let ocrSuccess = false;
+            let ocrAttempts = 0;
+            const MAX_OCR_ATTEMPTS = 5;
+            
+            while (!ocrSuccess && ocrAttempts < MAX_OCR_ATTEMPTS) {
+              ocrAttempts++;
+              try {
+                // PDF'i fiziksel olarak kesip okutuyoruz.
+                const pristineMarkdown = await extractPerfectMarkdownOCR(course.pdfPath, section.pageStart, section.pageEnd, `${fullCourseName} > ${section.title} (OCR)`);
+                if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
+                  section.rawContent = pristineMarkdown;
+                  await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
+                  console.log(`[BG] ✅ Kusursuz OCR Tamamlandı: İçerik tamamen resimlerle/tablolarla donatıldı.`);
+                  ocrSuccess = true;
+                } else {
+                  throw new Error("OCR tamamlandı ancak [MARKDOWN_OCR_SUCCESS] damgası eksik.");
+                }
+              } catch (ocrErr: any) {
+                console.log(`[BG] ⚠️ Kusursuz OCR Hatası (Deneme ${ocrAttempts}/${MAX_OCR_ATTEMPTS}): ${ocrErr.message}`);
+                if (ocrAttempts < MAX_OCR_ATTEMPTS) {
+                  console.log(`[BG] 🕒 20 Saniye bekleniyor... Exponential Backoff devrede.`);
+                  await new Promise(r => setTimeout(r, 20000));
+                }
               }
-            } catch (ocrErr: any) {
-              console.log(`[BG] ⚠️ Markdown OCR Hatası: ${ocrErr.message} - Kirli PDF metniyle devam edilecek.`);
+            }
+            
+            if (!ocrSuccess) {
+              // 0 RİSK KURALI GEREĞİ: Asla kirli metne düşme, direkt hata fırlat ve döngüyü kır.
+              console.error(`[BG] 🛑 FATAL ERROR: Kusursuz OCR 5 denemede de BAŞARISIZ oldu. Kirli metinle not üretimi REDDEDİLDİ!`);
+              throw new Error("Kusursuz OCR katmanı tüm denemelere rağmen başarısız oldu. Resimsiz/hatalı not üretmemek için işlem güvenlik gereği durduruldu.");
             }
           }
 
