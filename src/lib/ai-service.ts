@@ -432,44 +432,7 @@ Kurallar:
 
   return `[MARKDOWN_OCR_SUCCESS]\n\n${finalMarkdown.trim()}`;
 }
- catch (e: any) {
-      lastError = e;
-      console.warn(`[MARKDOWN_OCR] Key #${currentKeyIndex + 1} başarısız: ${e.message?.substring(0, 100)}`);
 
-      const errMsg = e.message || "";
-      let errStatus = "ERROR";
-      if (errMsg.includes("429") || errMsg.includes("503") || errMsg.includes("quota")) errStatus = "RATE_LIMIT_429";
-      else if (errMsg.includes("403") || errMsg.includes("API key not valid")) errStatus = "FORBIDDEN_403";
-
-      prisma.apiUsageLog.create({
-        data: {
-          apiKey: `Key #${currentKeyIndex + 1}`,
-          model: "gemini-2.5-flash",
-          operation: "ocr_extraction",
-          courseSlug: courseName,
-          status: errStatus,
-          durationMs: Date.now() - startTime
-        }
-      }).catch(() => {})
-
-      const isSuspended = errStatus === "FORBIDDEN_403";
-      if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now());
-
-      const isQuotaError = errStatus === "RATE_LIMIT_429";
-      if (isQuotaError) suspendedKeys.set(currentKeyIndex, Date.now());
-    }
-
-    // Sonraki anahtara geç
-    const nextKey = rotateToNextKey();
-    if (!nextKey || currentKeyIndex === startKeyIndex) {
-      triedAllKeys = true;
-    } else {
-      await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-
-  throw new Error(`OCR başarısız: Tüm anahtarlar denendi. Son hata: ${lastError?.message || "Bilinmiyor"}`);
-}
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
 export async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" | "kontrolor" | "ground_truth" | "mufettis" | "cerrahi_yama" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
