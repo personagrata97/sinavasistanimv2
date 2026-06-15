@@ -535,7 +535,7 @@ async function processInBackground(slug: string, course: any) {
             
             const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
             try {
-              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUris || course.geminiFileUri, section.pageStart, section.pageEnd, `${fullCourseName} > PDF OKUMA (OCR)`);
+              const pristineMarkdown = await extractPerfectMarkdownOCR(course.geminiFileUris || course.geminiFileUri, section.pageStart, section.pageEnd, `${fullCourseName} > ${section.title} (OCR)`);
               if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
                 section.rawContent = pristineMarkdown;
                 await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
@@ -1061,12 +1061,12 @@ async function processInBackground(slug: string, course: any) {
                 else await new Promise(r => setTimeout(r, 10000))
               }
             }
-            await new Promise(r => setTimeout(r, 5000))
+            await new Promise(r => setTimeout(r, 15000))
 
             // Bölüm analizi yap
             try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Üretimi İçin Bilişsel Rotalama Yapılıyor...` }) } }) } catch { }
             analysis = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
-            await new Promise(r => setTimeout(r, 5000))
+            await new Promise(r => setTimeout(r, 15000))
 
             requiresQuestions = analysis?.requiresQuestions !== false; // Default to true if missing
 
@@ -1120,7 +1120,7 @@ async function processInBackground(slug: string, course: any) {
                   else await new Promise(r => setTimeout(r, 10000))
                 }
               }
-              await new Promise(r => setTimeout(r, 5000))
+              await new Promise(r => setTimeout(r, 15000))
             }
 
             // Başlığı iyileştir
