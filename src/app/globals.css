@@ -299,6 +299,18 @@ body {
 /* ==================== RESPONSIVE ==================== */
 
 /* Mobile-first responsive system */
+.prose table {
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+@media (min-width: 640px) {
+  .prose table {
+    white-space: normal;
+  }
+}
+
 @media (max-width: 640px) {
   /* Tab bar compact mode */
   nav[role="tablist"] {

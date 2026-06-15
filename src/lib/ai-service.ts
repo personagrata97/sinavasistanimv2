@@ -560,7 +560,7 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
 // ==================== SECTION ANALYSIS ====================
 
 export async function analyzeSectionContent(content: string, sectionTitle: string, aiMode: string = "general", courseName: string = "") {
-  const MAX_CONTENT_CHARS = 50000
+  const MAX_CONTENT_CHARS = 150000
   const truncated = content.length > MAX_CONTENT_CHARS
     ? content.substring(0, MAX_CONTENT_CHARS) + `\n\n[...İçerik kısaltıldı...]`
     : content
@@ -782,7 +782,7 @@ export async function generateCourseNotes(
     }
   }
 
-  const MAX_CONTENT_CHARS = 50000
+  const MAX_CONTENT_CHARS = 150000
   const truncated = content.length > MAX_CONTENT_CHARS
     ? content.substring(0, MAX_CONTENT_CHARS) + `\n\n[...İçerik ${content.length - MAX_CONTENT_CHARS} karakter kısaltıldı...]`
     : content
@@ -869,7 +869,7 @@ ${disc.quiz}
   }
 
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
-${getExamIntelligence(aiMode, courseName || sectionTitle)}
+${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
 
 ${glossaryInstruction}
 
@@ -906,17 +906,18 @@ BÖLÜM: "${sectionTitle}"
 ${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid diyagramlarında tüm düğüm isimlerini İSTİSNASIZ OLARAK köşeli parantez ve çift tırnak içine al (örn: A["İhraççı Şirket"] --> B["Kurul"]). Bu kurala uymazsan UI çöker!)` : ''}
    - Önemli bilgiler → **Emoji kutucukları** (⚠️, 💡, 📌, 🔑)
    - Listeler → **Madde işaretli liste**
-4. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
-5. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
-6. 🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
+4. TEMİZLİK: Parantez içindeki kaynakça referanslarını (örn: (ISO 27001, Madde 7.5), (SPK Tebliğ No: III-56.1)) notlardan tamamen temizle. Sadece anlamlı bilgiyi bırak (MD5, SHA-1 gibi teknik standart adları kalabilir).
+5. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
+6. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
+7. 🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
    Kaynak metinde yazar veya dizgi kaynaklı bir hata fark edersen, şu filtreye göre davran:
    - A) TRIVIAL (Önemsiz/Şekilsel) Hatalar: Harf eksikliği, imla hatası, İngilizce-Türkçe kelime veya telaffuz farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous'). KURAL: Bunlar için KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Trivial hataların varlığını tamamen yok say, "Dikkat: kaynakta şu kelime yanlış yazılmış" diyerek metnin hiçbir yerinde liste yapma!
    - B) CRITICAL (Kritik/Yasal) Hatalar: Yanlış kanun numarası (610 yerine 6102), yanlış ceza miktarı, yanlış tarih. KURAL: Sadece bu tür öğrenciye sınav kaybettirecek hayati/yasal hatalarda kaynağı aynen yazıp hemen yanına *(Not: Mevzuata göre doğrusu şudur)* diye kısa ve öz bir uyarı ekle. KESİNLİKLE sayfa sonuna ayrı bir başlık açma, uyarıyı kelimenin geçtiği yerde parantez içinde yap.
-${isGlossary ? '6.5 ⚠️ SÖZLÜK/KISALTMA KURALI: Bu sayfa sadece bir sözlük olduğu için ASLA en alta "Ekstra Dikkat Edilmesi Gereken Hususlar", "Özet", "Analiz" gibi ek başlıklar AÇMA! Sadece listeyi/tabloyu ver ve bitir.' : ''}
-6. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
-7. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
-8. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR). Asla hikayeleştirme veya laubali senaryolar uydurma.
-9. Hedef: 10 sayfalık bir PDF bölümünün notu ~8 sayfa olmalı. Yoğun ama EKSİKSİZ.
+${isGlossary ? '7.5 ⚠️ SÖZLÜK/KISALTMA KURALI: Bu sayfa sadece bir sözlük olduğu için ASLA en alta "Ekstra Dikkat Edilmesi Gereken Hususlar", "Özet", "Analiz" gibi ek başlıklar AÇMA! Sadece listeyi/tabloyu ver ve bitir.' : ''}
+8. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
+9. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
+10. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR). Asla hikayeleştirme veya laubali senaryolar uydurma.
+11. Hedef: 10 sayfalık bir PDF bölümünün notu ~8 sayfa olmalı. Yoğun ama EKSİKSİZ.
 
 🔴 SAYFA BAZLI TARAMA TALİMATI (EN KRİTİK KURAL):
 PDF'in ${pageStart || '?'}. sayfasından ${pageEnd || '?'}. sayfasına kadar HER SAYFAYI TEK TEK TARA.
@@ -1091,7 +1092,8 @@ export async function generateFlashcards(
 ): Promise<Array<{ front: string; back: string; difficulty: string }>> {
   const isGlossary = sectionTitle.toLocaleUpperCase("tr-TR").includes("KISALTMALAR") ||
     sectionTitle.toLocaleUpperCase("tr-TR").includes("SÖZLÜK") ||
-    sectionTitle.toLocaleUpperCase("tr-TR").includes("TANIMLAR")
+    sectionTitle.toLocaleUpperCase("tr-TR").includes("TANIMLAR") ||
+    sectionTitle.toLocaleUpperCase("tr-TR").includes("TERİMLER")
 
   // Chunking mantığı devreye giriyor!
   const chunkThreshold = 15000;

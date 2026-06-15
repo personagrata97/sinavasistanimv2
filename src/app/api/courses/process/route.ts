@@ -1044,7 +1044,7 @@ async function processInBackground(slug: string, course: any) {
             try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Flashcard Kartları (Bilgi Kartları) Oluşturuluyor...` }) } }) } catch { }
 
             // Flashcard'ları üret (tek deneme, tasarruf)
-            for (let fAttempt = 1; fAttempt <= 1; fAttempt++) {
+            for (let fAttempt = 1; fAttempt <= 3; fAttempt++) {
               try {
                 flashcards = await generateFlashcards(finalContent, section.title, fullCourseName, course.userLevel, aiMode, undefined, section.pageStart, section.pageEnd)
                 

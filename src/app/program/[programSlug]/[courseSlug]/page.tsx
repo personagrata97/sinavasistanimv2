@@ -11,7 +11,7 @@ import {
   FileText, RefreshCw, Download, ClipboardSignature, BarChart2, Lightbulb,
   Scale, TrendingUp, Landmark, Globe, CircleDollarSign, ScrollText, ClipboardList, Globe2, Calculator, Receipt, Rocket, CalendarDays, XCircle, CheckCircle, Flame, Coffee, Zap, ArrowRight, Star, Flag, Award, Trophy, Lock, Layers
 } from "lucide-react"
-import { getCourseBySlug, updateExamDate, getMockExamResults, saveMockExamResult, getUserStats, updateUserExamDate } from "@/lib/actions"
+import { getCourseBySlug, updateExamDate, getMockExamResults, saveMockExamResult, getUserStats, updateUserExamDate, getCourseFlashcards } from "@/lib/actions"
 import { getDaysUntilExam, getUrgencyLevel } from "@/lib/schedule-engine"
 import { getCourseBySlug as getStaticCourse } from "@/lib/course-data"
 import AchievementsTab, { UserLevelBadge } from "@/components/course/AchievementsTab"
@@ -188,6 +188,7 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
     const isAdmin = (session?.user as any)?.role === "admin"
 
   const [course, setCourse] = useState<any>(null)
+  const [dbFlashcards, setDbFlashcards] = useState<any[]>([])
   const [userStats, setUserStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState("overview")
@@ -317,6 +318,9 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
     const data = await getCourseBySlug(slug)
     setCourse(data)
     
+    const cards = await getCourseFlashcards(slug)
+    setDbFlashcards(cards || [])
+
     const stats = await getUserStats()
     setUserStats(stats)
 
@@ -884,6 +888,7 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
                   course={course} 
                   processingStatus={processingStatus} 
                   pastExamResults={pastExamResults} 
+                  dbFlashcards={dbFlashcards}
                   isAdmin={isAdmin} 
                   onNavigateToSection={(sectionId, keyword) => {
                     setSelectedSectionId(sectionId);
@@ -1036,12 +1041,14 @@ function OverviewTab({
   course, 
   processingStatus, 
   pastExamResults, 
+  dbFlashcards,
   isAdmin, 
   onNavigateToSection 
 }: { 
   course: any; 
   processingStatus: any; 
   pastExamResults?: any[]; 
+  dbFlashcards?: any[];
   isAdmin?: boolean; 
   onNavigateToSection?: (sectionId: string, keyword?: string) => void;
 }) {
@@ -1147,253 +1154,16 @@ function OverviewTab({
       <UserLevelBadge />
 
       {/* 💡 Günün Kavramı */}
-      {course.sections && course.sections.filter((s: any) => s.notes).length > 0 && (() => {
-        // Notların içinden sadece "Gerçek Kavram Tanımları" (Terim-Tanım-Örnek) ayıkla
-        interface HapBilgi {
-          type: 'concept';
-          title: string;
-          content: string;
-          hint?: string;
-          sectionTitle: string;
-          sectionId: string;
-        }
-
-        const completeTurkishSentence = (text: string): string => {
-          let trimmed = text.trim();
-          if (!trimmed) return "";
-
-          // Eğer zaten uygun bir noktalama işaretiyle bitiyorsa dokunma (nokta, ünlem, soru işareti vb.)
-          if (/[.?!]$/.test(trimmed)) {
-            return trimmed;
-          }
-
-          // Sondaki virgülü temizle
-          let base = trimmed.replace(/,$/, '').trim();
-
-          const words = base.split(/\s+/);
-          const lastWord = words[words.length - 1];
-          if (!lastWord) return trimmed;
-
-          const lowerLast = lastWord.toLowerCase();
-
-          const replacements: Record<string, string> = {
-            "varlıkları": "varlıklardır",
-            "varlığı": "varlığıdır",
-            "faaliyetleri": "faaliyetleridir",
-            "faaliyeti": "faaliyetidir",
-            "işlemleri": "işlemleridir",
-            "işlemi": "işlemidir",
-            "suçları": "suçlarıdır",
-            "suçu": "suçudur",
-            "cezası": "cezasıdır",
-            "cezaları": "cezalarıdır",
-            "yükümlülüğü": "yükümlülüğüdür",
-            "yükümlülükleri": "yükümlülükleridir",
-            "süreleri": "süreleridir",
-            "süresi": "süresidir",
-            "limiti": "limitidir",
-            "limitleri": "limitleridir",
-            "cüzdanı": "cüzdanıdır",
-            "cüzdanları": "cüzdanlarıdır",
-            "fonu": "fonudur",
-            "hizmeti": "hizmetidir",
-            "hizmetleri": "hizmetleridir",
-            "kurumu": "kurumudur",
-            "kurumları": "kurumlarıdır",
-            "kuruluşu": "kuruluşudur",
-            "kuruluşları": "kuruluşlarıdır",
-            "ortaklığı": "ortaklığıdır",
-            "ortaklıkları": "ortaklıklarıdır",
-            "şirketi": "şirketidir",
-            "şirketleri": "şirketleridir",
-            "piyasası": "piyasasıdır",
-            "piyasaları": "piyasalarıdır",
-            "aracı": "aracıdır",
-            "araçları": "araçlarıdır",
-            "sistemi": "sistemidir",
-            "sistemleri": "sistemleridir",
-            "süreci": "sürecidir",
-            "süreçleri": "süreçleridir",
-            "esasları": "esaslarıdır",
-            "esası": "esasıdır",
-            "tanımı": "tanımıdır",
-            "tanımları": "tanımlarıdır",
-            "kriterleri": "kriterleridir",
-            "kriteri": "kriteridir",
-            "değerleri": "değerleridir",
-            "değeri": "değeridir"
-          };
-
-          let replaced = false;
-          for (const [key, replacement] of Object.entries(replacements)) {
-            if (lowerLast === key) {
-              const isUpper = lastWord === lastWord.toUpperCase();
-              words[words.length - 1] = isUpper ? replacement.toUpperCase() : replacement;
-              base = words.join(" ") + ".";
-              replaced = true;
-              break;
-            }
-          }
-
-          if (!replaced) {
-            if (lowerLast.endsWith("ları")) {
-              words[words.length - 1] = lastWord + "dır";
-              base = words.join(" ") + ".";
-              replaced = true;
-            } else if (lowerLast.endsWith("leri")) {
-              words[words.length - 1] = lastWord + "dir";
-              base = words.join(" ") + ".";
-              replaced = true;
-            }
-          }
-
-          if (!replaced && trimmed.endsWith(",")) {
-            return base + ".";
-          }
-
-          return base;
-        };
-
-        const parseHapBilgi = (line: string, secTitle: string, secId: string): HapBilgi | null => {
-          const t = line.trim();
-          if (t.length < 10) return null;
-
-          // Sadece "- **" veya "* **" ile başlayan kavram tanımlarını çekiyoruz
-          const isConcept = /^[*\-\s]*\*\*/.test(t);
-          if (isConcept) {
-            const termMatch = t.match(/\*\*(.*?)\*\*/);
-            if (termMatch) {
-              let title = termMatch[1].trim();
-              title = title.replace(/[:：\-\s]+$/, '').trim();
-              
-              // Sınavda kesin çıkar, tuzak vb. yapay ifadeleri başlıktan temizle
-              title = title
-                .replace(/Tuzakları/g, "Detayları")
-                .replace(/Tuzak/g, "Detay")
-                .replace(/tuzakları/g, "detayları")
-                .replace(/tuzak/g, "detay");
-
-              let rest = t.substring(termMatch.index! + termMatch[0].length).trim();
-              rest = rest.replace(/^[:：\s\-–—]+/, '').trim();
-
-              // EĞER başlık çok kısaysa (örneğin sadece tek harf bold yapılmışsa: **İ**zleme)
-              // Gerçek başlığı ve tanımı iki nokta (:) karakterine göre ayırarak yeniden kuruyoruz.
-              if (title.length <= 2 && t.includes(":")) {
-                const colonIndex = t.indexOf(":");
-                const beforeColon = t.substring(0, colonIndex).replace(/\*/g, "").trim();
-                const afterColon = t.substring(colonIndex + 1).trim();
-                
-                title = beforeColon.replace(/^[\-\s+]+/, "").trim();
-                rest = afterColon;
-              }
-
-              let content = rest;
-              let hint: string | undefined = undefined;
-              
-              const separatorMatch = rest.match(/→\s*💡|💡|→/);
-              if (separatorMatch) {
-                const sepIndex = separatorMatch.index!;
-                content = rest.substring(0, sepIndex).trim();
-                hint = rest.substring(sepIndex + separatorMatch[0].length)
-                  .replace(/^[\s*+\-_:\(\)]+/, '')
-                  .replace(/[\s*+\-_:\(\)]+$/, '')
-                  .trim();
-              }
-
-              // Türkçe yarım cümleleri otomatik tamamla
-              content = completeTurkishSentence(content);
-
-              const lowerTitle = title.toLowerCase();
-              const isInvalidTitle = 
-                lowerTitle.startsWith("soru") || 
-                lowerTitle.startsWith("cevap") || 
-                lowerTitle.startsWith("test") || 
-                lowerTitle.startsWith("örnek") ||
-                lowerTitle.startsWith("şema") ||
-                lowerTitle.startsWith("tablo") ||
-                lowerTitle.includes("bölüm") ||
-                lowerTitle.includes("açılımı") ||
-                lowerTitle.includes("karşılığı") ||
-                lowerTitle.includes("benzetme") ||
-                lowerTitle.includes("senaryo") ||
-                lowerTitle.includes("kısaltma") ||
-                lowerTitle.includes("hatası") ||
-                lowerTitle.includes("dikkat");
-
-              // Kısa ve kuru liste kırıntılarını elemek için gerçek tanımların en az 50 karakter olmasını şart koşuyoruz
-              if (content.length > 50 && !isInvalidTitle) {
-                return {
-                  type: 'concept',
-                  title,
-                  content,
-                  hint,
-                  sectionTitle: secTitle,
-                  sectionId: secId
-                };
-              }
-            }
-          }
-          return null;
-        };
-
-        const allHapBilgiler: HapBilgi[] = [];
-        course.sections.forEach((sec: any) => {
-          if (!sec.notes) return;
-
-          const isGlossarySec = sec.title.includes("Kısaltmalar") || sec.title.includes("Terimler") || sec.title.includes("Kılavuzu");
-
-          if (isGlossarySec) {
-            // Split by "### 🔑" to extract glossary terms!
-            const parts = sec.notes.split("### 🔑");
-            parts.forEach((part: string) => {
-              const lines = part.trim().split("\n");
-              if (lines.length < 2) return;
-
-              // First line is the term heading (e.g. "SPK (Sermaye Piyasası Kurulu)")
-              let title = lines[0].trim();
-              if (!title || title.length > 100 || title.toLowerCase().includes("terimler sözlüğü")) return;
-
-              // Clean title
-              title = title.replace(/[:：\-\s]+$/, '').trim();
-
-              // Find the "Açılımı veya Resmi Tanımı" or the first bullet point as content
-              let content = "";
-              let hint = "";
-
-              lines.slice(1).forEach((l: string) => {
-                const lt = l.trim();
-                if (lt.startsWith("- **Açılımı") || lt.startsWith("- **Resmi") || lt.startsWith("* **Açılımı") || lt.startsWith("* **Resmi")) {
-                  content = lt.replace(/^[-*\s]*\*\*.*?\*\*/, "").replace(/^[:：\s\-–—]+/, "").trim();
-                } else if (lt.includes("💡") || lt.includes("Benzetme") || lt.includes("benzetme")) {
-                  hint = lt.replace(/^[-*\s]*\*\*.*?\*\*/, "").replace(/^[:：\s\-–—]+/, "").replace(/^[💡\s]+/, "").trim();
-                }
-              });
-
-              if (content && content.length > 20) {
-                // complete sentence
-                content = completeTurkishSentence(content);
-
-                allHapBilgiler.push({
-                  type: 'concept',
-                  title,
-                  content,
-                  hint: hint || undefined,
-                  sectionTitle: sec.title,
-                  sectionId: sec.id
-                });
-              }
-            });
-          } else {
-            // Standard line-by-line processing for other sections
-            const lines = sec.notes.split("\n");
-            lines.forEach((line: string) => {
-              const parsed = parseHapBilgi(line, sec.title, sec.id);
-              if (parsed) {
-                allHapBilgiler.push(parsed);
-              }
-            });
-          }
-        });
+      {dbFlashcards && dbFlashcards.length > 0 && (() => {
+        // Veritabanından gelen temiz bilgi kartlarını (Flashcards) doğrudan Günün Kavramı'na dönüştür
+        const allHapBilgiler = dbFlashcards.map(f => ({
+          type: 'concept',
+          title: f.front,
+          content: f.back,
+          hint: f.difficulty === 'hard' ? 'Önemli Konu' : undefined,
+          sectionTitle: f.section?.title || "Ders Notu",
+          sectionId: f.section?.id || ""
+        }));
 
         if (allHapBilgiler.length === 0) return null;
 
