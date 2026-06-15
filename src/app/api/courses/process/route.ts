@@ -526,11 +526,11 @@ async function processInBackground(slug: string, course: any) {
           let quotaFailures = 0 // FIX #4: Kota hatalarını ayrı say, gerçek deneme hakkını yemesin
           const MAX_QUOTA_FAILURES = 5 // Toplam kota hatası limiti (sonsuz döngü koruması)
 
-          // ==================== KUSURSUZ MİMARİ: PRISTINE MARKDOWN OCR ====================
+          // ==================== MARKDOWN OCR (PDF Slicing) ====================
           // PDF'i fiziksel olarak pdf-lib ile keser, parçalara böler ve Base64 inline olarak yollar.
           if (course.pdfPath && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
-            console.log(`[BG] 🚀 KUSURSUZ OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Fiziksel Olarak Okunuyor (Kusursuz OCR)` }) } }) } catch { }
+            console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
+            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Metne Çevriliyor (Markdown OCR)` }) } }) } catch { }
             
             const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
             
@@ -546,13 +546,13 @@ async function processInBackground(slug: string, course: any) {
                 if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
                   section.rawContent = pristineMarkdown;
                   await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
-                  console.log(`[BG] ✅ Kusursuz OCR Tamamlandı: İçerik tamamen resimlerle/tablolarla donatıldı.`);
+                  console.log(`[BG] ✅ Markdown OCR Tamamlandı.`);
                   ocrSuccess = true;
                 } else {
                   throw new Error("OCR tamamlandı ancak [MARKDOWN_OCR_SUCCESS] damgası eksik.");
                 }
               } catch (ocrErr: any) {
-                console.log(`[BG] ⚠️ Kusursuz OCR Hatası (Deneme ${ocrAttempts}/${MAX_OCR_ATTEMPTS}): ${ocrErr.message}`);
+                console.log(`[BG] ⚠️ Markdown OCR Hatası (Deneme ${ocrAttempts}/${MAX_OCR_ATTEMPTS}): ${ocrErr.message}`);
                 if (ocrAttempts < MAX_OCR_ATTEMPTS) {
                   console.log(`[BG] 🕒 20 Saniye bekleniyor... Exponential Backoff devrede.`);
                   await new Promise(r => setTimeout(r, 20000));
@@ -562,8 +562,8 @@ async function processInBackground(slug: string, course: any) {
             
             if (!ocrSuccess) {
               // 0 RİSK KURALI GEREĞİ: Asla kirli metne düşme, direkt hata fırlat ve döngüyü kır.
-              console.error(`[BG] 🛑 FATAL ERROR: Kusursuz OCR 5 denemede de BAŞARISIZ oldu. Kirli metinle not üretimi REDDEDİLDİ!`);
-              throw new Error("Kusursuz OCR katmanı tüm denemelere rağmen başarısız oldu. Resimsiz/hatalı not üretmemek için işlem güvenlik gereği durduruldu.");
+              console.error(`[BG] 🛑 FATAL ERROR: Markdown OCR 5 denemede de BAŞARISIZ oldu.`);
+              throw new Error("Markdown OCR katmanı başarısız oldu. İşlem durduruldu.");
             }
           }
 
