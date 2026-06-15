@@ -374,7 +374,7 @@ Kurallar:
             ]
           }
         ],
-        // Using gemini-1.5-pro for best vision capability and strict temperature 0.0
+        // Using gemini-3.5-flash for best vision capability and strict temperature 0.0
         generationConfig: { temperature: 0.0, maxOutputTokens: 8192 }
       };
 
@@ -382,11 +382,10 @@ Kurallar:
       try {
         incrementKeyRpm(currentKeyIndex);
         
-        // As requested by user: Force best model (gemini-1.5-pro or 3.5 flash logic)
-        // Here we use gemini-1.5-pro because 3.5 flash is a typo of 1.5-pro in user's mind for "best model"
+        // As requested by user: Force best model (gemini-3.5-flash logic)
         const axios = (await import('axios')).default;
         const response = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent`,
           body,
           { headers, timeout: 180000 }
         );
@@ -401,7 +400,7 @@ Kurallar:
           prisma.apiUsageLog.create({
             data: {
               apiKey: `Key #${currentKeyIndex + 1}`,
-              model: "gemini-1.5-pro",
+              model: "gemini-3.5-flash",
               operation: "ocr_extraction_chunk",
               courseSlug: courseName,
               status: "SUCCESS",
