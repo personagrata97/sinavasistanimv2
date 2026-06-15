@@ -1315,7 +1315,10 @@ function OverviewTab({
                 lowerTitle.includes("açılımı") ||
                 lowerTitle.includes("karşılığı") ||
                 lowerTitle.includes("benzetme") ||
-                lowerTitle.includes("senaryo");
+                lowerTitle.includes("senaryo") ||
+                lowerTitle.includes("kısaltma") ||
+                lowerTitle.includes("hatası") ||
+                lowerTitle.includes("dikkat");
 
               // Kısa ve kuru liste kırıntılarını elemek için gerçek tanımların en az 50 karakter olmasını şart koşuyoruz
               if (content.length > 50 && !isInvalidTitle) {

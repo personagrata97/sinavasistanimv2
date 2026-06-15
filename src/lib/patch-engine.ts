@@ -217,9 +217,15 @@ EKSİK BİLGİLER (Şu an kesitte yok, sen ekleyeceksin):
 ${facts.join('\n')}
 
 GÖREV: Mevcut kesiti al, eksik bilgileri içine kusursuzca (sanki ilk seferde yazılmış gibi) yedirerek KESİTİ YENİDEN YAZ.
-- Mevcut kesitteki hikayeler, tablolar veya listeler varsa ASLA BOZMA.
+${isGlossary ? `
+🚨 KISALTMALAR / SÖZLÜK BÖLÜMÜ KURALLARI:
+- Bu bölüm bir kısaltma/sözlük listesidir! KESİNLİKLE hikaye, analoji, derin analiz YAZMA!
+- ASLA MERMAID (AKIŞ ŞEMASI) ÇİZME!
+- Eksik bilgiyi SADECE mevcut listeye/tabloya kısa bir tanım olarak ekle.
+` : `
 - Eksik bilgi bir süreç/hiyerarşi gerektiriyorsa şema (mermaid) kullanabilirsin, tanım gerektiriyorsa tabloya ekleyebilirsin veya sadece doğal bir paragraf olarak yedirebilirsin.
 - Eksik bilgiyi körü körüne sonuna yapıştırma, mantıklı olan yere yedir.
+`}
 
 🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
 Eksik bilgileri eklerken kaynak metinde yazar veya dizgi kaynaklı bir hata (Standart/Standard gibi harf, imla veya telaffuz farklılığı) fark edersen, KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Asla "Doğrusu budur" diye ukalalık yapma. SADECE yanlış kanun veya ceza miktarı gibi yasal/sayısal hatalarda parantez içinde uyarı ekleyebilirsin.
