@@ -1,5 +1,120 @@
 import axios from "axios"
+import { randomUUID } from "node:crypto"
 import { prisma } from "./prisma"
+import { isGlossarySectionTitle } from "./glossary-utils"
+
+/** Tüm API anahtarlarının günlük kotası doldu — yeniden denemek aynı gün işe yaramaz. */
+export class ApiQuotaExhaustedError extends Error {
+  readonly kind: "daily" | "all_keys"
+
+  constructor(message: string, kind: "daily" | "all_keys" = "daily") {
+    super(message)
+    this.name = "ApiQuotaExhaustedError"
+    this.kind = kind
+  }
+}
+
+/** Google 429 yanıtından geçici mi (dakika) günlük mü ayrımı */
+function parseGoogleQuotaError(e: unknown): {
+  isDaily: boolean
+  isMinute: boolean
+  retrySecs: number
+  message: string
+} {
+  const err = e as { response?: { data?: { error?: { message?: string; details?: unknown[] } } }; message?: string }
+  const message = err.response?.data?.error?.message || err.message || ""
+  const m = message.toLowerCase()
+  let isDaily = false
+  let isMinute = false
+  let retrySecs = 0
+
+  const retryMatch = m.match(/retry in ([\d.]+)s/)
+  if (retryMatch) retrySecs = Math.ceil(parseFloat(retryMatch[1]))
+
+  for (const raw of err.response?.data?.error?.details || []) {
+    const d = raw as { ["@type"]?: string; violations?: Array<{ quotaId?: string }>; retryDelay?: string }
+    if (d["@type"]?.includes("QuotaFailure")) {
+      for (const v of d.violations || []) {
+        const qid = (v.quotaId || "").toLowerCase()
+        if (qid.includes("perday") || qid.includes("per_day")) isDaily = true
+        if (qid.includes("perminute") || qid.includes("per_minute") || qid.includes("rpm")) isMinute = true
+      }
+    }
+    if (d["@type"]?.includes("RetryInfo") && d.retryDelay) {
+      const rm = String(d.retryDelay).match(/([\d.]+)s/)
+      if (rm) retrySecs = Math.max(retrySecs, Math.ceil(parseFloat(rm[1])))
+    }
+  }
+
+  // Google bazen günlük kotada bile "retry in 18s" yazar — kısa bekleme = geçici limit
+  if (retrySecs > 0 && retrySecs <= 120) {
+    isMinute = true
+    isDaily = false
+  }
+
+  if (!isDaily && !isMinute && (m.includes("429") || m.includes("quota"))) {
+    isMinute = true
+  }
+
+  // Google bazen 429'da "retry in Xs" vermez — dakikalık limit için makul varsayılan
+  if (isMinute && retrySecs === 0 && (m.includes("429") || m.includes("quota"))) {
+    retrySecs = 20
+  }
+
+  return { isDaily, isMinute, retrySecs, message }
+}
+
+function isDailyQuotaErrorMessage(msg: string): boolean {
+  return parseGoogleQuotaError({ response: { data: { error: { message: msg } } } }).isDaily
+}
+
+async function writeApiUsageLog(data: {
+  apiKey: string
+  keyIndex?: number | null
+  model: string
+  operation: string
+  stage?: string | null
+  courseSlug?: string | null
+  sectionId?: string | null
+  status: string
+  errorDetail?: string | null
+  durationMs?: number | null
+}): Promise<void> {
+  try {
+    await prisma.apiUsageLog.create({ data })
+    return
+  } catch (err) {
+    console.error("[AI_ENGINE] ApiUsageLog create failed, raw SQL fallback:", err)
+  }
+  try {
+    const id = randomUUID()
+    await prisma.$executeRaw`
+      INSERT INTO ApiUsageLog (id, apiKey, keyIndex, model, operation, stage, courseSlug, sectionId, status, errorDetail, durationMs, createdAt)
+      VALUES (
+        ${id},
+        ${data.apiKey},
+        ${data.keyIndex ?? null},
+        ${data.model},
+        ${data.operation},
+        ${data.stage ?? null},
+        ${data.courseSlug ?? null},
+        ${data.sectionId ?? null},
+        ${data.status},
+        ${data.errorDetail ?? null},
+        ${data.durationMs ?? null},
+        ${new Date().toISOString()}
+      )
+    `
+  } catch (err2) {
+    console.error("[AI_ENGINE] ApiUsageLog raw SQL fallback failed:", err2)
+  }
+}
+
+function parseKeyIndexFromLog(apiKey: string | null | undefined, keyIndex: number | null | undefined): number | null {
+  if (keyIndex != null && keyIndex >= 0) return keyIndex
+  const m = apiKey?.match(/Key\s*#(\d+)/i)
+  return m ? parseInt(m[1], 10) - 1 : null
+}
 
 // ==================== AI ENGINE SETUP ====================
 
@@ -10,44 +125,181 @@ let currentKeyIndex = 0 // Aktif key index'i
 const suspendedKeys = new Map<number, number>() // keyIndex → suspendedAt timestamp
 const SUSPENDED_KEY_TTL_MS = 65 * 1000 // 65 saniye — Google'ın dakikalık sayacı ~60sn'de sıfırlanır
 
-// ==================== PROAKTİF RPM SAYACI ====================
-// Her key için dakika bazında istek sayısını tutar — 429 yemeden ÖNCE limiti aşmayı engeller
-const keyMinuteCounters = new Map<string, number>() // "keyIndex|minuteKey" → count
-const RPM_LIMIT = 14 // Google limiti 15, güvenlik payı olarak 14'te key değiştir
+// ==================== PROAKTİF RPM + GÜNLÜK (RPD) SAYACI ====================
+// Her (key + MODEL) için dakika ve gün bazında istek sayısını tutar — 429 yemeden ÖNCE limiti aşmayı engeller.
+// ⚠️ ÖNEMLİ: 3.5 Flash ve 2.5 Flash AYRI kota havuzlarıdır → sayaç anahtarı (keyIndex|modelId|...) bazındadır.
+//   Bu sayede tek bir key, 3.5 için ayrı 2.5 için ayrı RPM/RPD hakkına sahip olur (kapasite ~2 kat artar).
+// NOT: Sayaçlar BELLEKTE tutulur (module-level Map). Sunucu yeniden başlarsa GÜNLÜK sayaç da SIFIRLANIR.
+//   (İleride kalıcılık için `apiUsageLog` tablosundan beslenebilir; bu turda bellek-içi yeterli.)
+const keyMinuteCounters = new Map<string, number>() // "keyIndex|modelId|minuteKey" → count
+const keyDailyCounters = new Map<string, number>()  // "keyIndex|modelId|ptDayKey" → count
+
+// Dakikalık limit (RPM): ücretsiz tier ~10 RPM → varsayılan 9 (güvenlik payı). .env: GEMINI_RPM_LIMIT
+const RPM_LIMIT = Number(process.env.GEMINI_RPM_LIMIT ?? 9)
+// Günlük limit (RPD): model bazlı — 3.5-flash ücretsiz ~20/gün, 2.5-flash ~250/gün
+const RPD_LIMIT = Number(process.env.GEMINI_RPD_LIMIT ?? 240)
+
+function getModelRpdLimit(modelId: string): number {
+  if (modelId === "gemini-3.5-flash") {
+    return Number(process.env.GEMINI_RPD_LIMIT_35 ?? 18)
+  }
+  return RPD_LIMIT
+}
 
 function getMinuteKey(): string {
   const now = new Date()
   return `${now.getHours()}:${now.getMinutes()}`
 }
 
-function getKeyRpmCount(keyIndex: number): number {
-  const k = `${keyIndex}|${getMinuteKey()}`
+// ⚠️ Google RPD'yi PASİFİK saatiyle (America/Los_Angeles) gece yarısı sıfırlar.
+// Gün anahtarını YEREL saatle DEĞİL, PT tarihine göre üret — yoksa günlük pencere kayar.
+function getPacificDayKey(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(new Date()) // "YYYY-MM-DD" (PT günü)
+}
+
+function getKeyRpmCount(keyIndex: number, modelId: string): number {
+  const k = `${keyIndex}|${modelId}|${getMinuteKey()}`
   return keyMinuteCounters.get(k) || 0
 }
 
-function incrementKeyRpm(keyIndex: number): void {
+function getKeyDailyCount(keyIndex: number, modelId: string): number {
+  const k = `${keyIndex}|${modelId}|${getPacificDayKey()}`
+  return keyDailyCounters.get(k) || 0
+}
+
+let dailyCountersHydrated = false
+
+/** Sunucu yeniden başladığında bellek sayacını bugünkü ApiUsageLog ile senkronize et. */
+async function ensureDailyCountersHydrated(): Promise<void> {
+  if (dailyCountersHydrated) return
+  dailyCountersHydrated = true
+  try {
+    const pacificDay = getPacificDayKey()
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000)
+    const logs = await prisma.apiUsageLog.findMany({
+      where: { createdAt: { gte: since } },
+      select: { keyIndex: true, apiKey: true, model: true, createdAt: true, status: true },
+    })
+    let loaded = 0
+    for (const log of logs) {
+      const logDay = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(log.createdAt)
+      if (logDay !== pacificDay) continue
+      // Sadece gerçekten tüketilen istekler sayılır — 429 geçici reddir, günlük kotayı doldurmaz
+      if (log.status !== "SUCCESS") continue
+      const idx = parseKeyIndexFromLog(log.apiKey, log.keyIndex)
+      if (idx == null) continue
+      const dk = `${idx}|${log.model}|${pacificDay}`
+      keyDailyCounters.set(dk, (keyDailyCounters.get(dk) || 0) + 1)
+      loaded++
+    }
+    if (loaded > 0) {
+      console.log(`[AI_ENGINE] 📊 Günlük kota sayaçları DB'den yüklendi (${loaded} kayıt, PT günü: ${pacificDay})`)
+    }
+  } catch (e) {
+    console.warn("[AI_ENGINE] Kota sayacı DB senkronu atlandı:", e)
+  }
+}
+
+// Tüm key'ler bu model için GÜNLÜK kotasını doldurduysa true → dakika beklemek çözmez, üst katmana bırak.
+function allKeysDailyExhausted(modelId: string): boolean {
+  if (geminiKeys.length === 0) return false
+  for (let i = 0; i < geminiKeys.length; i++) {
+    if (getKeyDailyCount(i, modelId) < getModelRpdLimit(modelId)) return false
+  }
+  return true
+}
+
+// Hem dakikalık hem günlük sayacı TEK noktada artırır + eski anahtarları temizler (bellek sızıntısı önleme).
+function recordKeyUsage(keyIndex: number, modelId: string): void {
   const minuteKey = getMinuteKey()
-  const k = `${keyIndex}|${minuteKey}`
-  keyMinuteCounters.set(k, (keyMinuteCounters.get(k) || 0) + 1)
-  
-  // Eski dakikaların sayaçlarını temizle (bellek sızıntısı önleme)
-  const keysToDelete: string[] = []
+  const dayKey = getPacificDayKey()
+
+  const mk = `${keyIndex}|${modelId}|${minuteKey}`
+  keyMinuteCounters.set(mk, (keyMinuteCounters.get(mk) || 0) + 1)
+
+  const dk = `${keyIndex}|${modelId}|${dayKey}`
+  keyDailyCounters.set(dk, (keyDailyCounters.get(dk) || 0) + 1)
+
+  // Eski dakika sayaçlarını temizle (sadece bu dakikaya ait olanları tut)
+  const minuteKeysToDelete: string[] = []
   keyMinuteCounters.forEach((_, key) => {
-    if (!key.endsWith(`|${minuteKey}`)) {
-      keysToDelete.push(key)
+    if (!key.endsWith(`|${minuteKey}`)) minuteKeysToDelete.push(key)
+  })
+  minuteKeysToDelete.forEach(key => keyMinuteCounters.delete(key))
+
+  // Eski gün sayaçlarını temizle (sadece bugünün PT gününe ait olanları tut)
+  const dayKeysToDelete: string[] = []
+  keyDailyCounters.forEach((_, key) => {
+    if (!key.endsWith(`|${dayKey}`)) dayKeysToDelete.push(key)
+  })
+  dayKeysToDelete.forEach(key => keyDailyCounters.delete(key))
+}
+
+/** Admin paneli: motorun gerçek RPM/RPD sayaçlarını döndürür (bellek-içi, anlık). */
+export function getLiveApiKeyStats() {
+  const modelIds = ["gemini-3.5-flash", "gemini-2.5-flash"] as const
+  const keys = geminiKeys.map((_, idx) => {
+    const suspended = suspendedKeys.has(idx)
+    const suspendedAt = suspendedKeys.get(idx)
+    return {
+      keyIndex: idx,
+      keyLabel: `Key #${idx + 1}`,
+      suspended,
+      suspendedUntil: suspended && suspendedAt ? new Date(suspendedAt + SUSPENDED_KEY_TTL_MS).toISOString() : null,
+      models: modelIds.map((modelId) => ({
+        modelId,
+        rpmUsed: getKeyRpmCount(idx, modelId),
+        rpmLimit: RPM_LIMIT,
+        rpmRemaining: Math.max(0, RPM_LIMIT - getKeyRpmCount(idx, modelId)),
+        rpdUsed: getKeyDailyCount(idx, modelId),
+        rpdLimit: getModelRpdLimit(modelId),
+        rpdRemaining: Math.max(0, getModelRpdLimit(modelId) - getKeyDailyCount(idx, modelId)),
+      })),
     }
   })
-  keysToDelete.forEach(key => keyMinuteCounters.delete(key))
+  return {
+    rpmLimit: RPM_LIMIT,
+    rpdLimit: RPD_LIMIT,
+    rpdLimit35: getModelRpdLimit("gemini-3.5-flash"),
+    pacificDay: getPacificDayKey(),
+    keyCount: geminiKeys.length,
+    serverTime: new Date().toISOString(),
+    keys,
+  }
 }
 
 // Her key'in kendi fileUri'si (PDF multimodal için — her key kendi projesindeki dosyaya erişir)
 let activeFileUrisMap: Record<string, string> = {}
 export function setFileUrisMap(map: Record<string, string>) { activeFileUrisMap = map }
 
-function getNextGeminiKey(): string | null {
+function getSecondsUntilKeyAvailable(modelId: string): number {
+  const now = Date.now()
+  let maxSuspendedWaitSec = 0
+  for (let i = 0; i < geminiKeys.length; i++) {
+    if (suspendedKeys.has(i)) {
+      const remainingMs = SUSPENDED_KEY_TTL_MS - (now - suspendedKeys.get(i)!)
+      if (remainingMs > 0) {
+        maxSuspendedWaitSec = Math.max(maxSuspendedWaitSec, Math.ceil(remainingMs / 1000))
+      }
+    }
+  }
+  const secsUntilNextMinute = 60 - new Date().getSeconds() + 2
+  // 429 sonrası key ~65 sn askıda — sadece dakika sınırını beklemek yetmez
+  return Math.max(maxSuspendedWaitSec, secsUntilNextMinute, 5)
+}
+
+function getNextGeminiKey(modelId: string): string | null {
   if (geminiKeys.length === 0) return null
 
-  // Tüm key'ler arasından en uygununu seç: askıda olmayan VE dakikalık limiti dolmamış
+  // Tüm key'ler arasından en uygununu seç: askıda olmayan VE (bu model için) günlük + dakikalık limiti dolmamış
   let bestIdx = -1
   let bestRpm = Infinity
   
@@ -63,9 +315,14 @@ function getNextGeminiKey(): string | null {
         continue // Hâlâ askıda
       }
     }
+
+    // GÜNLÜK (RPD) limiti: bu (key, model) bugün dolduysa O GÜN için ATLA (dakika beklemek çözmez)
+    if (getKeyDailyCount(idx, modelId) >= getModelRpdLimit(modelId)) {
+      continue
+    }
     
-    // Bu key'in bu dakikadaki kullanım sayısını kontrol et
-    const rpm = getKeyRpmCount(idx)
+    // Bu key'in bu dakikadaki (bu model için) kullanım sayısını kontrol et
+    const rpm = getKeyRpmCount(idx, modelId)
     if (rpm >= RPM_LIMIT) {
       continue // Bu key bu dakika dolmuş, atla
     }
@@ -77,23 +334,57 @@ function getNextGeminiKey(): string | null {
     }
   }
   
-  if (bestIdx === -1) return null // Tüm key'ler ya askıda ya da bu dakika dolu
+  if (bestIdx === -1) return null // Tüm key'ler ya askıda ya bu dakika ya da bugün (bu model için) dolu
   
   currentKeyIndex = bestIdx
   return geminiKeys[bestIdx].trim()
 }
 
-function rotateToNextKey(): string | null {
+function purgeExpiredSuspensions(): void {
+  const now = Date.now()
+  suspendedKeys.forEach((at, idx) => {
+    if (now - at > SUSPENDED_KEY_TTL_MS) suspendedKeys.delete(idx)
+  })
+}
+
+/** getNextGeminiKey null dönerse (gerçek günlük dolu değilse) süresi dolmuş askıları temizle; gerekirse zorla dene. */
+function getNextGeminiKeyWithFallback(modelId: string, consecutiveWaits: number): string | null {
+  purgeExpiredSuspensions()
+  const key = getNextGeminiKey(modelId)
+  if (key) return key
+  if (allKeysDailyExhausted(modelId)) return null
+
+  if (consecutiveWaits >= 1) {
+    let bestIdx = -1
+    let bestRpm = Infinity
+    for (let i = 0; i < geminiKeys.length; i++) {
+      if (getKeyDailyCount(i, modelId) >= getModelRpdLimit(modelId)) continue
+      const rpm = getKeyRpmCount(i, modelId)
+      if (rpm < bestRpm) {
+        bestRpm = rpm
+        bestIdx = i
+      }
+    }
+    if (bestIdx >= 0) {
+      suspendedKeys.delete(bestIdx)
+      currentKeyIndex = bestIdx
+      console.log(`[AI_ENGINE] 🔓 Zorla Key #${bestIdx + 1} seçildi (${consecutiveWaits} bekleme sonrası, RPM: ${bestRpm})`)
+      return geminiKeys[bestIdx].trim()
+    }
+  }
+  return null
+}
+
+function rotateToNextKey(modelId: string): string | null {
   if (geminiKeys.length <= 1) return null
 
   // Mevcut key'i atla, sonraki en uygun key'i bul
-  const originalIdx = currentKeyIndex
   currentKeyIndex = (currentKeyIndex + 1) % geminiKeys.length
   
   // getNextGeminiKey zaten en uygununu seçecek
-  const result = getNextGeminiKey()
+  const result = getNextGeminiKey(modelId)
   if (result) {
-    console.log(`[AI_ENGINE] 🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length}'e geçildi (RPM: ${getKeyRpmCount(currentKeyIndex)}/${RPM_LIMIT})`)
+    console.log(`[AI_ENGINE] 🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length}'e geçildi (RPM: ${getKeyRpmCount(currentKeyIndex, modelId)}/${RPM_LIMIT}, RPD: ${getKeyDailyCount(currentKeyIndex, modelId)}/${RPD_LIMIT})`)
   }
   return result
 }
@@ -308,7 +599,56 @@ export function extractCleanJson(raw: string): any {
 }
 
 // ==================== PRISTINE MARKDOWN OCR (GÖZCÜ KATMANI) ====================
-export async function extractPerfectMarkdownOCR(pdfPath: string, pageStart: number, pageEnd: number, courseName: string = "PDF Okuma (OCR)"): Promise<string> {
+
+/** OCR parçaları arasındaki örtüşen metni birleştirir (sayfa sınırında kesilen tablolar için). */
+export function stitchOcrMarkdownChunks(previous: string, next: string): string {
+  const prev = previous.trim()
+  const nxt = next.trim()
+  if (!prev) return nxt
+  if (!nxt) return prev
+
+  const minOverlap = 20
+  const maxSearch = Math.min(4000, prev.length, nxt.length)
+  for (let len = maxSearch; len >= minOverlap; len--) {
+    const suffix = prev.slice(-len)
+    if (nxt.startsWith(suffix)) {
+      return prev + nxt.slice(len)
+    }
+  }
+
+  const prevLines = prev.split("\n")
+  const nextLines = nxt.split("\n")
+
+  const lastPrevLine = prevLines[prevLines.length - 1]?.trim()
+  const firstNextLine = nextLines[0]?.trim()
+  if (lastPrevLine && firstNextLine && lastPrevLine.length > 10 && lastPrevLine === firstNextLine) {
+    return [...prevLines.slice(0, -1), ...nextLines].join("\n")
+  }
+
+  const maxLineCheck = Math.min(30, prevLines.length, nextLines.length)
+  for (let n = maxLineCheck; n >= 1; n--) {
+    const tail = prevLines.slice(-n).join("\n").trim()
+    const head = nextLines.slice(0, n).join("\n").trim()
+    if (tail.length > 10 && tail === head) {
+      return [...prevLines.slice(0, -n), ...nextLines].join("\n")
+    }
+  }
+
+  return prev + "\n\n" + nxt
+}
+
+export async function extractPerfectMarkdownOCR(
+  pdfPath: string,
+  pageStart: number,
+  pageEnd: number,
+  courseName: string = "PDF Okuma (OCR)",
+  options?: { onProgress?: (message: string) => void | Promise<void> },
+): Promise<string> {
+  await ensureDailyCountersHydrated()
+  const onProgress = options?.onProgress
+  const report = async (msg: string) => {
+    if (onProgress) await onProgress(msg)
+  }
   const { PDFDocument } = await import('pdf-lib');
   const fsPromises = await import('fs/promises');
 
@@ -331,15 +671,19 @@ Kurallar:
     throw new Error("Geçersiz sayfa aralığı.");
   }
 
-  const CHUNK_SIZE = 15;
+  const CHUNK_SIZE = 5;
+  const PAGE_OVERLAP = 2;
+  const MIN_OCR_ATTEMPT_GAP_MS = 3000;
+  const stride = CHUNK_SIZE - PAGE_OVERLAP;
   let finalMarkdown = "";
 
-  for (let i = 0; i < totalPagesToExtract; i += CHUNK_SIZE) {
+  for (let i = 0; i < totalPagesToExtract; i += stride) {
     const chunkStartIdx = startIdx + i;
     const chunkEndIdx = Math.min(endIdx, chunkStartIdx + CHUNK_SIZE - 1);
     const chunkPageCount = chunkEndIdx - chunkStartIdx + 1;
 
-    console.log(`[MARKDOWN_OCR] Chunk işleniyor: Sayfa ${chunkStartIdx + 1} - ${chunkEndIdx + 1} (${chunkPageCount} sayfa)`);
+    console.log(`[MARKDOWN_OCR] Chunk işleniyor: Sayfa ${chunkStartIdx + 1} - ${chunkEndIdx + 1} (${chunkPageCount} sayfa, örtüşme: ${PAGE_OVERLAP} sayfa)`);
+    await report(`PDF Metne Çevriliyor — sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1}`);
 
     const newPdf = await PDFDocument.create();
     const pageIndicesToCopy = Array.from({length: chunkPageCount}, (_, k) => chunkStartIdx + k);
@@ -350,14 +694,44 @@ Kurallar:
     const chunkPdfBytes = await newPdf.save();
     const chunkBase64 = Buffer.from(chunkPdfBytes).toString('base64');
 
+    const OCR_MODEL = "gemini-2.5-flash";
     const startKeyIndex = currentKeyIndex;
     let triedAllKeys = false;
     let chunkSuccess = false;
     let chunkResult = "";
+    let quotaHit = false;
+    let lastOcrError = "";
+    let lastOcrAttemptAt = 0;
+    let consecutiveWaitCycles = 0;
 
     while (!triedAllKeys) {
-      const currentKey = getNextGeminiKey();
-      if (!currentKey) break;
+      const currentKey = getNextGeminiKeyWithFallback(OCR_MODEL, consecutiveWaitCycles);
+      if (!currentKey) {
+        if (allKeysDailyExhausted(OCR_MODEL)) {
+          console.error(`[AI_ENGINE] ⛔ Tüm projelerin GÜNLÜK (RPD) kotası doldu — yarın PT gece yarısı sıfırlanır`);
+          throw new ApiQuotaExhaustedError(
+            "Google günlük API limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın Devam Ettir ile yeniden başlatın.",
+            "daily",
+          );
+        }
+        consecutiveWaitCycles++
+        const waitSec = getSecondsUntilKeyAvailable(OCR_MODEL)
+        await writeApiUsageLog({
+          apiKey: "Key #—",
+          model: OCR_MODEL,
+          operation: "ocr_extraction_chunk",
+          stage: "ocr",
+          courseSlug: courseName.substring(0, 150),
+          status: "WAITING",
+          errorDetail: `${waitSec} sn bekleniyor (anahtar dinleniyor)`,
+          durationMs: 0,
+        })
+        await report(`Anahtarlar dinleniyor — ${waitSec} sn`)
+        console.log(`[MARKDOWN_OCR] ⏳ Uygun key yok (askı/RPM). ${waitSec}sn bekleniyor... (döngü ${consecutiveWaitCycles})`)
+        await new Promise(r => setTimeout(r, waitSec * 1000))
+        continue
+      }
+      consecutiveWaitCycles = 0
 
       const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey };
       const body = {
@@ -374,58 +748,149 @@ Kurallar:
             ]
           }
         ],
-        // Using gemini-3.5-flash for best vision capability and strict temperature 0.0
-        generationConfig: { temperature: 0.0, maxOutputTokens: 8192 }
+        generationConfig: { temperature: 0.0, maxOutputTokens: 32768 }
       };
 
-      const startTime = Date.now();
+      const startTime = Date.now()
+      const logKeyIndex = currentKeyIndex
       try {
-        incrementKeyRpm(currentKeyIndex);
-        
-        // As requested by user: Force best model (gemini-3.5-flash logic)
-        const axios = (await import('axios')).default;
-        const response = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent`,
+        const sinceLastAttempt = Date.now() - lastOcrAttemptAt
+        if (lastOcrAttemptAt > 0 && sinceLastAttempt < MIN_OCR_ATTEMPT_GAP_MS) {
+          await new Promise((r) => setTimeout(r, MIN_OCR_ATTEMPT_GAP_MS - sinceLastAttempt))
+        }
+        lastOcrAttemptAt = Date.now()
+
+        await writeApiUsageLog({
+          apiKey: `Key #${logKeyIndex + 1}`,
+          keyIndex: logKeyIndex,
+          model: OCR_MODEL,
+          operation: "ocr_extraction_chunk",
+          stage: "ocr",
+          courseSlug: courseName.substring(0, 150),
+          status: "REQUEST",
+          durationMs: 0,
+        })
+
+        const axiosMod = (await import('axios')).default;
+        const response = await axiosMod.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${OCR_MODEL}:generateContent`,
           body,
           { headers, timeout: 180000 }
         );
+        const finishReason = response.data?.candidates?.[0]?.finishReason;
         const parts = response.data?.candidates?.[0]?.content?.parts || [];
         const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text);
         const result = textParts.join("").trim();
 
         if (result && result.length > 100) {
+          if (finishReason === "MAX_TOKENS" && chunkPageCount > 1) {
+            console.error(`[MARKDOWN_OCR] 🔴 KESİLME: Sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1} token sınırını aştı. Aralık ikiye bölünüp yeniden OCR ediliyor...`);
+            const mid0 = chunkStartIdx + Math.floor((chunkPageCount - 1) / 2);
+            await new Promise(r => setTimeout(r, 3000));
+            const firstHalf = (await extractPerfectMarkdownOCR(pdfPath, chunkStartIdx + 1, mid0 + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
+            await new Promise(r => setTimeout(r, 3000));
+            const secondHalf = (await extractPerfectMarkdownOCR(pdfPath, mid0 + 2, chunkEndIdx + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
+            chunkResult = `${firstHalf}\n\n${secondHalf}`;
+            chunkSuccess = true;
+            break;
+          }
+          if (finishReason === "MAX_TOKENS") {
+            console.error(`[MARKDOWN_OCR] ⛔ KESİLME: Sayfa ${chunkStartIdx + 1} tek sayfa — token sınırı aşıldı, sonu eksik olabilir.`);
+          }
+
           chunkResult = result;
           chunkSuccess = true;
-          
-          prisma.apiUsageLog.create({
-            data: {
-              apiKey: `Key #${currentKeyIndex + 1}`,
-              model: "gemini-3.5-flash",
-              operation: "ocr_extraction_chunk",
-              courseSlug: courseName,
-              status: "SUCCESS",
-              durationMs: Date.now() - startTime
-            }
-          }).catch(() => {})
-          
-          break; // Chunk succeeded, break out of key loop
+
+          recordKeyUsage(currentKeyIndex, OCR_MODEL)
+
+          await writeApiUsageLog({
+            apiKey: `Key #${logKeyIndex + 1}`,
+            keyIndex: logKeyIndex,
+            model: OCR_MODEL,
+            operation: "ocr_extraction_chunk",
+            stage: "ocr",
+            courseSlug: courseName.substring(0, 150),
+            status: "SUCCESS",
+            durationMs: Date.now() - startTime,
+          })
+
+          rotateToNextKey(OCR_MODEL);
+          break;
         }
       } catch (e: any) {
-        console.warn(`[MARKDOWN_OCR] Key #${currentKeyIndex + 1} başarısız: ${e.message?.substring(0, 100)}`);
-        
-        const nextKey = rotateToNextKey();
-        if (!nextKey || currentKeyIndex === startKeyIndex) triedAllKeys = true;
+        const quotaInfo = parseGoogleQuotaError(e)
+        const errMsg = e.message || ""
+        const errData = quotaInfo.message || e.response?.data?.error?.message || ""
+        lastOcrError = errData || errMsg
+        let errStatus = "ERROR"
+        if (errMsg.includes("429") || errData.includes("429") || errData.includes("quota")) errStatus = "RATE_LIMIT_429"
+        else if (errMsg.includes("503") || errData.includes("503")) errStatus = "SERVER_ERROR_503"
+        else if (errMsg.includes("timeout") || errMsg.includes("ECONNABORTED")) errStatus = "TIMEOUT"
+
+        console.warn(`[MARKDOWN_OCR] Key #${logKeyIndex + 1} başarısız (${errStatus}): ${lastOcrError.substring(0, 120)}`)
+
+        await writeApiUsageLog({
+          apiKey: `Key #${logKeyIndex + 1}`,
+          keyIndex: logKeyIndex,
+          model: OCR_MODEL,
+          operation: "ocr_extraction_chunk",
+          stage: "ocr",
+          courseSlug: courseName.substring(0, 150),
+          status: errStatus,
+          errorDetail: (errData || errMsg).substring(0, 500),
+          durationMs: Date.now() - startTime,
+        })
+
+        const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503"
+        if (isQuotaError) {
+          quotaHit = true
+          suspendedKeys.set(logKeyIndex, Date.now())
+          if (quotaInfo.isDaily) {
+            await report(`Günlük kota doldu (Key #${logKeyIndex + 1}) — başka anahtar deneniyor`)
+          } else {
+            const baseRetry =
+              quotaInfo.retrySecs > 0
+                ? quotaInfo.retrySecs
+                : errStatus === "RATE_LIMIT_429"
+                  ? 20
+                  : 15
+            const waitSec = Math.max(baseRetry, 15, getSecondsUntilKeyAvailable(OCR_MODEL))
+            await report(`Key #${logKeyIndex + 1} yoğun — ${waitSec} sn bekleniyor`)
+            await new Promise((r) => setTimeout(r, waitSec * 1000))
+          }
+        }
+
+        const nextKey = rotateToNextKey(OCR_MODEL)
+        if (!nextKey || currentKeyIndex === startKeyIndex) {
+          triedAllKeys = true
+        } else if (quotaHit) {
+          await report(`Key #${currentKeyIndex + 1} deneniyor`)
+          await new Promise((r) => setTimeout(r, MIN_OCR_ATTEMPT_GAP_MS))
+        }
       }
     }
 
     if (!chunkSuccess) {
-      throw new Error("OCR İşlemi başarısız oldu: Tüm API anahtarları tükendi veya Google yanıt vermedi.");
+      if (allKeysDailyExhausted(OCR_MODEL)) {
+        throw new ApiQuotaExhaustedError(
+          "Google günlük API limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın Devam Ettir ile yeniden başlatın.",
+          "daily",
+        )
+      }
+      // Geçici 429 (retry in Xs) günlük limit DEĞİLDİR — dersi duraklatma
+      throw new Error(
+        lastOcrError
+          ? `OCR başarısız (API reddi): ${lastOcrError.substring(0, 200)}`
+          : "OCR İşlemi başarısız oldu: Tüm API anahtarları reddedildi veya Google yanıt vermedi.",
+      )
     }
 
-    finalMarkdown += chunkResult + "\n\n";
+    finalMarkdown = finalMarkdown.length === 0
+      ? chunkResult.trim()
+      : stitchOcrMarkdownChunks(finalMarkdown, chunkResult);
     
     // Add small delay between chunks to avoid bursting
-    if (i + CHUNK_SIZE < totalPagesToExtract) {
+    if (chunkEndIdx < endIdx) {
        await new Promise(r => setTimeout(r, 5000));
     }
   }
@@ -436,7 +901,14 @@ Kurallar:
 
 // Üç modlu AI çağrısı (MAKER: Gemini 3.5, CHECKER: Gemini 2.5)
 export async function callAI(prompt: string, retries = 2, mode: "generation" | "verification" | "question_generation" | "notes_generation" | "flashcard_generation" | "kontrolor" | "ground_truth" | "mufettis" | "cerrahi_yama" = "generation", priority: "high" | "normal" = "normal"): Promise<string> {
-  const activeKey = getNextGeminiKey()
+  // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
+  // ⚠️ Model kotası key bazında AYRI sayıldığı için key seçiminden ÖNCE modelId belli olmalı.
+  const isGeneration = mode === "generation" || mode === "question_generation" || mode === "notes_generation" || mode === "flashcard_generation";
+  const MODEL_ID = isGeneration ? "gemini-3.5-flash" : "gemini-2.5-flash"
+
+  await ensureDailyCountersHydrated()
+
+  const activeKey = getNextGeminiKey(MODEL_ID)
 
   if (activeKey) {
     const geminiBody = (p: string, maxTokens: number) => {
@@ -448,25 +920,33 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
       }
     }
 
-    // Üretim yerleri (Eski Groq/DeepSeek) -> 3.5 Flash, Diğerleri -> 2.5 Flash
-    const isGeneration = mode === "generation" || mode === "question_generation" || mode === "notes_generation" || mode === "flashcard_generation";
-    const MODEL_ID = isGeneration ? "gemini-3.5-flash" : "gemini-2.5-flash"
     const modelChain = [{ id: MODEL_ID, tokens: isGeneration ? 65536 : 65536 }]
 
     const startKeyIndex = currentKeyIndex
     let triedAllKeys = false
+    let consecutiveWaitCycles = 0
 
     while (!triedAllKeys) {
-      const currentKey = getNextGeminiKey()
+      const currentKey = getNextGeminiKeyWithFallback(MODEL_ID, consecutiveWaitCycles)
       
-      // Tüm key'ler bu dakika doluysa, yeni dakikayı bekle
       if (!currentKey) {
-        const now = new Date()
-        const secsUntilNextMinute = 60 - now.getSeconds() + 2 // 2sn güvenlik payı
-        console.log(`[AI_ENGINE] ⏳ Tüm key'lerin dakikalık limiti doldu. ${secsUntilNextMinute}sn sonra yeni dakikada devam edilecek...`)
-        await new Promise(r => setTimeout(r, secsUntilNextMinute * 1000))
+        // GÜNLÜK (RPD) tükenmesi: dakika beklemek ÇÖZMEZ → sonsuz döngüye girme, net uyar ve üst katmana bırak
+        if (allKeysDailyExhausted(MODEL_ID)) {
+          console.error(`[AI_ENGINE] ⛔ Tüm projelerin GÜNLÜK (RPD) kotası doldu — yarın PT gece yarısı sıfırlanır`)
+          triedAllKeys = true
+          break
+        }
+        if (geminiKeys.length === 0) {
+          triedAllKeys = true
+          break
+        }
+        consecutiveWaitCycles++
+        const waitSec = getSecondsUntilKeyAvailable(MODEL_ID)
+        console.log(`[AI_ENGINE] ⏳ Uygun key yok (RPM/askı). ${waitSec}sn bekleniyor... (döngü ${consecutiveWaitCycles})`)
+        await new Promise(r => setTimeout(r, waitSec * 1000))
         continue
       }
+      consecutiveWaitCycles = 0
       
       const geminiHeaders = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
       let quotaHit = false
@@ -481,11 +961,21 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
         const contextMatch = prompt.match(/\[LOG_CONTEXT:\s*([^\]]+)\]/)
         const sectionMatch = prompt.match(/BÖLÜM:\s*"?([^"\n]+)"?/) || prompt.match(/DERS:\s*"?([^"\n]+)"?/)
         const logContext = contextMatch ? contextMatch[1] : (sectionMatch ? sectionMatch[1] : mode)
+        const stageMap: Record<string, string> = {
+          notes_generation: "notes",
+          kontrolor: "kontrolor",
+          ground_truth: "ground_truth",
+          mufettis: "mufettis",
+          cerrahi_yama: "yama",
+          question_generation: "questions",
+          flashcard_generation: "flashcards",
+          verification: "verification",
+          generation: "generation",
+        }
+        const logStage = stageMap[mode] || mode
+        const logKeyIndex = currentKeyIndex
 
         try {
-          // İstek gönderilmeden önce RPM sayacını artır
-          incrementKeyRpm(currentKeyIndex)
-          
           const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
             geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
@@ -493,9 +983,11 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           
           prisma.apiUsageLog.create({
             data: {
-              apiKey: `Key #${currentKeyIndex + 1}`,
+              apiKey: `Key #${logKeyIndex + 1}`,
+              keyIndex: logKeyIndex,
               model: model.id,
               operation: mode,
+              stage: logStage,
               courseSlug: logContext.substring(0, 150),
               status: "SUCCESS",
               durationMs: Date.now() - startTime
@@ -506,9 +998,10 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text)
           const result = textParts.join("")
           if (result) {
-            console.log(`[${isGeneration ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ✅ İşlem başarılı [Key #${currentKeyIndex + 1}] [Model: ${model.id}] [RPM: ${getKeyRpmCount(currentKeyIndex)}/${RPM_LIMIT}] [${result.length} chars]`)
+            recordKeyUsage(currentKeyIndex, model.id)
+            console.log(`[${isGeneration ? "MAKER_GEMINI" : "CHECKER_GEMINI"}] ✅ İşlem başarılı [Key #${currentKeyIndex + 1}] [Model: ${model.id}] [RPM: ${getKeyRpmCount(currentKeyIndex, model.id)}/${RPM_LIMIT}] [RPD: ${getKeyDailyCount(currentKeyIndex, model.id)}/${RPD_LIMIT}] [${result.length} chars]`)
             // Başarılı istekten sonra bir sonraki key'e geç (yükü eşit dağıt)
-            rotateToNextKey()
+            rotateToNextKey(MODEL_ID)
             return result
           }
         } catch (e: any) {
@@ -524,9 +1017,11 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
 
           prisma.apiUsageLog.create({
             data: {
-              apiKey: `Key #${currentKeyIndex + 1}`,
+              apiKey: `Key #${logKeyIndex + 1}`,
+              keyIndex: logKeyIndex,
               model: model.id,
               operation: mode,
+              stage: logStage,
               courseSlug: logContext.substring(0, 150),
               status: errStatus,
               errorDetail: (errData || errMsg).substring(0, 500),
@@ -547,7 +1042,7 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
       }
 
       if (quotaHit) {
-        const nextKey = rotateToNextKey()
+        const nextKey = rotateToNextKey(MODEL_ID)
         if (!nextKey || currentKeyIndex === startKeyIndex) {
           triedAllKeys = true
         } else {
@@ -562,6 +1057,13 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
   if (retries > 0) {
     await new Promise(r => setTimeout(r, 60000))
     return callAI(prompt, retries - 1, mode, priority)
+  }
+
+  if (allKeysDailyExhausted(MODEL_ID)) {
+    throw new ApiQuotaExhaustedError(
+      "Google günlük API limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır.",
+      "daily",
+    )
   }
 
   throw new Error(`API kota sınırına ulaştı (${mode} / ${priority}).`);
@@ -654,7 +1156,7 @@ Sadece şu formatta JSON döndür:
     if (e.message && (e.message.includes("429") || e.message.includes("quota") || e.message.includes("exhausted"))) {
       throw e; // 🚨 SESSİZ ATLAMA AÇIĞI KAPATILDI: Kota hatasıysa yutma, üst katmana fırlat!
     }
-    return { summary: "Analiz yapılamadı.", importance: "Medium", topics: [], examLikelihood: "", keyTerms: [], suggestedTitle: "", requiresQuestions: true }
+    return { summary: "Analiz yapılamadı.", importance: "Medium", topics: [], examLikelihood: "", keyTerms: [], suggestedTitle: "", requiresQuestions: isGlossarySectionTitle(sectionTitle) ? false : true }
   }
 }
 
@@ -731,7 +1233,8 @@ export async function generateCourseNotes(
   isChunked = false,
   chunkIndex = 0,
   chunkCount = 1,
-  previousContext?: string
+  previousContext?: string,
+  sourceMode: "strict" | "enriched" = "strict",
 ): Promise<string> {
   // (OCR ŞART olduğu için fileUri asla iptal edilmez)
   const isBibliography = sectionTitle.toLocaleLowerCase('tr-TR').includes("kaynakça") || sectionTitle.toLocaleLowerCase('tr-TR').includes("referans") || sectionTitle.toLocaleLowerCase('tr-TR').includes("bibliography")
@@ -764,7 +1267,8 @@ export async function generateCourseNotes(
           true,
           idx,
           chunks.length,
-          lastChunkTail
+          lastChunkTail,
+          sourceMode,
         )
         if (idx === 0) {
           mergedNotes = chunkResult
@@ -846,6 +1350,23 @@ Amacın, sana verilen metni (kısaltmalar, terimler veya kaynakça) en net, en t
 ⚠️ KESİNLİKLE BENZETME VEYA ANALOJİ KULLANMA!
 ⚠️ "Bu bölüm bize X'i sunmaktadır" gibi girişler KULLANMA. Doğrudan listeye/tabloya başla.
 `;
+  } else if (sourceMode === "strict") {
+    styleInstruction = `
+Sen alanında otoriter, net ve KAYNAĞA SADIK bir SINAV HAZIRLIK UZMANISIN.
+Amacın PDF kaynağındaki bilgiyi eksiksiz, doğru ve anlaşılır biçimde sunmak — kaynak dışı olgusal bilgi EKLEME.
+
+🔒 STRICT KAYNAK MODU (SPL / CIA / CISA / MASAK):
+- Tanımlar, rakamlar, süreler, cezalar ve mevzuat ifadeleri kaynak metindeki gibi olmalı.
+- Hikaye, senaryo ve günlük hayat benzetmeleri SADECE kavramı açıklamaya yardımcı olacaksa ve kaynak bilgiyi bozmayacaksa kısa tutulabilir; uydurma vaka veya sayısal iddia YASAK.
+- 💡 emoji ile kısa ipuçları kullanılabilir; dolgu hikayeleri yazma.
+- 🚨 DÜZELTME ŞERHİ: Kaynakta nesnel hata varsa metni aynen koru, parantez içinde düzeltme notu ekle.
+`;
+    memoryTechniqueInstruction = `
+🧠 HAFIZA TEKNİKLERİ (STRICT — ÖLÇÜLÜ):
+- Süreç/kural yoğun bölümlerde en fazla 1-2 kısa kurumsal senaryo; sayısal eşikleri senaryoya yedir.
+- Karışan kavramlar için kısa karşılaştırma tablosu veya "İKİSİ DE... AMA..." formatı.
+- İçerik yeterliyse bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu ekle.
+`;
   } else {
     styleInstruction = `
 Sen alanında efsaneleşmiş, otoriter ama öğrencilerin dinlemeye doyamadığı KARİZMATİK BİR MENTORSUN.
@@ -866,21 +1387,27 @@ ${disc.analogies}
 `;
 
     memoryTechniqueInstruction = `
-🧠 HAFIZA TEKNİKLİ (HER BÖLÜMDE EN AZ 2 TANE KULLAN):
-- **🎬 Hikaye Yöntemi (BİRİNCİL TEKNİK — BOL KULLAN!):** Her karmaşık süreç veya kuralı kısa bir SENARYO ile anlat. İsim ver, durum yarat, sonucu göster. Öğrenci "aa evet karakterin hikayesindeki gibi" diye hatırlasın.
+🧠 HAFIZA TEKNİKLERİ — "TAM KIVAMINDA" KURALI (NE EKSİK, NE FAZLA):
+Aşağıdaki teknikleri körü körüne KOTA doldurmak için değil, SADECE öğrenmeyi gerçekten kolaylaştıracağı YERLERDE kullan. Yerindelik ve kalite, sayıdan önce gelir.
+- **🎬 Hikaye/Senaryo (BİRİNCİL TEKNİK):** Bir kavram SÜREÇ, KURAL, KARAR ya da SONUÇ içeriyorsa (örn: bir bildirim süreci, bir yaptırım, bir karar mekanizması) kısa ve gerçekçi bir kurumsal senaryo ile anlat. İçerik ne kadar çok süreç/kural barındırıyorsa o kadar çok senaryo olur.
 ${disc.stories}
-  ⚠️ Her bölümde EN AZ 3-4 hikaye/senaryo olsun. Sayısal eşikleri, süreleri, cezaları HİKAYE İÇİNDE ver — böylece rakamlar da akılda kalır.
-  ⚠️ KESİN KURAL: Bu senaryoları/hikayeleri kesinlikle bağımsız veya en altta ayrı bir başlık altında toplama! İlgili kavramın/tanımın hemen altına alt madde veya alt paragraf olarak yerleştir ki teori ve pratik senaryo yan yana dursun.
-- **Akrostiş:** Sıralı maddeleri baş harfleriyle hatırlat. ${disc.akrostiş}
-- **Karşılaştırma ile Fark:** Benzer kavramları "İKİSİ DE... AMA..." formatında ayırt et.
-- **Mini Quiz:** Her büyük bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu yaz. Cevabı hemen altına gizle.
+  📐 DOZ AYARI: Süreç/kural yoğun bir bölümde bol senaryo kullan; ama içerik SADECE düz tanım, liste veya sayısal sözlük niteliğindeyse senaryoyu ZORLAMA — orada net tanım + en fazla 1 kısa benzetme yeterlidir. Dolgu/yapay senaryo, hikaye yokluğu kadar zararlıdır.
+  ⚠️ Sayısal eşikleri, süreleri, cezaları mümkünse senaryonun içine yedir — böylece rakamlar da akılda kalır.
+  ⚠️ KESİN KURAL: Senaryoları en altta ayrı bir başlıkta TOPLAMA! İlgili kavramın/tanımın hemen altına yerleştir ki teori ile örnek yan yana dursun.
+- **Akrostiş:** SADECE sıralı/listelenmiş maddeler varsa ve baş harfleri anlamlı bir kısaltma oluşturuyorsa kullan; zorlama. ${disc.akrostiş}
+- **Karşılaştırma ile Fark:** Birbirine karışan iki kavram varsa "İKİSİ DE... AMA..." formatında ayırt et.
+- **Mini Quiz:** İçerik yeterince doluysa büyük bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu ekle. Cevabı hemen altına gizle.
 ${disc.quiz}
 `;
   }
 
+  const sourceModeInstruction = sourceMode === "enriched"
+    ? `\n🎓 ZENGİNLEŞTİRİLMİŞ MOD (SMMM): Pedagojik hikaye, benzetme ve senaryolar teşvik edilir; olgusal doğruluk korunmalı.\n`
+    : `\n🔒 STRICT KAYNAK MODU: PDF dışı olgusal/sayısal/hukuki iddia ekleme. Sadece kaynak kapsamında kal.\n`
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
-
+${sourceModeInstruction}
 ${glossaryInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
@@ -926,7 +1453,7 @@ ${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diy
 ${isGlossary ? '7.5 ⚠️ SÖZLÜK/KISALTMA KURALI: Bu sayfa sadece bir sözlük olduğu için ASLA en alta "Ekstra Dikkat Edilmesi Gereken Hususlar", "Özet", "Analiz" gibi ek başlıklar AÇMA! Sadece listeyi/tabloyu ver ve bitir.' : ''}
 8. ⚠️ KESİN KURAL: Asla ama asla "Harika bir görev", "İşte notlar", "İşte güncellenmiş versiyon" gibi sohbet, giriş veya kapanış cümleleri yazma! Sadece saf Markdown çıktısı ver. Doğrudan notun içeriğiyle başla.
 9. Dolgu metinleri ATLA: genel giriş cümleleri, tarihsel arka plan, "bu bölümde şunları öğreceğiz" tarzı metinler.
-10. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. KESİNLİKLE resmi, ciddi ve akademik bir üslup kullan (örn: "kocaman bir yalan", "şunu unutma" gibi laubali tabirler YASAKTIR). Asla hikayeleştirme veya laubali senaryolar uydurma.
+10. Her kavramı sıfır bilgili birinin bile anlayacağı şekilde açıkla. Argo/laubali tabirler ("kocaman bir yalan", "şunu unutma" vb.) YASAKTIR. ⚠️ NETLİK: Yukarıdaki hafıza teknikleri bölümünde istenen GERÇEKÇİ KURUMSAL senaryolar/hikayeler serbesttir ve teşvik edilir; ANCAK kaynak metinde OLMAYAN olay/rakam/kural UYDURMA ve şahıs ismi (Ahmet, Mehmet) kullanma. Senaryolar daima kaynaktaki bilgiyi pekiştirmeli, asla yeni "bilgi" eklememelidir.
 11. Hedef: 10 sayfalık bir PDF bölümünün notu ~8 sayfa olmalı. Yoğun ama EKSİKSİZ.
 
 🔴 SAYFA BAZLI TARAMA TALİMATI (EN KRİTİK KURAL):
@@ -952,7 +1479,7 @@ ${visualRulesInstruction}
 
 ⚠️ KESİN KURALLAR:
 1. Resmi terimleri KESİNLİKLE değiştirme. Sınavda birebir bu terimler sorulur.
-2. Tanım cümlelerini kaynak metinden BİREBİR al. Asla hikayeleştirme veya fiktif karakterler kullanma.
+2. Tanımın KENDİSİNİ (resmi tanım cümlesini) kaynak metinden BİREBİR al, değiştirme. Tanımı açıklarken gerçekçi kurumsal senaryolar kullanabilirsin AMA tanım cümlesinin kendisi birebir korunmalı; fiktif şahıs isimleri (Ahmet, Mehmet) KULLANMA.
 3. Sayısal sınırlar, oranlar ve tarihler MUTLAKA yaz. BUNLAR SIKÇA SORULUR.
 4. Formüller varsa formülü yaz + sayısal örnek ile adım adım çöz.
 5. Benzer kavramlar arasındaki farkı TABLO ile göster.
@@ -961,20 +1488,21 @@ ${visualRulesInstruction}
 9. 🇹🇷 DİL KALİTESİ: Türkçe dil bilgisi, kelime dizilimi ve akıcılığa %100 uy. İngilizce'den doğrudan çevrilmiş gibi duran yapay veya ters yapılar ("Özeti [Konu]", "Sözlüğü [Konu]", "Notları [Konu]") KESİNLİKLE kullanma. Her zaman doğal ve düzgün bir Türkçe ile akıcı cümleler kur.
 
 ${isGlossary ? `
-📋 NOT YAPISI (Markdown - SADE KISALTMALAR SÖZLÜĞÜ):
+📋 NOT YAPISI (Markdown - KATEGORİLİ KISALTMALAR TABLOSU):
 
-## 📌 \${sectionTitle}
+## 📌 ${sectionTitle}
 
 ### 🎯 Bu Bölüm Ne Anlatıyor?
-Bu bölümde, ${courseName} dersinde yer alan teknik kısaltmalar ve terimler listelenmektedir.
+Bu bölümde, ${courseName} dersinde geçen teknik kısaltmalar ve terimler, kaynak metne sadık biçimde listelenmektedir.
 
-Metindeki her bir kısaltma veya terim için aşağıdaki sade şablona %100 uy ederek detaylı bilgi ver:
+Kaynak metindeki mantıksal gruplara göre alt başlıklar aç (Örn: "🏢 Düzenleyici Kurumlar", "🌐 Ağ Protokolleri").
+Her alt başlığın altında AYRI bir Markdown tablosu kullan:
 
-### 🔑 [Kısaltma/Terim Adı]
-- **Açılımı veya Tanımı:** [Kaynak metindeki resmi Türkçe tanımını/açıklamasını veya açılımını birebir yaz, tek bir kelimeyi bile değiştirme]
-- **İngilizce Karşılığı (varsa):** [Terimin İngilizce açılımı veya karşılığı]
+| Kısaltma / Terim | Açıklama |
+|------------------|----------|
+| (Kaynaktaki terim) | (Kaynaktaki resmi tanım/açılım — birebir, tek kelime değiştirmeden) |
 
-⚠️ KESİNLİKLE hiçbir benzetme, senaryo, hikaye, akrostiş, Mermaid.js diyagramı veya tablo eklemeyiniz. Sadece sade bir kısaltma/terim listesi oluşturunuz.
+⚠️ KESİNLİKLE EKLEME: hikâye, senaryo, benzetme, akrostiş, Mermaid/akış şeması, zihin haritası, "Ekstra Dikkat", "Bölüm Özeti", "Kendini Test Et".
 ` : `
 📋 NOT YAPISI (Markdown - KONUSAL ENTEGRASYON MODELİ):
 
@@ -1099,6 +1627,8 @@ export async function generateFlashcards(
   fileUri?: string,
   pageStart?: number,
   pageEnd?: number,
+  /** Kaynak doğrulama için ham OCR metni (notlardan bağımsız). Verilmezse content kullanılır. */
+  sourceContentForAudit?: string,
 ): Promise<Array<{ front: string; back: string; difficulty: string }>> {
   const isGlossary = sectionTitle.toLocaleUpperCase("tr-TR").includes("KISALTMALAR") ||
     sectionTitle.toLocaleUpperCase("tr-TR").includes("SÖZLÜK") ||
@@ -1113,10 +1643,15 @@ export async function generateFlashcards(
   console.log(`[FLASHCARD_GEN] Metin ${chunks.length} parçaya bölündü (Toplam Karakter: ${content.length})`);
 
   let allFlashcards: any[] = [];
+  const auditSourceBase = (sourceContentForAudit || content).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "")
+  const auditChunks = auditSourceBase.length > chunkThreshold
+    ? splitContentIntoChunks(auditSourceBase, chunkThreshold)
+    : [auditSourceBase]
 
   // Paralel işlem API'yi boğabilir, bu yüzden sıralı (sequential) gidiyoruz
   for (let i = 0; i < chunks.length; i++) {
     const chunkContent = chunks[i];
+    const chunkAuditSource = auditChunks[i] ?? auditSourceBase;
     console.log(`[FLASHCARD_GEN] Parça ${i + 1}/${chunks.length} işleniyor... (Karakter: ${chunkContent.length})`);
 
     const levelCardStyle: Record<string, string> = {
@@ -1199,8 +1734,9 @@ ${cardTypesInstruction}
     let raw = await callAI(prompt, 2, "flashcard_generation")
 
     let attempt = 1
-    const maxAttempts = 2
+    const maxAttempts = 3
     let chunkFlashcardsList: any[] = []
+    let chunkAuditPassed = false
 
     while (attempt <= maxAttempts) {
       try {
@@ -1212,12 +1748,13 @@ ${cardTypesInstruction}
           throw new Error("Boş veya geçersiz JSON listesi.")
         }
 
-        // Flashcard Müfettişi Devreye Giriyor!
-        console.log(`[FLASHCARD_AUDIT] Parça ${i + 1} Müfettiş derin flashcard denetimi başlatılıyor...`)
-        const audit = await auditFlashcardsAgainstSource(chunkContent, chunkFlashcardsList, sectionTitle, fileUri)
+        // Flashcard Müfettişi: KAYNAK (rawContent/OCR) ile karşılaştır
+        console.log(`[FLASHCARD_AUDIT] Parça ${i + 1} Müfettiş derin flashcard denetimi başlatılıyor (kaynak metin)...`)
+        const audit = await auditFlashcardsAgainstSource(chunkAuditSource, chunkFlashcardsList, sectionTitle, fileUri)
 
         if (audit.passed) {
           console.log(`[FLASHCARD_AUDIT] ✅ Parça ${i + 1} Müfettiş tüm flashcardları hatasız ve kusursuz onayladı!`)
+          chunkAuditPassed = true
           break
         }
 
@@ -1225,7 +1762,9 @@ ${cardTypesInstruction}
         console.log(audit.issues.map(iss => `   - ${iss}`).join("\n"))
 
         if (attempt === maxAttempts) {
-          console.warn(`[FLASHCARD_AUDIT] Maximum audit deneme sayısına ulaşıldı, mevcut kartlarla devam ediliyor.`)
+          // 🔒 Denetimsiz flashcard ASLA yayınlanmaz (soru Müfettişi ile aynı kilit)
+          console.error(`[FLASHCARD_AUDIT] ⛔ Parça ${i + 1} ${maxAttempts} denemede de Müfettiş'i geçemedi! Bu parçanın kartları İPTAL EDİLDİ.`)
+          chunkFlashcardsList = []
           break
         }
 
@@ -1253,8 +1792,12 @@ ${cardTypesInstruction}
       }
     }
 
-    // Chunk'tan gelen başarılı kartları ana listeye ekle
-    allFlashcards = [...allFlashcards, ...chunkFlashcardsList]
+    // Chunk'tan gelen kartları SADECE Müfettiş onayı varsa ekle
+    if (chunkAuditPassed && chunkFlashcardsList.length > 0) {
+      allFlashcards = [...allFlashcards, ...chunkFlashcardsList]
+    } else if (chunkFlashcardsList.length > 0) {
+      console.warn(`[FLASHCARD_AUDIT] ⚠️ Parça ${i + 1}: ${chunkFlashcardsList.length} kart Müfettiş onayı alamadığı için havuza EKLENMEDİ.`)
+    }
 
     // Rate limit koruması
     if (i < chunks.length - 1) {
@@ -1287,6 +1830,8 @@ export async function generateQuestions(
   pageStart?: number,
   pageEnd?: number,
   importance?: string,
+  /** Kaynak doğrulama için ham OCR metni (notlardan bağımsız). Verilmezse content kullanılır. */
+  sourceContentForAudit?: string,
 ): Promise<Array<{ text: string; options: string[]; correct: string; explanation: string; difficulty: string }>> {
   // Chunking mantığı devreye giriyor!
   const chunkThreshold = 15000;
@@ -1296,10 +1841,15 @@ export async function generateQuestions(
   console.log(`[QUESTION_GEN] Metin ${chunks.length} parçaya bölündü (Toplam Karakter: ${content.length})`);
 
   let allQuestions: any[] = [];
+  const auditSourceBase = (sourceContentForAudit || content).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "")
+  const auditChunks = auditSourceBase.length > chunkThreshold
+    ? splitContentIntoChunks(auditSourceBase, chunkThreshold)
+    : [auditSourceBase]
 
   // Paralel işlem API'yi boğabilir, bu yüzden sıralı (sequential) gidiyoruz
   for (let i = 0; i < chunks.length; i++) {
     const chunkContent = chunks[i];
+    const chunkAuditSource = auditChunks[i] ?? auditSourceBase;
     console.log(`[QUESTION_GEN] Parça ${i + 1}/${chunks.length} işleniyor... (Karakter: ${chunkContent.length})`);
 
     const levelQuestionStyle: Record<string, string> = {
@@ -1401,8 +1951,9 @@ Sadece JSON array döndür:
     let raw = await callAI(prompt, 2, "question_generation")
 
     let attempt = 1
-    const maxAttempts = 2
+    const maxAttempts = 3
     let chunkQuestionsList: any[] = []
+    let chunkAuditPassed = false
 
     while (attempt <= maxAttempts) {
       try {
@@ -1414,12 +1965,13 @@ Sadece JSON array döndür:
           throw new Error("Boş veya geçersiz JSON listesi.")
         }
 
-        // Soru Müfettişi Devreye Giriyor!
-        console.log(`[QUESTION_AUDIT] Parça ${i + 1} Müfettiş derin soru denetimi başlatılıyor...`)
-        const audit = await auditQuestionsAgainstSource(chunkContent, chunkQuestionsList, sectionTitle, fileUri)
+        // Soru Müfettişi: KAYNAK (rawContent/OCR) ile karşılaştır
+        console.log(`[QUESTION_AUDIT] Parça ${i + 1} Müfettiş derin soru denetimi başlatılıyor (kaynak metin)...`)
+        const audit = await auditQuestionsAgainstSource(chunkAuditSource, chunkQuestionsList, sectionTitle, fileUri)
 
         if (audit.passed) {
           console.log(`[QUESTION_AUDIT] ✅ Parça ${i + 1} Müfettiş tüm soruları hatasız ve kusursuz onayladı!`)
+          chunkAuditPassed = true
           break
         }
 
@@ -1429,7 +1981,10 @@ Sadece JSON array döndür:
         }
 
         if (attempt === maxAttempts) {
-          console.warn(`[QUESTION_AUDIT] Maximum audit deneme sayısına ulaşıldı, mevcut sorularla devam ediliyor.`)
+          // 🔒 MADDE 7 KİLİDİ: Müfettiş denetimini geçemeyen sorular ASLA havuza eklenmez.
+          // Denetimsiz/hatalı soru yayınlamaktansa o parçanın sorularını tamamen atıyoruz.
+          console.error(`[QUESTION_AUDIT] ⛔ Parça ${i + 1} ${maxAttempts} denemede de Müfettiş'i geçemedi! Bu parçanın soruları İPTAL EDİLDİ (denetimsiz soru yayınlanmaz).`)
+          chunkQuestionsList = []
           break
         }
 
@@ -1462,8 +2017,12 @@ Tüm kurallara ve şablon formatına %100 uyarak soruları yeniden sıfırdan ü
       }
     }
 
-    // Chunk'tan gelen başarılı soruları ana listeye ekle
-    allQuestions = [...allQuestions, ...chunkQuestionsList]
+    // Chunk'tan gelen soruları ana listeye SADECE Müfettiş onayı varsa ekle (Madde 7 kilidi)
+    if (chunkAuditPassed && chunkQuestionsList.length > 0) {
+      allQuestions = [...allQuestions, ...chunkQuestionsList]
+    } else if (chunkQuestionsList.length > 0) {
+      console.warn(`[QUESTION_AUDIT] ⚠️ Parça ${i + 1}: ${chunkQuestionsList.length} soru Müfettiş onayı alamadığı için havuza EKLENMEDİ.`)
+    }
 
     // Rate limit koruması
     if (i < chunks.length - 1) {
@@ -1511,8 +2070,16 @@ Sadece JSON array döndür:
       const backupRaw = await callAI(backupPrompt, 1, "question_generation")
       const backupQuestions = extractCleanJson(backupRaw)
       if (Array.isArray(backupQuestions) && backupQuestions.length > 0) {
-        console.log(`[YEDEK_GÜÇ] ✅ Başarıyla ${backupQuestions.length} adet yedek güç sorusu üretildi.`)
-        allQuestions = [...allQuestions, ...backupQuestions.slice(0, 5)]
+        const trimmedBackup = backupQuestions.slice(0, 5)
+        // 🔒 MADDE 7 KİLİDİ: Yedek güç soruları da Müfettiş denetiminden geçmeden havuza giremez.
+        await new Promise(r => setTimeout(r, 4000))
+        const backupAudit = await auditQuestionsAgainstSource(content, trimmedBackup, sectionTitle, fileUri)
+        if (backupAudit.passed) {
+          console.log(`[YEDEK_GÜÇ] ✅ ${trimmedBackup.length} yedek güç sorusu üretildi ve Müfettiş onayından geçti.`)
+          allQuestions = [...allQuestions, ...trimmedBackup]
+        } else {
+          console.warn(`[YEDEK_GÜÇ] ⚠️ Yedek güç soruları Müfettiş onayı alamadı, havuza EKLENMEDİ.`)
+        }
       }
     }
   } catch (backupErr: any) {
@@ -1644,11 +2211,13 @@ Sadece şu formatta JSON döndür:
     const qRaw = await callAI(qPrompt, 1, "ground_truth");
     questions = extractCleanJson(qRaw) as string[];
   } catch {
-    console.log(`[GROUND_TRUTH] ⚠️ Soru üretilemedi, test atlanıyor.`);
-    return { passed: true, failedQuestions: [], totalQuestions: 0 };
+    console.log(`[GROUND_TRUTH] ⚠️ Soru üretilemedi — test başarısız sayılıyor (içerik onaylanmadı).`);
+    return { passed: false, failedQuestions: ["Ground Truth: soru üretimi API hatası"], totalQuestions: 0 };
   }
 
-  if (!questions || questions.length === 0) return { passed: true, failedQuestions: [], totalQuestions: 0 };
+  if (!questions || questions.length === 0) {
+    return { passed: false, failedQuestions: ["Ground Truth: kaynaktan kontrol sorusu çıkarılamadı"], totalQuestions: 0 };
+  }
   console.log(`[GROUND_TRUTH] 🎯 Üretilen kontrol sorusu sayısı: ${questions.length}`);
 
   // Adım 2: Soruları sadece notlara bakarak cevapla
@@ -1661,8 +2230,9 @@ ${generatedNotes}
 KONTROL SORULARI:
 ${JSON.stringify(questions)}
 
-GÖREV: Yukarıdaki soruları SADECE ve SADECE "ÜRETİLEN DERS NOTU"na bakarak cevapla. Kendi bilgini kullanma!
+GÖREV: Yukarıdaki soruları SADECE ve SADECE "ÜRETİLEN DERS NOTU"na bakarak cevapla. Kendi bilgini KESİNLİKLE kullanma!
 Eğer bir sorunun cevabı notta EKSİKSE, YANLIŞSA veya HİÇ YOKSA o soruyu "foundInNotes": false olarak işaretle.
+⚠️ KANIT ZORUNLULUĞU (KOPYA ÇEKMEYİ ÖNLER): Bir soruyu "foundInNotes": true işaretleyebilmen için, cevabı içeren cümleyi NOTTAN BİREBİR (kelimesi kelimesine) "evidenceQuote" alanına kopyalamak ZORUNLUDUR. Notta birebir böyle bir cümle/veri YOKSA — kendi genel bilginden "muhtemelen doğrudur" DEME — "foundInNotes": false işaretle ve evidenceQuote'u boş bırak.
 
 Sadece şu formatta JSON döndür:
 {
@@ -1670,6 +2240,7 @@ Sadece şu formatta JSON döndür:
     {
       "question": "soru",
       "foundInNotes": true,
+      "evidenceQuote": "Nottan birebir kopyalanan, cevabı içeren cümle (false ise boş bırak)",
       "reason": "neden bulunduğu veya bulunamadığı"
     }
   ]
@@ -1679,7 +2250,13 @@ Sadece şu formatta JSON döndür:
   try {
     const aRaw = await callAI(aPrompt, 1, "ground_truth");
     const results = extractCleanJson(aRaw) as any;
-    const failed = (results.results || []).filter((r: any) => r.foundInNotes === false).map((r: any) => r.question);
+    // KANIT DENETİMİ: "foundInNotes: true" demek yetmez — nottan birebir kanıt cümlesi (evidenceQuote)
+    // göstermek ZORUNLU. Kanıt yoksa (model önbilgiyle "var" demiş olabilir) soru BAŞARISIZ sayılır.
+    const failed = (results.results || []).filter((r: any) => {
+      if (r.foundInNotes !== true && r.foundInNotes !== "true") return true;
+      const quote = (r.evidenceQuote || "").toString().trim();
+      return quote.length < 15; // kanıt cümlesi yok/yetersiz → kopya çekmiş say, başarısız
+    }).map((r: any) => r.question);
 
     if (failed.length > 0) {
       console.log(`[GROUND_TRUTH] ❌ BAŞARISIZ: ${failed.length} sorunun cevabı notlarda yok!`);
@@ -1689,8 +2266,8 @@ Sadece şu formatta JSON döndür:
 
     return { passed: failed.length === 0, failedQuestions: failed, totalQuestions: questions.length };
   } catch {
-    console.log(`[GROUND_TRUTH] ⚠️ Cevaplar analiz edilemedi, test atlanıyor.`);
-    return { passed: true, failedQuestions: [], totalQuestions: questions.length || 0 };
+    console.log(`[GROUND_TRUTH] ⚠️ Cevaplar analiz edilemedi — test başarısız sayılıyor.`);
+    return { passed: false, failedQuestions: ["Ground Truth: cevap analizi API hatası"], totalQuestions: questions.length || 0 };
   }
 }
 
@@ -1701,10 +2278,23 @@ export async function verifyNotesAgainstSource(
   sourceContent: string,
   generatedNotes: string,
   sectionTitle: string,
-  courseName: string
+  courseName: string,
+  sourceMode: "strict" | "enriched" = "strict",
 ): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[] }> {
+  const sourceModeBlock = sourceMode === "enriched"
+    ? `🎓 ZENGİNLEŞTİRİLMİŞ KAYNAK MODU (SMMM):
+- Hikaye, benzetme, analoji, 💡 örnekler ve pedagojik senaryolar BEKLENEN içeriktir — bunları "[UYDURMA]" sayma.
+- Sadece rakam, süre, oran, ceza, kanun/madde, kurum adı gibi OLGUSAL/SAYISAL/HUKUKİ iddiaları kaynakla doğrula.
+`
+    : `🔒 STRICT KAYNAK MODU (SPL / CIA / CISA / MASAK):
+- PDF kaynağı dışı olgusal/sayısal/hukuki iddia KABUL EDİLMEZ.
+- Pedagojik zenginleştirme sınırlı olmalı; kaynakta olmayan somut iddia uydurma sayılır.
+`
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 Sen bir sınav materyali KALİTE KONTROLÖRÜSÜN (Kontrolör). Görevin, üretilen ders notlarını yasal kaynak dökümanla karşılaştırıp yasal süreler, cezalar, limitler ve kritik mevzuat kavramları bazında hiçbir eksiğin kalmadığını doğrulamaktır.
+
+${sourceModeBlock}
 
 📄 Sana verilen metni ASIL KAYNAK olarak kullan.
 
@@ -1728,7 +2318,7 @@ Değerlendirmeye başlamadan ÖNCE kaynak metni analiz et ve aşağıdaki duruml
 Eğer içerik yoğunluğu DÜŞÜK ise:
 → Başlık adlarının ders notunda detaylı açıklanmamış olmasını KESİNLİKLE missingTopics veya issues olarak YAZMA.
 → Kaynak metinde detayı/açıklaması olmayan bir başlığın notta da detaysız olması DOĞAL ve BEKLENEN bir durumdur.
-→ Bu tür bölümlere otomatik olarak 95-100 puan ver (ciddi bir bilgi hatası olmadıkça).
+→ Bu tür düşük içerikli bölümlerde, kaynaktaki bilgiler nota eksiksiz ve doğru aktarılmışsa KESİNLİKLE TAM 100 PUAN VER (96, 97, 98 gibi ara puanlar VERME — sadece ciddi bir BİLGİ HATASI varsa düşür). Aksi halde bu bölüm sistemde asla yayınlanamaz ve takılı kalır.
 → suggestions alanına isteğe bağlı yapısal öneriler yazabilirsin ama bunlar puanı düşürmez.
 
 Bu kural SADECE yukarıdaki düşük içerikli bölümler için geçerlidir. Gerçek ders anlatımı, kavram tanımı, formül veya mevzuat detayı içeren bölümlerde HER ZAMANKİ GİBİ ACIMADAN DENETLE.
@@ -1740,6 +2330,8 @@ PUAN KIRAN DURUMLAR VE ASİMETRİK CEZA MATEMATİĞİ (KESİN KURAL):
 - Tablo veya liste YARIDA kesilmiş: -10 PUAN.
 - Ceza miktarı veya yaptırım türü HATALI: -20 PUAN.
 - 🚨 KISMİ ANLATIM KURALI (ÖNEMLİ): Kaynak metinde bir kavramın, kanunun veya sürecin ALT MADDELERİ (örn: 5 alt bent, 4 özellik) varsa ve üretilen notta bu maddelerin SADECE BAZILARI (örn: 3 tanesi) yer alıp diğerleri EKSİK BIRAKILMIŞSA, bu kabul edilemez! "Ana başlık var" diyerek konuyu tam sayma. Atlanan her alt maddeyi "missingTopics" listesine KESİNLİKLE detaylıca yaz ve kısmi anlatım için -15 PUAN KIR.
+- 🚨🚨🚨 UYDURMA / FAZLALIK KURALI (TERS YÖN DENETİMİ — ÇOK KRİTİK): Şimdi yönü TERS çevir ve nottaki HER somut iddiayı kaynakta ARA. Üretilen notta geçen AMA kaynak metinde KARŞILIĞI BULUNMAYAN her olgusal/sayısal/hukuki iddia (rakam, süre, oran, ceza miktarı, kurum adı, kanun/madde numarası, istisna, tarih, kural) bir UYDURMADIR (halüsinasyon). Bunları "issues" listesine "[UYDURMA] ..." diye KESİNLİKLE yaz ve her uydurma somut iddia için net -20 PUAN kır.
+  ⚠️ NE UYDURMA DEĞİLDİR (bunlar için ceza kesme): Tanımın kendi cümlelerinle yeniden ifade edilmesi, eş anlamlı anlatım, benzetme/analoji, akılda kalıcı senaryo/hikaye, görsel/tablo/diyagram, genel bağlayıcı cümleler. Sadece kaynakta KARŞILIĞI OLMAYAN OLGUSAL/SAYISAL/HUKUKİ iddialar uydurmadır.
 
 
 PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL):
@@ -1772,7 +2364,7 @@ Sadece JSON döndür:
 {
   "score": <0-100 arası tam sayı>,
   "missingTopics": ["Tamamen ATLANMIŞ konu varsa yaz — yoksa boş array"],
-  "issues": ["YANLIŞ rakam, tarih veya mevzuat hatası varsa yaz — yoksa boş array"],
+  "issues": ["YANLIŞ rakam/tarih/mevzuat hatası VEYA kaynakta olmayan '[UYDURMA] ...' iddialar — yoksa boş array"],
   "suggestions": ["İyileştirme önerisi — yoksa boş array"]
 }
 
@@ -1785,15 +2377,28 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
     let score = result.score || 0;
     const missingTopics = result.missingTopics || [];
 
-    // GROUND TRUTH ENTEGRASYONU
+    // ==================== GROUND TRUTH ENTEGRASYONU (Madde 2 — SIZDIRMAZ RED) ====================
+    // Ground Truth testi, notun %100 olabilmesi için ZORUNLU bir kapıdır.
+    // Test BAŞARISIZ olursa VEYA hiç çalışmazsa (API hatası / soru üretilemedi),
+    // not KESİNLİKLE %100 sayılamaz. Aksi halde denetlenmemiş not canlıya sızar.
     const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, courseName);
-    if (!groundTruth.passed && groundTruth.failedQuestions.length > 0 && groundTruth.totalQuestions > 0) {
-      const failRatio = groundTruth.failedQuestions.length / groundTruth.totalQuestions;
-      const gtPenalty = Math.round(score * failRatio);
-      score = Math.max(50, score - gtPenalty);
 
-      const gtTopics = groundTruth.failedQuestions.map(q => `Eksik Detay (Ground Truth Testi Başarısız): ${q}`);
-      missingTopics.push(...gtTopics);
+    if (!groundTruth.passed) {
+      if (groundTruth.totalQuestions > 0 && groundTruth.failedQuestions.length > 0) {
+        // Bilinen başarısızlık: bazı sorular notla cevaplanamadı → orana göre ceza (asla 100 kalmaz)
+        const failRatio = groundTruth.failedQuestions.length / groundTruth.totalQuestions;
+        const gtPenalty = Math.max(5, Math.round(score * failRatio));
+        score = Math.max(50, Math.min(score - gtPenalty, 99));
+
+        const gtTopics = groundTruth.failedQuestions.map(q => `Eksik Detay (Ground Truth Testi Başarısız): ${q}`);
+        missingTopics.push(...gtTopics);
+      } else {
+        // Test hiç çalışmadı (API hatası / soru üretilemedi) → güvenlik gereği not %100 sayılmaz.
+        score = Math.min(score, 90);
+        missingTopics.push(
+          "Ground Truth doğrulama testi tamamlanamadı (API hatası veya kontrol sorusu üretilemedi). Güvenlik gereği not %100 sayılmadı, tekrar denenecek."
+        );
+      }
     }
 
     return {
@@ -1841,6 +2446,7 @@ ${generatedNotes.replace(/"/g, "'")}
 Sadece ve sadece yukarıda listelenen 3 spesifik konuya odaklan. Kaynak metindeki bu 3 konu ile üretilen notlardaki ilgili paragrafları karşılaştır.
 1. EKSİKLİK (Omission): Kaynak metinde geçen herhangi bir yasal süre (örn: 10 gün), oran (örn: %5), limit (örn: 50bin TL), katalog suç listesi, yetkili merci (örn: Hazine ve Maliye Bakanlığı yerine İçişleri Bakanlığı), istisna veya mikro kural ders notunda ATLANMIŞ MI?
 2. BİLGİ HATASI/ÇARPITMA (Contradiction): Süreler, limitler veya kurallar ders notuna aktarılırken yanlış veya çarpıtılmış şekilde yazılmış mı (örn: 3 yıl yerine 5 yıl)?
+3. UYDURMA (Fabrication — TERS YÖN): Ders notunda bu 3 konuyla ilgili geçen AMA kaynak metinde KARŞILIĞI HİÇ BULUNMAYAN somut bir iddia (rakam, süre, oran, ceza, kurum, kanun/madde no, istisna) var mı? Kaynakta dayanağı olmayan böyle bir bilgi UYDURMADIR → "contradiction" tipinde ve "CRITICAL" olarak işaretle. (Benzetme, hikaye, yeniden ifade UYDURMA DEĞİLDİR; sadece kaynakta olmayan olgusal/sayısal iddialar.)
 
 ÖNEMLİ: Bu 3 konunun dışındaki diğer ders notu kısımlarını ve kaynak metindeki diğer konuları KESİNLİKLE göz ardı et, onları denetleme.
 
@@ -2153,8 +2759,8 @@ Sadece şu formatta JSON döndür:
     console.log(`[SOLVER_AI] ✅ ${questions.length} sorudan ${validQuestions.length} tanesi denetimden geçti.`);
     return validQuestions;
   } catch (error) {
-    console.error("[SOLVER_AI] Soru denetimi başarısız oldu, orijinal sorular korunuyor:", error);
-    return questions; // Fallback to original if solver fails
+    console.error("[SOLVER_AI] Soru denetimi başarısız oldu — doğrulanmamış sorular kaydedilmeyecek:", error);
+    return [];
   }
 }
 
@@ -2211,7 +2817,148 @@ Eğer spoiler varsa veya bilgi yanlışsa "is_valid": false yap.
     console.log(`[SOLVER_AI] ✅ ${flashcards.length} karttan ${validFlashcards.length} tanesi denetimden geçti.`);
     return validFlashcards;
   } catch (error) {
-    console.error("[SOLVER_AI] Flashcard denetimi başarısız oldu, orijinal kartlar korunuyor:", error);
-    return flashcards; // Fallback
+    console.error("[SOLVER_AI] Flashcard denetimi başarısız oldu — doğrulanmamış kartlar kaydedilmeyecek:", error);
+    return [];
+  }
+}
+
+// ==================== ÇİFT DİL (TR + EN) — CISA/CIA ====================
+// Notlar: yalnızca Türkçe. Soru + flashcard: TR ana metin + EN paralel alan.
+
+/** Soru ve flashcard için TR+EN çeviri (uluslararası denetim sınavları) */
+export function needsBilingualStudyItems(aiMode: string): boolean {
+  return aiMode === "international_audit"
+}
+
+/** @deprecated Notlar artık çevrilmiyor — needsBilingualStudyItems kullanın */
+export function needsBilingualContent(aiMode: string): boolean {
+  return needsBilingualStudyItems(aiMode)
+}
+
+export async function translateNotesToEnglish(
+  notesTr: string,
+  sectionTitle: string,
+  courseName: string
+): Promise<string | null> {
+  if (!notesTr || notesTr.length < 50) return null
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle} > EN Çeviri]
+Sen profesyonel bir teknik çevirmensin. Aşağıdaki TÜRKÇE ders notunu İNGİLİZCE'ye çevir.
+
+KURALLAR:
+- Resmi sınav terimlerini (control, audit, governance, assurance, risk) DOĞRU ve standart İngilizce karşılıklarıyla kullan.
+- Rakam, süre, oran, madde numarası gibi somut değerleri AYNEN koru — değiştirme.
+- Markdown yapısını (başlıklar, tablolar, listeler) koru.
+- Uydurma bilgi ekleme, sadece çevir.
+- Sohbet/giriş cümlesi yazma, doğrudan markdown ile başla.
+
+TÜRKÇE NOT:
+${notesTr.substring(0, 120000)}
+`
+  try {
+    const raw = await callAI(prompt, 1, "verification")
+    return raw.trim() || null
+  } catch {
+    return null
+  }
+}
+
+export async function translateFlashcardsToEnglish(
+  flashcards: Array<{ front: string; back: string }>,
+  sectionTitle: string,
+  courseName: string
+): Promise<Array<{ front_en: string; back_en: string }>> {
+  if (flashcards.length === 0) return []
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle} > Flashcard EN]
+Aşağıdaki Türkçe flashcardları İngilizce'ye çevir. Her kart için front_en ve back_en üret.
+
+KURALLAR:
+- Resmi CISA/audit terimlerini doğru İngilizce karşılıklarıyla kullan.
+- Rakam/süre/oran değerlerini AYNEN koru.
+- Anlam kayması olmasın — birebir eşdeğer çeviri.
+
+GİRDİ:
+${JSON.stringify(flashcards.map((f, i) => ({ index: i, front: f.front, back: f.back })))}
+
+Sadece JSON array döndür:
+[{"index": 0, "front_en": "...", "back_en": "..."}]
+`
+  try {
+    const raw = await callAI(prompt, 1, "verification")
+    const parsed = extractCleanJson(raw)
+    const list = Array.isArray(parsed) ? parsed : []
+    return flashcards.map((_, i) => {
+      const row = list.find((r: any) => r.index === i) || list[i]
+      return {
+        front_en: row?.front_en || "",
+        back_en: row?.back_en || "",
+      }
+    })
+  } catch {
+    return flashcards.map(() => ({ front_en: "", back_en: "" }))
+  }
+}
+
+export async function translateQuestionsToEnglish(
+  questions: Array<{ text: string; options: string[]; explanation?: string }>,
+  sectionTitle: string,
+  courseName: string
+): Promise<Array<{ text_en: string; options_en: string[]; explanation_en: string }>> {
+  if (questions.length === 0) return []
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle} > Soru EN]
+Aşağıdaki Türkçe çoktan seçmeli soruları İngilizce'ye çevir. Şık harfleri (A/B/C/D/E) ve doğru cevap harfi DEĞİŞMEZ — sadece metinleri çevir.
+
+KURALLAR:
+- Resmi audit/IT terimlerini standart İngilizce kullan.
+- Rakam/süre/oran AYNEN korunur.
+- options_en dizisi options ile aynı sırada ve aynı sayıda olmalı.
+
+GİRDİ:
+${JSON.stringify(questions.map((q, i) => ({ index: i, text: q.text, options: q.options, explanation: q.explanation || "" })))}
+
+Sadece JSON array döndür:
+[{"index": 0, "text_en": "...", "options_en": ["A) ...", ...], "explanation_en": "..."}]
+`
+  try {
+    const raw = await callAI(prompt, 1, "verification")
+    const parsed = extractCleanJson(raw)
+    const list = Array.isArray(parsed) ? parsed : []
+    return questions.map((q, i) => {
+      const row = list.find((r: any) => r.index === i) || list[i]
+      return {
+        text_en: row?.text_en || "",
+        options_en: Array.isArray(row?.options_en) ? row.options_en : q.options,
+        explanation_en: row?.explanation_en || "",
+      }
+    })
+  } catch {
+    return questions.map((q) => ({ text_en: "", options_en: q.options, explanation_en: "" }))
+  }
+}
+
+/** TR↔EN çeviri tutarlılığı: sayılar ve resmi terimler eşleşiyor mu? */
+export async function validateBilingualPairs(
+  pairs: Array<{ tr: string; en: string; label: string }>,
+  sectionTitle: string,
+  courseName: string
+): Promise<{ passed: boolean; issues: string[] }> {
+  if (pairs.length === 0) return { passed: true, issues: [] }
+  const sample = pairs.slice(0, 12)
+  const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle} > Çeviri Tutarlılık]
+Aşağıdaki TR/EN metin çiftlerini incele. Aynı anlamı mı taşıyorlar? Rakamlar/süreler birebir eşleşiyor mu?
+
+${JSON.stringify(sample)}
+
+Sadece JSON döndür:
+{"passed": true/false, "issues": ["..."]}
+`
+  try {
+    const raw = await callAI(prompt, 1, "verification")
+    const result = extractCleanJson(raw)
+    return {
+      passed: result.passed === true || result.passed === "true",
+      issues: result.issues || [],
+    }
+  } catch {
+    return { passed: false, issues: ["Çeviri tutarlılık denetimi API hatası"] }
   }
 }

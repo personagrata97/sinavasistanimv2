@@ -14,6 +14,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 })
     }
 
+    const userRole = (session.user as { role?: string }).role
+    if (userRole !== "admin") {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: { role: true },
+      })
+      if (dbUser?.role !== "admin") {
+        return NextResponse.json({ error: "PDF yükleme için admin yetkisi gereklidir." }, { status: 403 })
+      }
+    }
+
     const formData = await req.formData()
     const file = formData.get("file") as File
     const slug = formData.get("slug") as string

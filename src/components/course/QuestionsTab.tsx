@@ -479,6 +479,12 @@ function QuestionsTab({ slug, courseName }: { slug: string, courseName: string }
           </Tooltip>
         </div>
         <div className="text-lg font-medium leading-relaxed mb-6 text-slate-100">{formatQuestionText(q.text)}</div>
+        {q.text_en && (
+          <div className="mb-6 p-4 rounded-xl bg-blue-500/5 border border-blue-500/15 text-sm text-slate-400 italic">
+            <div className="text-[9px] font-bold uppercase tracking-widest text-blue-400/80 mb-2">English</div>
+            {formatQuestionText(q.text_en)}
+          </div>
+        )}
         <div className="space-y-3">
           {q.options.slice(0, 5).map((opt: string, i: number) => {
             const letter = String.fromCharCode(65 + i)
@@ -488,10 +494,19 @@ function QuestionsTab({ slug, courseName }: { slug: string, courseName: string }
             let colorClass = isCorrect ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : isWrong ? "border-red-500 bg-red-500/10 text-red-400" : isSelected ? "border-blue-500 bg-blue-500/10" : "border-white/5 bg-white/[0.02] hover:bg-white/[0.05]"
             if (showResult && !isCorrect && !isWrong) colorClass += " opacity-40"
             const cleanOpt = opt.replace(/^[A-J][).]\s*/, '')
+            const enOptions: string[] | null = (() => {
+              if (!q.options_en) return null
+              if (Array.isArray(q.options_en)) return q.options_en
+              try { return JSON.parse(q.options_en) } catch { return null }
+            })()
+            const enOpt = enOptions?.[i]?.replace(/^[A-J][).]\s*/, '') || null
             return (
               <button key={i} disabled={showResult} onClick={() => handleAnswer(letter)} className={`w-full p-4 rounded-xl border text-left transition-all flex items-center gap-4 ${colorClass}`}>
                 <span className={`w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold ${isSelected ? "bg-blue-500 text-white" : "bg-white/5 text-slate-500"}`}>{letter}</span>
-                <span className="text-sm font-medium">{cleanOpt}</span>
+                <span className="text-sm font-medium flex flex-col gap-0.5">
+                  <span>{cleanOpt}</span>
+                  {enOpt && <span className="text-xs text-slate-500 italic">{enOpt}</span>}
+                </span>
               </button>
             )
           })}

@@ -116,6 +116,13 @@ export async function extractAllText(buffer: Buffer): Promise<string[]> {
   })
 }
 
+/** Taranmış PDF bölümlerinde OCR tamamlanana kadar kullanılan geçici işaret */
+export const SCANNED_PDF_PENDING_OCR = "[SCANNED_PDF_PENDING_OCR]"
+
+export function isPendingOcrContent(content: string): boolean {
+  return content.includes(SCANNED_PDF_PENDING_OCR)
+}
+
 // Non-searchable PDF durumunu kontrol et (upload route'dan çağrılır)
 export function checkPdfQuality(pageTexts: string[], totalPages: number): {
   isNonSearchable: boolean;
@@ -434,4 +441,96 @@ export function extractSectionsRegex(pageTexts: string[]): Array<{ title: string
   }
 
   return sections;
+}
+
+function parseTitleArrayFromAi(raw: string): string[] {
+  try {
+    let cleaned = raw.trim()
+    const block = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (block) cleaned = block[1].trim()
+    const parsed = JSON.parse(cleaned)
+    if (Array.isArray(parsed)) {
+      return parsed.filter((t): t is string => typeof t === "string" && t.trim().length >= 2)
+    }
+  } catch {
+    const match = raw.match(/\[[\s\S]*\]/)
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0])
+        if (Array.isArray(parsed)) {
+          return parsed.filter((t): t is string => typeof t === "string" && t.trim().length >= 2)
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  return []
+}
+
+const TITLES_ONLY_PROMPT = `
+Kitabın İÇİNDEKİLER (TOC) bölümünden TÜM ANA BÖLÜM/ÜNİTE başlıklarını sırayla çıkar.
+
+KURALLAR:
+1. SADECE başlık listesi ver — sayfa numarası ASLA verme.
+2. "Kısaltmalar", "Tanımlar", "Kavramlar" varsa dahil et.
+3. "Kaynakça", "Kaynaklar", "Önsöz", "İçindekiler" ASLA dahil etme.
+4. Başlıklara "(Bölüm 3/20)" gibi sayaç ekleme; kitaptaki gerçek adı yaz.
+5. Numaralı bölümlerde "1. Bilgi Güvenliği Yönetimi" formatını koru.
+
+Sadece JSON string array döndür:
+["Kısaltmalar", "1. Bilgi Güvenliği Yönetimi", "2. Varlık Yönetimi"]
+`
+
+/** AI yalnızca başlık listesi döndürür — sayfa numarası güvenilmez, kullanılmaz */
+export async function detectSectionTitlesOnlyTextAI(
+  tocSnippet: string,
+  apiKey: string
+): Promise<string[]> {
+  const headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey }
+  const body = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `${TITLES_ONLY_PROMPT}\n\nKAYNAK METİN (içindekiler bölgesi):\n${tocSnippet}`,
+          },
+        ],
+      },
+    ],
+    generationConfig: { temperature: 0.1 },
+  }
+
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+    body,
+    { headers, timeout: 180000 }
+  )
+  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+  return parseTitleArrayFromAi(raw)
+}
+
+/** Multimodal: PDF'ten yalnızca başlık listesi */
+export async function detectSectionTitlesOnlyMultimodal(
+  fileUri: string,
+  apiKey: string
+): Promise<string[]> {
+  const headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey }
+  const body = {
+    contents: [
+      {
+        parts: [
+          { fileData: { mimeType: "application/pdf", fileUri } },
+          { text: TITLES_ONLY_PROMPT },
+        ],
+      },
+    ],
+    generationConfig: { temperature: 0.1 },
+  }
+
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+    body,
+    { headers, timeout: 300000 }
+  )
+  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+  return parseTitleArrayFromAi(raw)
 }

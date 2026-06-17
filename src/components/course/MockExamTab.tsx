@@ -13,6 +13,12 @@ import dynamic from "next/dynamic"
 import { EmptyState, LoadingSkeleton, cleanExplanationText, formatMockExamQuestionText } from "./shared"
 import { Tooltip } from "@/components/ui/shared"
 import { toast } from "sonner"
+import {
+  getExamConfig,
+  getCourseMockExamParams,
+  estimateScaledScore,
+  getScaledScoreRange,
+} from "@/lib/course-data"
 
 const ProgressChart = dynamic(() => import("@/components/ProgressChart"), { ssr: false })
 
@@ -32,10 +38,27 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
   const [flagged, setFlagged] = useState<Set<number>>(new Set())
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  const EXAM_DURATION_MINUTES = programSlug === "masak" ? 45 : 45
-  const QUESTION_COUNT = programSlug === "masak" ? 50 : 25
-  const PASSING_SCORE = programSlug === "masak" ? 65 : 60
-  const MODULE_BARRIER = 50
+  const examConfig = getExamConfig(programSlug)
+  const courseParams = getCourseMockExamParams(programSlug, slug)
+  const QUESTION_COUNT = courseParams?.questionCount ?? 25
+  const EXAM_DURATION_MINUTES = courseParams?.durationMinutes ?? 45
+  const PASSING_SCORE = courseParams?.passingScore ?? 60
+  const MODULE_BARRIER = courseParams?.moduleBarrier ?? 50
+  const SCORE_DISPLAY_MODE = courseParams?.scoreDisplayMode ?? "percent"
+  const MIN_QUESTION_POOL = courseParams?.minQuestionPool ?? 5
+  const usesModuleBarrier = MODULE_BARRIER > 0 && SCORE_DISPLAY_MODE === "percent"
+  const scaledRange = examConfig ? getScaledScoreRange(examConfig) : null
+
+  const programRulesLabel = (() => {
+    switch (programSlug) {
+      case "masak": return "MASAK"
+      case "cisa": return "CISA (ISACA)"
+      case "cia": return "CIA (IIA)"
+      case "smmm": return "SMMM (TÜRMOB/TESMER)"
+      case "spl-bagimsiz-denetim": return "BSBD (SPL)"
+      default: return "SPL"
+    }
+  })()
 
   useEffect(() => {
     async function load() {
@@ -55,6 +78,10 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
       pool = pool.filter(q => q.module === moduleName || q.section?.module === moduleName)
       if (pool.length === 0) {
         toast.error("Seçilen modüle ait henüz üretilmiş soru bulunamadı.")
+        return
+      }
+      if (programSlug === "masak" && pool.length < QUESTION_COUNT) {
+        toast.error(`Modül denemesi için en az ${QUESTION_COUNT} soru gerekir. Şu an ${pool.length} soru var.`)
         return
       }
       const shuffled = pool.sort(() => Math.random() - 0.5)
@@ -171,19 +198,23 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
       }
     })
 
-    const score = Math.round((correct / questions.length) * 100)
+    const score = SCORE_DISPLAY_MODE === "scaled" && examConfig
+      ? estimateScaledScore(correct, questions.length, examConfig)
+      : Math.round((correct / questions.length) * 100)
 
     const moduleScores: Record<string, number> = {}
     let allModulesPassed = true
     for (const [mod, stats] of Object.entries(moduleStats)) {
       const modScore = stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0
       moduleScores[mod] = modScore
-      if (modScore < MODULE_BARRIER) {
+      if (usesModuleBarrier && modScore < MODULE_BARRIER) {
         allModulesPassed = false
       }
     }
 
-    const passed = score >= PASSING_SCORE && allModulesPassed
+    const passed = SCORE_DISPLAY_MODE === "scaled"
+      ? score >= PASSING_SCORE
+      : score >= PASSING_SCORE && allModulesPassed
 
     const weakAreas = Object.entries(wrongTopics)
       .sort(([, a], [, b]) => b - a)
@@ -232,7 +263,13 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
         <div className="mb-6 flex justify-center"><Clock className="w-16 h-16 text-slate-600" /></div>
         <h2 className="text-2xl font-bold mb-3">Deneme Sınavı</h2>
         <p className="text-sm text-slate-400 mb-8">
-          Gerçek SPL sınav koşullarında kendinizi test edin. {QUESTION_COUNT} soru, {EXAM_DURATION_MINUTES} dakika süre.
+          {programSlug === "cisa"
+            ? `Gerçek CISA sınav koşullarında kendinizi test edin. ${QUESTION_COUNT} soru, ${EXAM_DURATION_MINUTES} dakika süre.`
+            : programSlug === "cia"
+              ? `Gerçek CIA parça koşullarında kendinizi test edin. ${QUESTION_COUNT} soru, ${EXAM_DURATION_MINUTES} dakika süre.`
+              : programSlug === "smmm"
+                ? `SMMM test usulü deneme. ${QUESTION_COUNT > 0 ? `${QUESTION_COUNT} soru` : "mevcut soru havuzu"}, ${EXAM_DURATION_MINUTES} dakika süre.`
+                : `Gerçek ${programRulesLabel} sınav koşullarında kendinizi test edin. ${QUESTION_COUNT} soru, ${EXAM_DURATION_MINUTES} dakika süre.`}
         </p>
 
         <div className="grid grid-cols-3 gap-4 mb-8">
@@ -245,23 +282,52 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
             <div className="text-[11px] text-slate-500 mt-1">Dakika</div>
           </div>
           <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-            <div className="text-2xl font-bold text-emerald-400">{MODULE_BARRIER}</div>
-            <div className="text-[11px] text-slate-500 mt-1">Geçme Notu</div>
+            <div className="text-2xl font-bold text-emerald-400">{PASSING_SCORE}</div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              {SCORE_DISPLAY_MODE === "scaled"
+                ? `Geçme (ölçekli${scaledRange ? ` ${scaledRange.min}-${scaledRange.max}` : ""})`
+                : "Geçme Notu"}
+            </div>
           </div>
         </div>
 
         <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 text-left mb-8">
-          <div className="text-sm text-amber-300 font-medium mb-2 flex items-center gap-2"><ClipboardList className="w-4 h-4" /> {programSlug === "masak" ? "MASAK" : "SPL"} Sınav Kuralları</div>
+          <div className="text-sm text-amber-300 font-medium mb-2 flex items-center gap-2"><ClipboardList className="w-4 h-4" /> {programRulesLabel} Sınav Kuralları</div>
           <ul className="text-xs text-slate-400 space-y-1">
-            <li>• Her {programSlug === "masak" ? "modülden" : "dersten"} en az <strong className="text-amber-300">{MODULE_BARRIER} puan</strong> almalısın</li>
-            <li>• Genel ortalaman en az <strong className="text-amber-300">{PASSING_SCORE} puan</strong> olmalı (sertifika için)</li>
+            {programSlug === "masak" ? (
+              <>
+                <li>• Her modülden en az <strong className="text-amber-300">{MODULE_BARRIER} puan</strong> almalısın</li>
+                <li>• Genel ortalaman en az <strong className="text-amber-300">{PASSING_SCORE} puan</strong> olmalı</li>
+              </>
+            ) : programSlug === "cisa" ? (
+              <>
+                <li>• Geçme eşiği: ölçekli <strong className="text-amber-300">{PASSING_SCORE} puan</strong> (200-800 aralığı)</li>
+                <li>• Domain/alan bazlı baraj yoktur; alan skorları yalnızca bilgi amaçlıdır</li>
+                <li>• ISACA Aday Kılavuzu: 2×10 dk mola hakkınız vardır; molada süre işlemeye devam eder</li>
+              </>
+            ) : programSlug === "cia" ? (
+              <>
+                <li>• Her parçada geçme: ölçekli <strong className="text-amber-300">{PASSING_SCORE} puan</strong> (250-750 aralığı)</li>
+                <li>• 4 şıklı çoktan seçmeli; yanlış cevap cezası yok</li>
+              </>
+            ) : programSlug === "smmm" ? (
+              <>
+                <li>• Her dersten en az <strong className="text-amber-300">{MODULE_BARRIER} puan</strong> almalısın</li>
+                <li>• Ders ortalaması en az <strong className="text-amber-300">{PASSING_SCORE} puan</strong> olmalı</li>
+              </>
+            ) : (
+              <>
+                <li>• Her {programSlug === "spl-bagimsiz-denetim" ? "dersten" : "dersten"} en az <strong className="text-amber-300">{MODULE_BARRIER} puan</strong> almalısın</li>
+                <li>• Genel ortalaman en az <strong className="text-amber-300">{PASSING_SCORE} puan</strong> olmalı (sertifika için)</li>
+              </>
+            )}
             <li>• Yanlış cevaplar doğruları götürmez</li>
             <li>• Boş bırakılan sorular yanlış sayılmaz</li>
             <li>• Süre bitince sınav otomatik sonlanır</li>
           </ul>
         </div>
 
-        {(!allQuestions || allQuestions.length < 5) ? (
+        {(!allQuestions || allQuestions.length < MIN_QUESTION_POOL) ? (
           <EmptyState
             tabId="mock_exam"
             title="İçerik Hazırlanıyor"
@@ -406,15 +472,28 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
               </button>
             </div>
 
-            <div className="text-[15px] leading-relaxed text-[#212529] mb-8 select-none">
+            <div className="text-[15px] leading-relaxed text-[#212529] mb-4 select-none">
               {formatMockExamQuestionText(q.text)}
             </div>
+            {q.text_en && (
+              <div className="text-[13px] leading-relaxed text-[#6c757d] mb-8 italic border-l-2 border-[#b6d4fe] pl-3">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#0d6efd] block mb-1">English</span>
+                {formatMockExamQuestionText(q.text_en)}
+              </div>
+            )}
+            {!q.text_en && <div className="mb-4" />}
 
             <fieldset className="space-y-4" aria-label="Cevap seçenekleri">
               {q.options.slice(0, 5).map((opt: string, i: number) => {
                 const letter = String.fromCharCode(65 + i)
                 const isSelected = answers[currentQ] === letter
                 const cleanOpt = opt.replace(/^[A-J][).]\s*/, '')
+                const enOptions: string[] | null = (() => {
+                  if (!q.options_en) return null
+                  if (Array.isArray(q.options_en)) return q.options_en
+                  try { return JSON.parse(q.options_en) } catch { return null }
+                })()
+                const enOpt = enOptions?.[i]?.replace(/^[A-J][).]\s*/, '') || null
                 return (
                   <label key={i} className={`flex items-start gap-3 p-3 border rounded-sm cursor-pointer transition-colors ${isSelected ? "bg-[#e7f1ff] border-[#b6d4fe]" : "bg-white border-[#ced4da] hover:bg-[#f8f9fa]"}`}>
                     <input 
@@ -426,7 +505,10 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
                       className="mt-1 w-4 h-4 text-blue-600"
                     />
                     <span className="font-bold text-[#495057] w-5">{letter})</span>
-                    <span className="text-[14px] text-[#212529] select-none">{cleanOpt}</span>
+                    <span className="text-[14px] text-[#212529] select-none flex flex-col gap-0.5">
+                      <span>{cleanOpt}</span>
+                      {enOpt && <span className="text-[12px] text-[#6c757d] italic">{enOpt}</span>}
+                    </span>
                   </label>
                 )
               })}
@@ -512,13 +594,17 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
           className={`p-8 rounded-2xl text-center border ${results.passed ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/20"}`}
         >
           <div className={`text-6xl font-bold mb-2 ${results.passed ? "text-emerald-400" : "text-red-400"}`}>{results.score}</div>
-          <div className="text-sm text-slate-400 mb-4">100 üzerinden</div>
+          <div className="text-sm text-slate-400 mb-4">
+            {SCORE_DISPLAY_MODE === "scaled"
+              ? `Tahmini ölçekli puan${scaledRange ? ` (${scaledRange.min}-${scaledRange.max})` : ""}`
+              : "100 üzerinden"}
+          </div>
           <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold ${results.passed ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
             {results.passed ? <><CheckCircle className="w-4 h-4 inline-block mr-1" /> GEÇTİN!</> : <><XCircle className="w-4 h-4 inline-block mr-1" /> KALDIN</>}
-            {!results.passed && ` (Geçme notu: ${PASSING_SCORE}${!results.allModulesPassed ? ` + Her modül min ${MODULE_BARRIER}` : ""})`}
+            {!results.passed && ` (Geçme: ${PASSING_SCORE}${usesModuleBarrier && !results.allModulesPassed ? ` + Her modül min ${MODULE_BARRIER}` : ""})`}
           </div>
           {/* Modül Bazlı Skorlar */}
-          {results.moduleScores && Object.keys(results.moduleScores).length > 1 && (
+          {results.moduleScores && Object.keys(results.moduleScores).length > 1 && usesModuleBarrier && (
             <div className="mt-4 flex flex-wrap gap-2 justify-center">
               {Object.entries(results.moduleScores as Record<string, number>).map(([mod, modScore]) => (
                 <div key={mod} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${modScore >= MODULE_BARRIER ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-red-500/10 border-red-500/20 text-red-400"}`}>
@@ -536,7 +622,9 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
             <div className={`text-2xl font-bold flex items-center gap-2 ${results.score >= 80 ? "text-emerald-400" : results.score >= 60 ? "text-amber-400" : results.score >= 50 ? "text-orange-400" : "text-red-400"}`}>
               {results.score >= 80 ? <><CheckCircle className="w-6 h-6" /> Güçlü</> : results.score >= 60 ? <><CheckCircle className="w-6 h-6" /> Orta</> : results.score >= 50 ? <><AlertTriangle className="w-6 h-6" /> Riskli</> : <><XCircle className="w-6 h-6" /> Yetersiz</>}
             </div>
-            <div className="text-xs text-slate-500">Baraj: 50 | Senin puanın: {results.score}</div>
+            <div className="text-xs text-slate-500">
+              Geçme: {PASSING_SCORE}{SCORE_DISPLAY_MODE === "percent" ? " puan" : " (ölçekli)"} | Senin puanın: {results.score}
+            </div>
           </div>
           <div className="text-xs text-slate-300 p-4 rounded-lg bg-white/[0.03] space-y-2">
             {results.score >= 80 ? <p><CheckCircle className="w-4 h-4 inline-block mr-1 text-emerald-400" /> <strong>Çok iyi durumdasın.</strong> Eksik olduğun birkaç konuya göz at ve 1-2 gün sonra seviyeni korumak için tekrar dene.</p>

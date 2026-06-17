@@ -12,8 +12,11 @@ describe('logger', () => {
     const { logger } = await import('@/lib/logger')
     logger.info('Test mesajı', 'test-context')
     expect(console.log).toHaveBeenCalled()
-    const call = (console.log as any).mock.calls[0][0]
-    const parsed = JSON.parse(call)
+    const jsonCall = (console.log as any).mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((line: unknown) => typeof line === 'string' && (line as string).trim().startsWith('{'))
+    expect(jsonCall).toBeTruthy()
+    const parsed = JSON.parse(jsonCall as string)
     expect(parsed.level).toBe('info')
     expect(parsed.message).toBe('Test mesajı')
     expect(parsed.context).toBe('test-context')

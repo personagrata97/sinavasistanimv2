@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { COURSE_PAGE_OVERRIDES } from "@/lib/course-configs"
-
-import { extractAllText, detectSectionsMultimodal, detectSectionsTextAI, checkPdfQuality, extractSectionsRegex, convertPdfToMarkdown } from "@/lib/pdf-engine"
-import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver } from "@/lib/ai-service"
-import { generateStudySchedule } from "@/lib/schedule-engine"
+import { extractAllText, checkPdfQuality, detectSectionsMultimodal, SCANNED_PDF_PENDING_OCR, isPendingOcrContent } from "@/lib/pdf-engine"
+import { detectSectionsSystematic, sectionsToDetected } from "@/lib/section-detector"
+import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError } from "@/lib/ai-service"
+import { resolveRequiresQuestions } from "@/lib/glossary-utils"
+import { getExamConfig } from "@/lib/course-data"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { readFile } from "fs/promises"
@@ -34,6 +34,24 @@ interface DetectedSection {
 // Küçük chunk'lar sığ/tekrarlı içerik üretiyor!
 const MAX_CHUNK_CHARS = 12000 // ~5 sayfa = daha detaylı, eksik konu riski düşük
 
+/** Son birkaç dakikada bu derse ait API hareketi var mı? Yoksa arka plan işi kopmuş olabilir. */
+async function hasRecentCourseApiActivity(courseName: string, slug: string): Promise<boolean> {
+  const since = new Date(Date.now() - 4 * 60 * 1000)
+  const shortName = courseName.split(">").pop()?.trim() || courseName
+  const hit = await prisma.apiUsageLog.findFirst({
+    where: {
+      createdAt: { gte: since },
+      OR: [
+        { courseSlug: { contains: slug } },
+        { courseSlug: { contains: shortName.substring(0, 40) } },
+        { courseSlug: { contains: courseName.substring(0, 50) } },
+      ],
+    },
+    select: { id: true },
+  })
+  return !!hit
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
@@ -60,29 +78,39 @@ export async function POST(req: NextRequest) {
       activeProcesses.delete(slug)
     }
 
-    // 🔒 ÇİFT TIKLAMA VE RACE CONDITION KORUMASI (DB BAZLI KİLİT)
-    if (course.status === "processing" && !forceRetry) {
-      // İşlem zaten DB'de "processing" görünüyor. Zombi mi yoksa gerçekten çalışıyor mu?
-      // Arka plan işlemi her bölüm bittiğinde Course.updatedAt değerini 'Canlılık Sinyali' olarak günceller.
-      const timeSinceLastUpdate = Date.now() - course.updatedAt.getTime();
-      
-      // Eğer son 15 dakika içinde güncellendiyse işlem %100 canlıdır! Çift tıklamayı engelle.
+    const staleProcess =
+      course.status === "processing" &&
+      !forceRetry &&
+      !(await hasRecentCourseApiActivity(course.name, slug)) &&
+      !activeProcesses.has(slug)
+
+    // 🔒 ÇİFT TIKLAMA KORUMASI — kopuk (zombi) işlemde kilidi kır, gerçekten çalışan işlemi koru
+    if (course.status === "processing" && !forceRetry && !staleProcess) {
+      const timeSinceLastUpdate = Date.now() - course.updatedAt.getTime()
+
       if (timeSinceLastUpdate < 15 * 60 * 1000) {
-        console.log(`[PROCESS] ⚠️ Zaten işlemde (DB Kilitli, Son Güncelleme: ${Math.round(timeSinceLastUpdate/1000)}sn önce): ${course.name} — Race Condition engellendi.`)
-        return NextResponse.json({ message: "İşlem arka planda aktif olarak devam ediyor. Lütfen bekleyin." }, { status: 200 })
-      } else {
-        console.log(`[PROCESS] 🔄 Zombi kilit tespit edildi (15 dk'dan uzun süredir hareketsiz), kilit zorla kırılıyor: ${course.name}`);
+        console.log(`[PROCESS] ⚠️ Zaten işlemde (${Math.round(timeSinceLastUpdate / 1000)}sn önce güncellendi): ${course.name}`)
+        return NextResponse.json(
+          { message: "İşlem arka planda aktif olarak devam ediyor. Lütfen bekleyin.", alreadyRunning: true },
+          { status: 200 },
+        )
+      }
+      console.log(`[PROCESS] 🔄 15 dk hareketsiz — kilit kırılıyor: ${course.name}`)
+    }
+
+    if (forceRetry || staleProcess) {
+      activeProcesses.delete(slug)
+      if (staleProcess) {
+        console.log(`[PROCESS] 🧟 Kopuk işlem tespit edildi (4 dk API yok, bellekte yok) — yeniden başlatılıyor: ${course.name}`)
       }
     }
 
-    // Hafıza kilidini yine de set edelim (aynı saniye içinde gelen iki isteği eşzamanlı kesmek için)
-    if (activeProcesses.has(slug)) {
-      if (course.status !== "processing") {
-        activeProcesses.delete(slug);
-      } else {
-        console.log(`[PROCESS] ⚠️ Zaten işlemde (bellekte aktif): ${course.name} — tekrar tetikleme engellendi.`)
-        return NextResponse.json({ message: "İşlem zaten arka planda devam ediyor. Lütfen birkaç dakika bekleyin." }, { status: 200 })
-      }
+    if (activeProcesses.has(slug) && course.status === "processing" && !forceRetry && !staleProcess) {
+      console.log(`[PROCESS] ⚠️ Bellekte aktif işlem: ${course.name}`)
+      return NextResponse.json(
+        { message: "İşlem zaten arka planda devam ediyor. Lütfen birkaç dakika bekleyin.", alreadyRunning: true },
+        { status: 200 },
+      )
     }
 
     activeProcesses.add(slug)
@@ -113,225 +141,102 @@ export async function POST(req: NextRequest) {
 
       const pageTexts = await extractAllText(pdfBuffer)
 
-      // ⚠️ NON-SEARCHABLE PDF KALİTE KONTROLÜ
+      // ⚠️ PDF KALİTE KONTROLÜ — taranmış PDF REDDEDİLMEZ, görsel OCR yoluna yönlendirilir
       const pdfQuality = checkPdfQuality(pageTexts, totalPages)
-      if (pdfQuality.isNonSearchable) {
-        console.error(`[PROCESS] 🔴 NON-SEARCHABLE PDF: ${pdfQuality.message}`)
-        await prisma.course.update({
-          where: { slug },
-          data: { status: "error" }
-        })
-        activeProcesses.delete(slug)
-        return NextResponse.json({
-          error: pdfQuality.message || "Bu PDF'den metin çıkarılamadı. Lütfen metin tabanlı (searchable) bir PDF yükleyin."
-        }, { status: 400 })
-      }
-      if (pdfQuality.isPartiallySearchable) {
+      const isScannedPdf = pdfQuality.isNonSearchable
+
+      if (isScannedPdf) {
+        console.warn(`[PROCESS] 📷 Taranmış PDF algılandı (metin katmanı yok). Görsel OCR yoluna yönlendiriliyor — RED EDİLMEDİ.`)
+      } else if (pdfQuality.isPartiallySearchable) {
         console.warn(`[PROCESS] ⚠️ KISMEN SEARCHABLE: ${pdfQuality.message}`)
       }
 
       await prisma.course.update({
         where: { slug },
-        data: { processedPages: pageTexts.length }
+        data: { processedPages: isScannedPdf ? totalPages : pageTexts.length }
       })
-      console.log(`[PROCESS] ${pageTexts.length} sayfadan metin çıkarıldı.`)
+      console.log(`[PROCESS] ${isScannedPdf ? "Taranmış PDF — OCR bekliyor" : `${pageTexts.length} sayfadan metin çıkarıldı`}.`)
 
-      // E-8: Önce multimodal (Gemini görsel) bölüm algılama dene, yoksa regex fallback
-      let sections: DetectedSection[] = []
       const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").split(",").filter(k => k.trim())
 
-      let tocAttempts = 0;
-      const MAX_TOC_ATTEMPTS = 3; // 3 * 60s = 3 dakika boyunca dener
+      let sections: DetectedSection[] = []
+      let tocAttempts = 0
+      const MAX_TOC_ATTEMPTS = 3
 
-      while (sections.length === 0 && tocAttempts < MAX_TOC_ATTEMPTS && geminiKeys.length > 0) {
-        tocAttempts++;
-        console.log(`[PROCESS] 🔄 İçindekiler Tablosu aranıyor (Deneme ${tocAttempts}/${MAX_TOC_ATTEMPTS})...`);
-
-        if (course.geminiFileUri) {
-          for (let k = 0; k < geminiKeys.length; k++) {
-            try {
-              console.log(`[PROCESS] 🔍 Multimodal bölüm algılama deneniyor (Key #${k + 1}/${geminiKeys.length})...`)
-              const multimodalSections = await detectSectionsMultimodal(course.geminiFileUri, geminiKeys[k].trim())
-              if (multimodalSections && multimodalSections.length >= 2) {
-                console.log(`[PROCESS] ✅ Multimodal: ${multimodalSections.length} bölüm algılandı (Key #${k + 1})`)
-                // Multimodal sonuçları rawContent ile eşleştir
-                sections = multimodalSections.map(ms => ({
-                  title: ms.title,
-                  pageStart: ms.pageStart,
-                  pageEnd: ms.pageEnd,
-                  content: pageTexts.slice(Math.max(0, ms.pageStart - 1), ms.pageEnd).join("\n\n")
-                }))
-                break; // Başarılı, döngüden çık
-              } else {
-                console.log(`[PROCESS] ⚠️ Multimodal yetersiz sonuç (${multimodalSections?.length || 0}) (Key #${k + 1})`)
-              }
-            } catch (mmErr: any) {
-              console.warn(`[PROCESS] ⚠️ Multimodal başarısız (Key #${k + 1}): ${mmErr.message?.substring(0, 100)}`)
-              if (k < geminiKeys.length - 1) {
-                console.log(`[PROCESS] ⏱️ Burst limit koruması: Sonraki anahtara geçmeden önce 2 saniye bekleniyor...`)
-                await new Promise(resolve => setTimeout(resolve, 2000))
-              }
+      if (isScannedPdf) {
+        // Taranmış PDF: metin tabanlı bölümleme çalışmaz → görsel multimodal bölümleme veya tek bölüm
+        console.log(`[PROCESS] 📷 Taranmış PDF bölüm algılama: görsel multimodal yol deneniyor...`)
+        if (course.geminiFileUri && geminiKeys.length > 0) {
+          try {
+            const multimodalSections = await detectSectionsMultimodal(course.geminiFileUri, geminiKeys[0])
+            if (multimodalSections.length >= 1) {
+              sections = multimodalSections.map((s) => ({
+                title: s.title,
+                pageStart: Math.max(1, s.pageStart),
+                pageEnd: Math.min(totalPages, s.pageEnd),
+                content: SCANNED_PDF_PENDING_OCR,
+              }))
+              console.log(`[PROCESS] ✅ Görsel bölümleme: ${sections.length} bölüm algılandı (OCR arka planda dolduracak).`)
             }
+          } catch (mmErr: any) {
+            console.warn(`[PROCESS] ⚠️ Görsel bölümleme başarısız: ${mmErr.message?.substring(0, 120)}`)
           }
         }
-
-        // Multimodal başarısızsa METİN TABANLI AI YEDEĞİNE (Text AI Fallback) geç
         if (sections.length === 0) {
-          console.log(`[PROCESS] ⚠️ Multimodal çöktü, METİN TABANLI AI YEDEĞİNE (Text AI) geçiliyor...`)
-          for (let k = 0; k < geminiKeys.length; k++) {
-            try {
-              console.log(`[PROCESS] 🧠 Text AI bölüm algılama deneniyor (Key #${k + 1}/${geminiKeys.length})...`)
-              const textAiSections = await detectSectionsTextAI(pageTexts, geminiKeys[k].trim())
-              if (textAiSections && textAiSections.length >= 2) {
-                console.log(`[PROCESS] ✅ Text AI: ${textAiSections.length} bölüm algılandı (Key #${k + 1})`)
-                sections = textAiSections.map(ms => ({
-                  title: ms.title,
-                  pageStart: ms.pageStart,
-                  pageEnd: ms.pageEnd,
-                  content: pageTexts.slice(Math.max(0, ms.pageStart - 1), ms.pageEnd).join("\n\n")
-                }))
-                break; // Başarılı, döngüden çık
-              } else {
-                console.log(`[PROCESS] ⚠️ Text AI yetersiz sonuç (${textAiSections?.length || 0}) (Key #${k + 1})`)
-              }
-            } catch (aiErr: any) {
-              console.warn(`[PROCESS] ⚠️ Text AI başarısız (Key #${k + 1}): ${aiErr.message?.substring(0, 100)}`)
-              if (k < geminiKeys.length - 1) {
-                console.log(`[PROCESS] ⏱️ Burst limit koruması: Sonraki anahtara geçmeden önce 2 saniye bekleniyor...`)
-                await new Promise(resolve => setTimeout(resolve, 2000))
-              }
-            }
+          sections = [{
+            title: "Bölüm İçeriği (Ana Metin)",
+            pageStart: 1,
+            pageEnd: totalPages,
+            content: SCANNED_PDF_PENDING_OCR,
+          }]
+          console.log(`[PROCESS] 📷 Tek bölüm modu: tüm kitap (${totalPages} sayfa) OCR ile işlenecek.`)
+        }
+      } else {
+        while (sections.length === 0 && tocAttempts < MAX_TOC_ATTEMPTS) {
+          tocAttempts++
+          console.log(`[PROCESS] 🔄 Sistematik bölüm algılama (Deneme ${tocAttempts}/${MAX_TOC_ATTEMPTS})...`)
+
+          const result = await detectSectionsSystematic(pageTexts, {
+            geminiFileUri: course.geminiFileUri,
+            geminiKeys,
+          })
+
+          if (result && result.sections.length >= 2 && result.validation.valid) {
+            sections = sectionsToDetected(result.sections, pageTexts)
+            console.log(
+              `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score})`
+            )
+            break
+          }
+
+          if (result) {
+            console.warn(
+              `[PROCESS] ⚠️ Sistematik algılama yetersiz (skor ${result.validation.score}): ${result.validation.errors.join("; ")}`
+            )
+          }
+
+          if (tocAttempts < MAX_TOC_ATTEMPTS) {
+            const waitMinutes = Math.min(Math.pow(2, tocAttempts - 1), 5)
+            const waitMs = waitMinutes * 60000
+            console.log(`[PROCESS] ⏱️ ${waitMinutes} dakika beklenip tekrar denenecek...`)
+            await new Promise((resolve) => setTimeout(resolve, waitMs))
           }
         }
 
-        // İkisi de çöktüyse REGEX (Zırhlı) yedeğe geç!
-        if (sections.length === 0) {
-          console.log(`[PROCESS] ⛔ Tüm AI denemeleri çöktü! Zırhlı REGEX yedeğine geçiliyor...`)
-          const regexSections = extractSectionsRegex(pageTexts)
-          if (regexSections.length >= 2) {
-            console.log(`[PROCESS] ✅ REGEX: ${regexSections.length} bölüm algılandı!`)
-            sections = regexSections.map(rs => ({
-              title: rs.title,
-              pageStart: rs.pageStart,
-              pageEnd: rs.pageEnd,
-              content: pageTexts.slice(Math.max(0, rs.pageStart - 1), rs.pageEnd).join("\n\n")
-            }))
-          } else {
-            console.log(`[PROCESS] ⛔ REGEX de başarısız! Mecburen bekleniyor...`)
-            const waitMinutes = Math.min(Math.pow(2, tocAttempts - 1), 15);
-            const waitMs = waitMinutes * 60000;
-            console.log(`[PROCESS] ⛔ Ban yememek için bekleme süresi uzatılıyor. ${waitMinutes} dakika (${waitMs}ms) bekleniyor...`)
-            await new Promise(resolve => setTimeout(resolve, waitMs))
-          }
-        }
-
-        if (sections.length > 0) {
-          // =========================================================================
-          // GLOBAL ZIRH: MULTIMODAL VEYA TEXT AI FARK ETMEZ, YZ HALÜSİNASYONLARINI EZ
-          // =========================================================================
-          console.log(`[PROCESS] 🛡️ Global Zırh Devrede: Başlıklar temizleniyor...`)
-
-          // >>> AHMET/MEHMET/SAYFA KAYMASI KESİN ÇÖZÜMÜ <<<
-          // Yapay zeka ve Global Zırh tamamen devre dışı! Sayfalar %100 fiziksel ve elle onaylanmış sayfalara sabitlendi.
-          const overrides = COURSE_PAGE_OVERRIDES[slug];
-          // Standart İşleme: AI'nin böldüğü 28 küçük parça korunur. Sadece sayfa numaraları düzeltilir.
-          // Ve her parçanın hangi modüle (klasöre) ait olduğu UI'da gösterilmek üzere overrides dizisine bakılarak atanır.
-            for (let i = 0; i < sections.length; i++) {
-              let cleanTitle = sections[i].title.replace(/^(Bölüm|Ünite|Kısım)?\s*\d+[\.\-\:]?\s*/i, "").trim()
-              if (!cleanTitle || cleanTitle.length < 3) {
-                cleanTitle = sections[i].title.trim()
-              }
-              sections[i].title = cleanTitle
-            }
-
-            console.log(`[PROCESS] 🛡️ Global Zırh: Sayfa numaraları fiziksel metin taramasıyla düzeltiliyor...`)
-
-            const tocPages = new Set<number>()
-            for (let p = 0; p < Math.min(15, pageTexts.length); p++) {
-              const text = pageTexts[p].toLowerCase()
-              let matchCount = 0
-              for (const s of sections) {
-                if (text.includes(s.title.toLowerCase())) matchCount++
-              }
-              if (matchCount >= 3) {
-                tocPages.add(p)
-                console.log(`[PROCESS] 🛡️ TOC sayfası tespit edildi: ${p + 1} (${matchCount} başlık eşleşti)`)
-              }
-            }
-
-            for (let i = 0; i < sections.length; i++) {
-              const section = sections[i]
-              let truePage = -1;
-              const titleLower = section.title.toLowerCase()
-
-              for (let p = 0; p < pageTexts.length; p++) {
-                if (tocPages.has(p)) continue
-                const firstLines = pageTexts[p].split('\n').slice(0, 8).join('\n').toLowerCase()
-                if (firstLines.includes(titleLower)) {
-                  truePage = p + 1;
-                  break;
-                }
-              }
-
-              if (truePage === -1) {
-                for (let p = 0; p < pageTexts.length; p++) {
-                  if (tocPages.has(p)) continue
-                  if (pageTexts[p].toLowerCase().includes(titleLower)) {
-                    truePage = p + 1;
-                    break;
-                  }
-                }
-              }
-
-              if (truePage !== -1 && truePage !== section.pageStart) {
-                console.log(`[PROCESS] 🛡️ Offset Düzeltildi: "${section.title}" (YZ: ${section.pageStart} -> Gerçek: ${truePage})`)
-                section.pageStart = truePage;
-              }
-            }
-
-            let bibliographyPageStart = pageTexts.length + 1;
-            for (let p = Math.max(0, pageTexts.length - 15); p < pageTexts.length; p++) {
-              const lines = pageTexts[p].split('\n').slice(0, 15).map(l => l.trim().toLocaleUpperCase('tr-TR'));
-              if (lines.some(l => l === 'KAYNAKÇA' || l === 'KAYNAKLAR' || l === 'REFERENCES' || l === 'BİBLİYOGRAFYA')) {
-                bibliographyPageStart = p + 1;
-                console.log(`[PROCESS] 📚 Kaynakça tespit edildi (Sayfa ${bibliographyPageStart}). Son bölüm bu sayfadan önce bitecek.`);
-                break;
-              }
-            }
-            for (let i = 0; i < sections.length; i++) {
-              if (i < sections.length - 1) {
-                sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
-              } else {
-                sections[i].pageEnd = Math.max(sections[i].pageStart, bibliographyPageStart - 1)
-              }
-              // 3. İçeriği (content) doğru sayfalara göre yeniden kes
-              sections[i].content = pageTexts.slice(Math.max(0, sections[i].pageStart - 1), sections[i].pageEnd).join("\n\n")
-            }
-
-            if (overrides) {
-              console.log(`[PROCESS] 🛡️ UI için Klasör Modül İsimleri Atanıyor...`);
-              for (let i = 0; i < sections.length; i++) {
-                const sec = sections[i];
-                const parentModule = overrides.find((o: any) => sec.pageStart >= o.pageStart && sec.pageStart <= o.pageEnd);
-                if (parentModule) {
-                  sec.module = parentModule.title;
-                }
-              }
-            }
-
-        console.log(`[PROCESS] 🛡️ Global Zırh İşlemi Tamamlandı.`)
       }
-    }
 
-    // 🚨 EN KÖTÜ SENARYO: Tüm denemelere rağmen çökerse...
+    // Bölüm algılanamazsa dur — tek parça veya elle tablo yok (otonom sistem).
     if (sections.length === 0) {
-      console.error(`[PROCESS] 🚨 FATAL: ${MAX_TOC_ATTEMPTS} denemeye rağmen İçindekiler çıkarılamadı! PDF zorunlu olarak tek parça halinde işlenecek.`)
-      sections = [{
-        title: "Bölüm İçeriği (Ana Metin)",
-        pageStart: 1,
-        pageEnd: totalPages,
-        content: pageTexts.join("\n\n")
-      }]
+      activeProcesses.delete(slug)
+      await prisma.course.update({ where: { slug }, data: { status: "error" } })
+      console.error(`[PROCESS] 🛑 Bölüm algılama başarısız — işlem durduruldu (${course.name}).`)
+      return NextResponse.json(
+        {
+          error:
+            "PDF bölümleri otomatik algılanamadı (içindekiler okunamadı veya doğrulama geçmedi). Kitabın fiziksel sayfa sırasına göre içindekiler sayfasını kontrol edip PDF'i yeniden yükleyin.",
+        },
+        { status: 422 }
+      )
     }
 
     // ⚠️ İÇİNDEKİLER / ÖNSÖZ / KAPAK FİLTRESİ
@@ -414,23 +319,27 @@ export async function POST(req: NextRequest) {
 
 async function processInBackground(slug: string, course: any) {
   try {
-    // Her key'in kendi fileUri'sini ayarla — merkezi helper ile (DRY)
-    const { ensureGeminiFileUris } = await import("@/lib/gemini-file-helper")
-    const { uriMap, updated: updatedUris } = await ensureGeminiFileUris(
-      course.pdfPath || "",
-      course.geminiFileUris,
-      course.slug || slug
-    )
-
-    if (updatedUris) {
-      await prisma.course.update({
-        where: { id: course.id },
-        data: {
-          geminiFileUri: uriMap["0"] || course.geminiFileUri,
-          geminiFileUris: JSON.stringify(uriMap)
-        }
-      })
-      console.log(`[BG] 💾 Yeni fileUri'ler veri tabanına başarıyla kaydedildi.`)
+    let fileUrisReady = false
+    const ensureFileUrisForNotes = async () => {
+      if (fileUrisReady) return
+      const { ensureGeminiFileUris } = await import("@/lib/gemini-file-helper")
+      const { uriMap, updated: updatedUris } = await ensureGeminiFileUris(
+        course.pdfPath || "",
+        course.geminiFileUris,
+        course.slug || slug,
+      )
+      setFileUrisMap(uriMap)
+      if (updatedUris) {
+        await prisma.course.update({
+          where: { id: course.id },
+          data: {
+            geminiFileUri: uriMap["0"] || course.geminiFileUri,
+            geminiFileUris: JSON.stringify(uriMap),
+          },
+        })
+        console.log(`[BG] 💾 PDF fileUri'ler not üretimi için hazırlandı.`)
+      }
+      fileUrisReady = true
     }
 
     const savedSections = await prisma.section.findMany({
@@ -452,6 +361,8 @@ async function processInBackground(slug: string, course: any) {
     // Limit 5'ten 15'e çıkarıldı. Yapay zeka tamamen otonom.
     const MAX_RETRIES = 15;
     const aiMode = course.program?.aiMode || "general"
+    const programSlug = course.program?.slug || "spl-duzey-3"
+    const sourceMode = getExamConfig(programSlug)?.sourceMode ?? "strict"
     let hasCriticalError = false
 
     for (let sIdx = 0; sIdx < savedSections.length; sIdx++) {
@@ -462,7 +373,8 @@ async function processInBackground(slug: string, course: any) {
       const section = savedSections[sIdx]
       const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
 
-      if (section.rawContent.length < 100) {
+      // OCR bekleyen taranmış bölümler kısa placeholder içerir — atlanmamalı
+      if (section.rawContent.length < 100 && !isPendingOcrContent(section.rawContent)) {
         try { await prisma.section.update({ where: { id: section.id }, data: { processed: true } }) } catch { }
         continue
       }
@@ -527,22 +439,45 @@ async function processInBackground(slug: string, course: any) {
           const MAX_QUOTA_FAILURES = 5 // Toplam kota hatası limiti (sonsuz döngü koruması)
 
           // ==================== MARKDOWN OCR (PDF Slicing) ====================
-          // PDF'i fiziksel olarak pdf-lib ile keser, parçalara böler ve Base64 inline olarak yollar.
+          // Her bölüm: PDF sayfaları Google'a görsel olarak gönderilir (gömülü şema/resim kaçmasın).
           if (course.pdfPath && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
             console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. PDF Metne Çevriliyor (Markdown OCR)` }) } }) } catch { }
-            
+            const ocrPhasePrefix = `${sIdx + 1 + alreadyDone}/${totalSections}.`;
+            const touchHeartbeat = async (microPhase: string) => {
+              try {
+                await prisma.section.update({
+                  where: { id: section.id },
+                  data: {
+                    verificationIssues: JSON.stringify({ currentMicroPhase: `${ocrPhasePrefix} ${microPhase}` }),
+                  },
+                });
+                await prisma.course.update({
+                  where: { id: course.id },
+                  data: { updatedAt: new Date() },
+                });
+              } catch { /* ignore */ }
+            };
+
+            await touchHeartbeat("PDF Metne Çevriliyor (Markdown OCR)");
+
             const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service");
-            
+
             let ocrSuccess = false;
             let ocrAttempts = 0;
             const MAX_OCR_ATTEMPTS = 5;
-            
+
             while (!ocrSuccess && ocrAttempts < MAX_OCR_ATTEMPTS) {
               ocrAttempts++;
               try {
-                // PDF'i fiziksel olarak kesip okutuyoruz.
-                const pristineMarkdown = await extractPerfectMarkdownOCR(course.pdfPath, section.pageStart, section.pageEnd, `${fullCourseName} > ${section.title} (OCR)`);
+                const pristineMarkdown = await extractPerfectMarkdownOCR(
+                  course.pdfPath,
+                  section.pageStart,
+                  section.pageEnd,
+                  `${fullCourseName} > ${section.title} (OCR)`,
+                  {
+                    onProgress: async (msg) => touchHeartbeat(msg),
+                  },
+                );
                 if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
                   section.rawContent = pristineMarkdown;
                   await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
@@ -552,18 +487,59 @@ async function processInBackground(slug: string, course: any) {
                   throw new Error("OCR tamamlandı ancak [MARKDOWN_OCR_SUCCESS] damgası eksik.");
                 }
               } catch (ocrErr: any) {
+                if (ocrErr instanceof ApiQuotaExhaustedError) {
+                  console.error(`[BG] ⛔ OCR duraklatıldı — günlük API kotası: ${ocrErr.message}`);
+                  const pauseMessage = "Google günlük limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın «Devam Ettir» ile yeniden başlatın.";
+                  try {
+                    await prisma.section.update({
+                      where: { id: section.id },
+                      data: {
+                        verificationIssues: JSON.stringify({
+                          currentMicroPhase: pauseMessage,
+                          pauseReason: "quota_daily",
+                          pausedAt: new Date().toISOString(),
+                        }),
+                      },
+                    });
+                    await prisma.course.update({
+                      where: { slug },
+                      data: { status: "paused", updatedAt: new Date() },
+                    });
+                  } catch { /* ignore */ }
+                  hasCriticalError = true;
+                  break;
+                }
                 console.log(`[BG] ⚠️ Markdown OCR Hatası (Deneme ${ocrAttempts}/${MAX_OCR_ATTEMPTS}): ${ocrErr.message}`);
                 if (ocrAttempts < MAX_OCR_ATTEMPTS) {
-                  console.log(`[BG] 🕒 20 Saniye bekleniyor... Exponential Backoff devrede.`);
+                  await touchHeartbeat(`OCR hatası — ${ocrAttempts}. deneme, 20 sn sonra tekrar`);
                   await new Promise(r => setTimeout(r, 20000));
                 }
               }
             }
-            
+
+            if (hasCriticalError) break;
+
             if (!ocrSuccess) {
-              // 0 RİSK KURALI GEREĞİ: Asla kirli metne düşme, direkt hata fırlat ve döngüyü kır.
-              console.error(`[BG] 🛑 FATAL ERROR: Markdown OCR 5 denemede de BAŞARISIZ oldu.`);
-              throw new Error("Markdown OCR katmanı başarısız oldu. İşlem durduruldu.");
+              console.error(`[BG] 🛑 Markdown OCR ${MAX_OCR_ATTEMPTS} denemede başarısız.`);
+              const failMessage = "PDF metne çevrilemedi (API reddi veya bağlantı hatası). «Devam Ettir» ile tekrar deneyin.";
+              try {
+                await prisma.section.update({
+                  where: { id: section.id },
+                  data: {
+                    verificationIssues: JSON.stringify({
+                      currentMicroPhase: failMessage,
+                      pauseReason: "ocr_failed",
+                      pausedAt: new Date().toISOString(),
+                    }),
+                  },
+                });
+                await prisma.course.update({
+                  where: { slug },
+                  data: { status: "paused", updatedAt: new Date() },
+                });
+              } catch { /* ignore */ }
+              hasCriticalError = true;
+              break;
             }
           }
 
@@ -640,39 +616,13 @@ async function processInBackground(slug: string, course: any) {
 
                       if (patchResult.success) {
                         notes = patchResult.newMarkdown;
-                        console.log(`[BG] 🔍 Cerrahi Yama tamamlandı. Yama kalitesi doğrulanıyor...`);
-                        try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama Kalitesi Doğrulanıyor...` }) } }) } catch { }
-                        
-                        const patchVerification = await verifyNotesAgainstSource(
-                          section.rawContent, notes, section.title, fullCourseName
-                        )
-
-                        if (patchVerification.score === 100) {
-                          console.log(`[BG] 🎉 Cerrahi Yama %100 Başarılı ve Doğrulandı!`);
-                          try {
-                            await prisma.section.update({
-                              where: { id: section.id },
-                              data: {
-                                notes: notes,
-                                verificationScore: 100,
-                                verificationIssues: JSON.stringify({
-                                  message: "Cerrahi yama ile 100 puan alındı ve onaylandı.",
-                                  currentAttempt: vAttempt,
-                                  attemptHistory: attemptHistory,
-                                  missingTopics: [],
-                                  issues: []
-                                })
-                              }
-                            })
-                            console.log(`[BG] 💾 %100 Kusursuz Not (Yamalı) Anında Veritabanına Kazındı!`)
-                          } catch (saveErr) {}
-                          
-                          notesAttemptSuccess = true;
-                          break; // Döngüyü tamamen kır, flashcard'a geç
-                        } else {
-                           console.log(`[BG] ⚠️ Cerrahi Yama kontrolü geçemedi (Skor: %${patchVerification.score}). Sıfırdan yazıma dönülüyor...`);
-                           isSurgicalPatch = false;
-                        }
+                        // 🔒 MADDE 1/6 KİLİDİ: Yamalı not ARTIK doğrudan onaylanmaz/break edilmez.
+                        // isSurgicalPatch true kaldığı için aşağıda generateCourseNotes atlanır (yamalı
+                        // notes korunur) ve akış normal Kontrolör + Müfettiş derin denetimine düşer.
+                        // Böylece yama yolu da tam %100 kapısından (Kontrolör + Ground Truth + Müfettiş)
+                        // geçer; eksik denetimle canlıya sızma engellenir. (Ayrıca tekrarlı doğrulama
+                        // API çağrısı da kaldırıldı.)
+                        console.log(`[BG] 🩹 Cerrahi Yama uygulandı. Yamalı not şimdi tam denetimden (Kontrolör + Müfettiş) geçecek...`);
                       } else {
                         console.log(`[BG] ⚠️ Cerrahi Yama başarısız oldu (Evsiz bilgi çözülemedi vb.). Sıfırdan yazıma dönülüyor...`);
                         isSurgicalPatch = false;
@@ -688,9 +638,11 @@ async function processInBackground(slug: string, course: any) {
                 }
 
                 if (!isSurgicalPatch) {
+                  await ensureFileUrisForNotes()
                   notes = await generateCourseNotes(
                     enrichedContent, section.title, fullCourseName, course.userLevel,
-                    aiMode, section.pageStart, section.pageEnd
+                    aiMode, section.pageStart, section.pageEnd,
+                    false, 0, 1, undefined, sourceMode,
                   )
                 }
 
@@ -701,9 +653,8 @@ async function processInBackground(slug: string, course: any) {
                 // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
                 console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
                 try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } }) } catch { }
-                const { verifyNotesAgainstSource } = await import("@/lib/ai-service")
                 const verification = await verifyNotesAgainstSource(
-                  section.rawContent, notes, section.title, fullCourseName
+                  section.rawContent, notes, section.title, fullCourseName, sourceMode,
                 )
 
                 // score: -1 -> teknik hata, deneme hakkı yeme
@@ -776,9 +727,22 @@ async function processInBackground(slug: string, course: any) {
                   missingTopics: verification.missingTopics || [],
                   issues: verification.issues || [],
                   suggestions: verification.suggestions || [],
-                  isSmartInject: typeof isSurgicalPatch !== 'undefined' ? isSurgicalPatch : false
+                  isSmartInject: typeof isSurgicalPatch !== 'undefined' ? isSurgicalPatch : false,
+                  kontrolorGroundTruth: verification.score === 100,
+                  mufettis: false,
+                  fullyApproved: false,
                 }
                 attemptHistory.push(historyEntry)
+
+                const kontrolorStages = {
+                  notesGenerated: true,
+                  kontrolorGroundTruth: verification.score === 100,
+                  mufettis: false,
+                  cerrahiYama: false,
+                  flashcards: false,
+                  questions: false,
+                  published: false,
+                }
 
                 // CANLI RAPOR GÜNCELLEMESİ
                 try {
@@ -793,7 +757,11 @@ async function processInBackground(slug: string, course: any) {
                         suggestions: lastVerification.suggestions || [],
                         currentAttempt: vAttempt,
                         isCheckingAgain: currentScore < 95 && vAttempt < 5,
-                        attemptHistory: attemptHistory
+                        attemptHistory: attemptHistory,
+                        stages: kontrolorStages,
+                        currentMicroPhase: verification.score === 100
+                          ? `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamam — Müfettiş denetimi sırada`
+                          : `${sIdx + 1 + alreadyDone}/${totalSections}. Kalite Kontrolörü incelemesi tamamlandı (Tur #${vAttempt})`,
                       })
                     }
                   })
@@ -917,6 +885,8 @@ async function processInBackground(slug: string, course: any) {
                           historyEntry.score = trueScore;
                           historyEntry.missingTopics = [...lastVerification.missingTopics];
                           historyEntry.issues = [...lastVerification.issues];
+                          historyEntry.mufettis = false;
+                          historyEntry.fullyApproved = false;
                         }
 
                         // DB Live Update for Inspector Failure — DÜRÜST SKOR ile
@@ -933,7 +903,17 @@ async function processInBackground(slug: string, course: any) {
                                 isCheckingAgain: true,
                                 attemptHistory: attemptHistory,
                                 inspectorFailed: true,
-                                inspectorFindings: allFindings // Ağırlıklı bulgu detayları
+                                inspectorFindings: allFindings,
+                                stages: {
+                                  notesGenerated: true,
+                                  kontrolorGroundTruth: true,
+                                  mufettis: false,
+                                  cerrahiYama: false,
+                                  flashcards: false,
+                                  questions: false,
+                                  published: false,
+                                },
+                                currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Müfettiş denetimi — eksikler tespit edildi`,
                               })
                             }
                           })
@@ -958,6 +938,11 @@ async function processInBackground(slug: string, course: any) {
                     
                     // MİMARİ HATA ÇÖZÜMÜ: %100 alan notu anında veritabanına betonla!
                     // Böylece Flashcard veya Soru üretimi sırasında sunucu çökerse API limitleri boşa gitmez.
+                    if (historyEntry) {
+                      historyEntry.mufettis = true
+                      historyEntry.fullyApproved = true
+                    }
+
                     try {
                       await prisma.section.update({
                         where: { id: section.id },
@@ -965,11 +950,22 @@ async function processInBackground(slug: string, course: any) {
                           notes: notes,
                           verificationScore: 100,
                           verificationIssues: JSON.stringify({
-                            message: "100 puan alındı ve onaylandı.",
+                            message: "Kontrolör ve Müfettiş onayı tamamlandı.",
                             currentAttempt: vAttempt,
                             attemptHistory: attemptHistory,
                             missingTopics: [],
-                            issues: []
+                            issues: [],
+                            auditResult: { passed: true },
+                            stages: {
+                              notesGenerated: true,
+                              kontrolorGroundTruth: true,
+                              mufettis: true,
+                              cerrahiYama: false,
+                              flashcards: false,
+                              questions: false,
+                              published: false,
+                            },
+                            currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör ve Müfettiş onayı tamamlandı`,
                           })
                         }
                       })
@@ -1003,6 +999,26 @@ async function processInBackground(slug: string, course: any) {
                   await new Promise(r => setTimeout(r, 10000))
                 }
               } catch (notesErr: any) {
+                if (notesErr instanceof ApiQuotaExhaustedError) {
+                  console.error(`[BG] ⛔ Günlük kota — işlem duraklatılıyor: ${notesErr.message}`);
+                  const pauseMessage = "Google günlük limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın «Devam Ettir» ile yeniden başlatın.";
+                  try {
+                    await prisma.section.update({
+                      where: { id: section.id },
+                      data: {
+                        verificationIssues: JSON.stringify({
+                          currentMicroPhase: pauseMessage,
+                          pauseReason: "quota_daily",
+                          pausedAt: new Date().toISOString(),
+                        }),
+                      },
+                    });
+                    await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } });
+                  } catch { /* ignore */ }
+                  hasCriticalError = true;
+                  break;
+                }
+
                 console.error(`[BG] ❌ Not üretim/doğrulama denemesi #${vAttempt} başarısız:`, notesErr.message)
 
                 // FIX #4: Kota hatası mı yoksa gerçek hata mı?
@@ -1048,6 +1064,12 @@ async function processInBackground(slug: string, course: any) {
             }
           } // End of if (!notesAttemptSuccess)
 
+          if (hasCriticalError) {
+            success = false
+            sectionRetries = maxSectionRetries
+            break
+          }
+
           // ==================== DOĞRULANMIŞ NOT ÜZERİNDEN DERS ÖĞELERİNİ ÜRETME ====================
 
           let flashcards: any[] = []
@@ -1067,7 +1089,17 @@ async function processInBackground(slug: string, course: any) {
             // Flashcard'ları üret (tek deneme, tasarruf)
             for (let fAttempt = 1; fAttempt <= 3; fAttempt++) {
               try {
-                flashcards = await generateFlashcards(finalContent, section.title, fullCourseName, course.userLevel, aiMode, undefined, section.pageStart, section.pageEnd)
+                flashcards = await generateFlashcards(
+                  finalContent,
+                  section.title,
+                  fullCourseName,
+                  course.userLevel,
+                  aiMode,
+                  undefined,
+                  section.pageStart,
+                  section.pageEnd,
+                  section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "")
+                )
                 
                 // SOLVER AI: Flashcard Sağlaması
                 if (flashcards.length > 0) {
@@ -1089,15 +1121,26 @@ async function processInBackground(slug: string, course: any) {
             analysis = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
             await new Promise(r => setTimeout(r, 15000))
 
-            requiresQuestions = analysis?.requiresQuestions !== false; // Default to true if missing
+            requiresQuestions = resolveRequiresQuestions(section.title, analysis?.requiresQuestions);
 
             if (!requiresQuestions) {
-              console.log(`[BG] 🧠 COGNITIVE ROUTING: Bu bölüm sadece terim/kısaltma içeriyor. Soru üretimi atlanıyor (requiresQuestions: false).`);
+              console.log(`[BG] 🧠 COGNITIVE ROUTING: Bu bölüm için soru üretimi atlanıyor (requiresQuestions: false).`);
             } else {
               try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Havuzu Oluşturuluyor...` }) } }) } catch { }
               for (let qAttempt = 1; qAttempt <= 3; qAttempt++) {
                 try {
-                  questions = await generateQuestions(finalContent, section.title, fullCourseName, course.userLevel, aiMode, undefined, section.pageStart, section.pageEnd, section.importance || undefined)
+                  questions = await generateQuestions(
+                    finalContent,
+                    section.title,
+                    fullCourseName,
+                    course.userLevel,
+                    aiMode,
+                    undefined,
+                    section.pageStart,
+                    section.pageEnd,
+                    section.importance || undefined,
+                    section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, ""),
+                  )
                   
                   // NORMALİZASYON: Şıkları 'A) ', 'B) ' formatına zorla
                   questions = questions.map((q: any) => {
@@ -1180,13 +1223,53 @@ async function processInBackground(slug: string, course: any) {
           // FIX #3: Importance null kalmasını engelle
           const resolvedImportance = analysis.importance || section.importance || "Medium"
 
+          // ==================== ÇİFT DİL (TR + EN) — Soru & Flashcard (CISA/CIA) ====================
+          // Notlar yalnızca Türkçe kalır; notes_en üretilmez.
+          if (needsBilingualStudyItems(aiMode) && notesAttemptSuccess) {
+            console.log(`[BG] 🌐 Uluslararası sınav modu: Soru ve flashcard için TR+EN çeviri...`)
+            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru/kart İngilizce çevirisi...` }) } }) } catch { }
+
+            if (flashcards.length > 0) {
+              const enCards = await translateFlashcardsToEnglish(flashcards, finalTitle, fullCourseName)
+              const pairCheck = await validateBilingualPairs(
+                flashcards.slice(0, 8).map((f, i) => ({
+                  tr: f.front,
+                  en: enCards[i]?.front_en || "",
+                  label: `flashcard-${i + 1}`,
+                })),
+                finalTitle,
+                fullCourseName
+              )
+              if (!pairCheck.passed) {
+                console.warn(`[BG] ⚠️ Flashcard çeviri tutarlılık uyarısı:`, pairCheck.issues.join("; "))
+              }
+              flashcards = flashcards.map((f, i) => ({
+                ...f,
+                front_en: enCards[i]?.front_en || null,
+                back_en: enCards[i]?.back_en || null,
+              }))
+            }
+            if (questions.length > 0) {
+              const enQs = await translateQuestionsToEnglish(questions, finalTitle, fullCourseName)
+              questions = questions.map((q, i) => ({
+                ...q,
+                text_en: enQs[i]?.text_en || null,
+                options_en: enQs[i]?.options_en || null,
+                explanation_en: enQs[i]?.explanation_en || null,
+              }))
+            }
+          }
+
           // Veritabanı kayıtlarını oluştur
+          // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Not yalnızca %100 onaylıysa (Kontrolör+Müfettiş)
+          // öğrenciye gösterilmek üzere yayınlanır. Onaylanmamış not DB'de notes=null kalır.
           await prisma.section.update({
             where: { id: section.id },
             data: {
               title: finalTitle,
               summary: analysis.summary || "",
-              notes: notes || null,
+              notes: notesAttemptSuccess ? (notes || null) : null,
+              notes_en: null,
               importance: resolvedImportance,
               topics: JSON.stringify(analysis.topics || []),
               module: detectedModule,
@@ -1197,6 +1280,21 @@ async function processInBackground(slug: string, course: any) {
                 issues: lastVerification.issues,
                 suggestions: lastVerification.suggestions,
                 attemptHistory: attemptHistory,
+                ...(notesAttemptSuccess ? { auditResult: { passed: true } } : {}),
+                stages: {
+                  notesGenerated: true,
+                  kontrolorGroundTruth: notesAttemptSuccess || currentScore === 100,
+                  mufettis: notesAttemptSuccess,
+                  cerrahiYama: attemptHistory.some((h: { isSmartInject?: boolean }) => h.isSmartInject === true),
+                  flashcards: flashcards.length > 0,
+                  questions: questions.length > 0,
+                  published: isSectionApproved,
+                },
+                message: isSectionApproved
+                  ? "Kontrolör ve Müfettiş onayı tamamlandı — bölüm yayında."
+                  : notesAttemptSuccess
+                    ? "Kontrolör ve Müfettiş onayı tamam; soru/kart üretimi eksik."
+                    : undefined,
                 ...(missingContent.length > 0 ? { missingContent } : {})
               }) : null
             }
@@ -1259,7 +1357,7 @@ async function processInBackground(slug: string, course: any) {
               card.back = card.back.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
             }
             
-            try { await prisma.flashcard.create({ data: { courseId: course.id, sectionId: section.id, front: card.front, back: card.back, difficulty: card.difficulty || "medium" } }) } catch { }
+            try { await prisma.flashcard.create({ data: { courseId: course.id, sectionId: section.id, front: card.front, back: card.back, front_en: card.front_en || null, back_en: card.back_en || null, difficulty: card.difficulty || "medium" } }) } catch { }
           }
           if (dedupSkipped > 0) {
             console.log(`[BG] 🔄 ${dedupSkipped} mükerrer flashcard atlandı (kendi içinde dedup).`)
@@ -1277,7 +1375,7 @@ async function processInBackground(slug: string, course: any) {
               q.explanation = q.explanation.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
             }
             
-            try { await prisma.question.create({ data: { courseId: course.id, sectionId: section.id, text: q.text, options: JSON.stringify(q.options), correct: q.correct, explanation: q.explanation, difficulty: q.difficulty || "medium", module: detectedModule } }) } catch { }
+            try { await prisma.question.create({ data: { courseId: course.id, sectionId: section.id, text: q.text, text_en: q.text_en || null, options: JSON.stringify(q.options), options_en: q.options_en ? JSON.stringify(q.options_en) : null, correct: q.correct, explanation: q.explanation, explanation_en: q.explanation_en || null, difficulty: q.difficulty || "medium", module: detectedModule } }) } catch { }
           }
 
           console.log(`[BG] ✅ SAVED: ${finalTitle} → ${flashcards.length} cards, ${questions.length} questions. Skor: ${currentScore}/100`)
@@ -1310,26 +1408,31 @@ async function processInBackground(slug: string, course: any) {
     }
 
     if (hasCriticalError) {
-      // Hata olduysa course status'u error yap
-      await prisma.course.update({ where: { slug }, data: { status: "error" } })
-      console.error(`[BG] ❌ "${course.name}" işlemi hata ile durduruldu.`)
+      const latest = await prisma.course.findUnique({ where: { slug }, select: { status: true } });
+      if (latest?.status !== "paused") {
+        await prisma.course.update({ where: { slug }, data: { status: "error" } });
+      }
+      console.error(`[BG] ❌ "${course.name}" işlemi durduruldu.`)
       return
     }
 
-    // Study Schedule
-    if (course.examDate) {
-      try {
-        const allSec = await prisma.section.findMany({ where: { courseId: course.id }, orderBy: { order: "asc" } })
-        const items = generateStudySchedule({ examDate: new Date(course.examDate), userLevel: course.userLevel as any, totalSections: allSec.length, sectionTitles: allSec.map(s => s.title), sectionIds: allSec.map(s => s.id) })
-        for (const item of items) {
-          await prisma.studyPlan.create({ data: { courseId: course.id, date: item.date.toISOString(), task: item.task, type: item.type, duration: item.duration.toString(), sectionIds: JSON.stringify(item.sectionIds), completed: false } })
-        }
-      } catch (e: any) { console.error("[SCHEDULE]", e.message) }
-    }
+    // Çalışma planı kullanıcı bazlı /api/study-plan/generate üzerinden oluşturulur (userId zorunlu).
 
-    await prisma.course.update({ where: { slug }, data: { status: "ready" } })
+    // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Ders ancak TÜM bölümler %100 onaylı (processed=true)
+    // ise "ready" olur. Bir tek bölüm bile eksik/onaysız ise ders "error" kalır ve kullanıcı
+    // "Devam Ettir" ile kaldığı yerden tamamlatabilir. Yarım ders ASLA "hazır" gösterilmez.
+    const totalSectionCount = await prisma.section.count({ where: { courseId: course.id } })
+    const processedSectionCount = await prisma.section.count({ where: { courseId: course.id, processed: true } })
+    const allSectionsPerfect = totalSectionCount > 0 && processedSectionCount === totalSectionCount
+    const finalStatus = allSectionsPerfect ? "ready" : "error"
+
+    await prisma.course.update({ where: { slug }, data: { status: finalStatus } })
     const stats = { flashcards: await prisma.flashcard.count({ where: { courseId: course.id } }), questions: await prisma.question.count({ where: { courseId: course.id } }) }
-    console.log(`[BG] ✅ "${course.name}" tamamlandı! ${stats.flashcards} flashcard, ${stats.questions} soru`)
+    if (allSectionsPerfect) {
+      console.log(`[BG] ✅ "${course.name}" tamamlandı (TÜM ${totalSectionCount} bölüm %100)! ${stats.flashcards} flashcard, ${stats.questions} soru`)
+    } else {
+      console.warn(`[BG] ⚠️ "${course.name}" KISMEN tamamlandı: ${processedSectionCount}/${totalSectionCount} bölüm %100 onaylı. Ders "ready" YAPILMADI (eksik bölümler için tekrar çalıştırılmalı).`)
+    }
   } catch (fatalError: any) {
     console.error(`[BG_FATAL] "${course.name}" işlenirken kritik hata:`, fatalError.message)
     try { await prisma.course.update({ where: { slug }, data: { status: "uploaded" } }) } catch { }

@@ -2,6 +2,14 @@ import React from "react"
 import { motion } from "framer-motion"
 import { FileText, ShieldCheck, Bot, AlertCircle, RefreshCw, ChevronRight, Sparkles, Search } from "lucide-react"
 import { Modal } from "@/components/course/shared"
+import {
+  parseQualityIssues,
+  deriveQualityStages,
+  getScoreRingTone,
+  getRingColor,
+  getModalStatusLabel,
+  getAttemptDisplayLabel,
+} from "@/lib/section-quality-gates"
 
 interface SectionQualityModalProps {
   section: {
@@ -18,13 +26,16 @@ interface SectionQualityModalProps {
 export function SectionQualityModal({ section, onClose, actions }: SectionQualityModalProps) {
   const score = section.verificationScore ?? -1
   const isSkipped = score === -1
-  const isExcellent = score >= 95
-  const isGood = score >= 70
 
-  const ringColor = isSkipped ? "#64748b" : isExcellent ? "#10b981" : isGood ? "#f59e0b" : "#ef4444"
+  const issuesObj = parseQualityIssues(section.verificationIssues)
+  const stages = deriveQualityStages(issuesObj, score, section.processed)
+  const isFullyApproved = stages.published || (section.processed && score === 100 && stages.mufettis)
+
+  const ringTone = getScoreRingTone(score, stages, section.processed, isSkipped)
+  const ringColor = getRingColor(ringTone)
   const ringBg = isSkipped ? "bg-slate-500/10 text-slate-400 border-slate-500/20" :
-                 isExcellent ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5" :
-                 isGood ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                 ringTone === "green" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5" :
+                 ringTone === "amber" ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
                  "bg-red-500/10 text-red-400 border-red-500/20"
 
   // Score circle svg parameters
@@ -34,12 +45,6 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const circ = radius * 2 * Math.PI
   const displayScore = isSkipped ? 0 : score
   const offset = circ - (displayScore / 100) * circ
-
-  // Parse issues
-  let issuesObj: any = {}
-  try {
-    issuesObj = JSON.parse(section.verificationIssues || "{}")
-  } catch {}
 
   const isGenericEmpty = (s: string) => {
     if (!s || typeof s !== "string") return true;
@@ -56,7 +61,8 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const actualAttempt = issuesObj.currentAttempt || (attemptHistory.length > 0 ? attemptHistory.length : 1)
   const currentMicroPhase = issuesObj.currentMicroPhase || null
   const isProcessing = !section.processed && currentMicroPhase != null
-  const hasMufettisPassed = score === 100 || issuesObj.auditResult?.passed === true || issuesObj.auditResult?.passed === "true"
+  const hasMufettisPassed = stages.mufettis
+  const kontrolorApproved = stages.kontrolorGroundTruth
 
   const kontrolorMissing = allMissingTopics.filter((t: string) => !t.includes("[MÜFETTİŞ"))
   const mufettisMissing = allMissingTopics.filter((t: string) => t.includes("[MÜFETTİŞ"))
@@ -75,11 +81,11 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const isLiveMufettis = isProcessing && (strPhase.includes("müfettiş") || strPhase.includes("denetim"));
   const isLiveYama = isProcessing && (strPhase.includes("cerrahi yama") || strPhase.includes("ast") || strPhase.includes("patch"));
 
-  const isKontrolorPulsing = isLiveKontrolor || (!isProcessing && !isSkipped && !isExcellent && !hasMufettisIssues && !hasMufettisPassed);
-  const isKontrolorCompleted = isSkipped || isLiveMufettis || isLiveYama || isExcellent || hasMufettisPassed || hasMufettisIssues;
+  const isKontrolorPulsing = isLiveKontrolor || (!isProcessing && !isSkipped && !kontrolorApproved && !hasMufettisIssues);
+  const isKontrolorCompleted = isSkipped || isLiveMufettis || isLiveYama || kontrolorApproved || hasMufettisIssues;
   
-  const isMufettisPulsing = isLiveMufettis || (!isProcessing && isExcellent && !hasMufettisPassed && !hasMufettisIssues);
-  const isMufettisCompleted = isSkipped || isLiveYama || hasMufettisPassed || hasMufettisIssues;
+  const isMufettisPulsing = isLiveMufettis || (!isProcessing && kontrolorApproved && !hasMufettisPassed && !hasMufettisIssues);
+  const isMufettisCompleted = isSkipped || isLiveYama || (hasMufettisPassed && !isProcessing) || hasMufettisIssues;
 
   const isYamaPulsing = isLiveYama || (!isProcessing && hasMufettisIssues && !hasMufettisPassed);
 
@@ -222,21 +228,33 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
           
           {/* Status Label (Current Attempt or Pass status) */}
           <div className="mt-5 text-center flex justify-center">
-            <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
-              isProcessing ? "bg-blue-500/10 text-blue-400 border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse" :
-              isSkipped ? "bg-slate-500/5 text-slate-400 border-slate-500/20" :
-              hasMufettisPassed ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5" :
-              hasMufettisIssues ? "bg-red-500/10 text-red-400 border-red-500/20" :
-              isExcellent ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
-              "bg-amber-500/10 text-amber-400 border-amber-500/20"
-            }`}>
-              {isProcessing ? "YAPAY ZEKA MOTORU ÇALIŞIYOR" :
-               isSkipped ? "DOĞRULAMA BYPASS EDİLDİ" :
-               hasMufettisPassed ? ( actualAttempt === 1 ? "ONAYLANDI (1. TUR)" : `ONAYLANDI (${actualAttempt}. TUR)` ) :
-               hasMufettisIssues ? "ONAYDAN GEÇMEDİ (EKSİKLER VAR)" :
-               isExcellent ? "MÜFETTİŞ (İNSAN) ONAYI BEKLENİYOR" :
-               `${actualAttempt}. KALİTE DÖNGÜSÜ DEVAM EDİYOR`}
-            </div>
+            {(() => {
+              const statusLabel = getModalStatusLabel(
+                stages,
+                section.processed,
+                isProcessing,
+                isSkipped,
+                hasMufettisIssues,
+                actualAttempt,
+                currentMicroPhase
+              )
+              const statusTone = isProcessing
+                ? "bg-blue-500/10 text-blue-400 border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse"
+                : isSkipped
+                  ? "bg-slate-500/5 text-slate-400 border-slate-500/20"
+                  : isFullyApproved
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5"
+                    : hasMufettisIssues
+                      ? "bg-red-500/10 text-red-400 border-red-500/20"
+                      : kontrolorApproved && !hasMufettisPassed
+                        ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                        : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+              return (
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${statusTone}`}>
+                  {statusLabel}
+                </div>
+              )
+            })()}
           </div>
           
           {/* Live Operation Radar */}
@@ -347,37 +365,37 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             <div className="p-4 border-t border-white/[0.04] bg-black/20">
               <h4 className={`text-[11px] font-bold flex items-center gap-1.5 mb-2 ${
                 isSkipped ? "text-slate-400" :
-                hasMufettisPassed ? "text-emerald-400" :
-                isExcellent ? "text-blue-400" :
+                isFullyApproved ? "text-emerald-400" :
+                kontrolorApproved && !hasMufettisPassed ? "text-blue-400" :
                 "text-red-400"
               }`}>
                 <span className={`w-1.5 h-1.5 rounded-full animate-ping ${
                   isSkipped ? "bg-slate-400" :
-                  hasMufettisPassed ? "bg-emerald-400" :
-                  isExcellent ? "bg-blue-400" :
+                  isFullyApproved ? "bg-emerald-400" :
+                  kontrolorApproved && !hasMufettisPassed ? "bg-blue-400" :
                   "bg-red-400"
                 }`} />
                 {isSkipped ? "Doğrulama Bypass Edildi" :
-                  hasMufettisPassed ? "Kalite Kontrolörü ve Müfettiş Onay Süreci" :
-                  isExcellent ? "Kalite Kontrolörü Kalite Güvence Döngüsü" :
+                  isFullyApproved ? "Kalite Kontrolörü ve Müfettiş Onay Süreci" :
+                  kontrolorApproved && !hasMufettisPassed ? "Kontrolör Onayı Tamam — Müfettiş Bekleniyor" :
                   "Kalite İyileştirme Süreci Devam Ediyor"}
               </h4>
               <p className="text-[11px] text-slate-400 leading-relaxed text-justify mb-3">
                 {isSkipped 
                   ? "Bu ders notu, API limitleri veya teknik zorunluluklar sebebiyle çok turlu kalite iyileştirme döngüsüne girmeden tek aşamalı olarak üretilmiştir."
-                  : hasMufettisPassed 
+                  : isFullyApproved 
                   ? "Bu ders notu, Kalite Kontrolörü tarafından kaynak dokümandaki yasal süreler ve kavramlar açısından incelenmiş, ardından Müfettiş tarafından teknik ve yasal detay seviyesinde denetlenerek çift aşamalı onaydan geçmiştir."
-                  : isExcellent 
-                  ? "Bu ders notu, Kalite Kontrolörü tarafından kaynak dökümandaki yasal süreler ve kavramlar açısından incelenmiş ve üstün kalite standardıyla onaylanmıştır. Müfettiş derin denetim fazı henüz başlatılmamıştır."
+                  : kontrolorApproved && !hasMufettisPassed
+                  ? "Kalite Kontrolörü notu onayladı. Müfettiş derin denetimi henüz tamamlanmadı veya devam ediyor; tam onay için Müfettiş aşamasının geçmesi gerekir."
                   : "Bu ders notu üzerinde Kalite Kontrolörü incelemesi yapılmış olup, tespit edilen eksiklikler veya bilgi hataları nedeniyle not geliştirilme aşamasındadır. Müfettiş denetimine henüz hazır değildir."}
               </p>
               <div className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-line border-t border-white/[0.04] pt-3">
                 [AI-PROCESS-LOG] {isSkipped 
                   ? "API limitleri ve kota kısıtlamaları nedeniyle çok turlu kalite iyileştirme döngüsü bypass edilerek tek aşamada tamamlandı." 
-                  : hasMufettisPassed
+                  : isFullyApproved
                   ? `Kalite Kontrolörü ve Müfettiş analizi başarıyla tamamlandı. Notun müfredat kapsamını eksiksiz karşıladığı, yasal çerçeve ve terimlerin yüksek doğruluk oranıyla aktarıldığı teyit edildi.`
-                  : isExcellent  
-                  ? "Kalite Kontrolörü derin analiz gerçekleştirerek 5 farklı kalite/kapsam iyileştirme turu tamamlandı. Ders notunun müfredatla %95+ düzeyde tutarlı olduğu doğrulanarak onaylandı." 
+                  : kontrolorApproved && !hasMufettisPassed
+                  ? `Kalite Kontrolörü %100 onay verdi. Müfettiş denetimi henüz tam onay aşamasına ulaşmadı.`
                   : `Kalite Kontrolörü incelemesi tamamlandı. Puan: %${score}. Notta ${kontrolorMissing.length} eksik konu ve ${kontrolorIssues.length} bilgi hatası düzeltilmeyi bekliyor.`}
               </div>
             </div>
@@ -412,9 +430,10 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
 
                       const mufettisIssues = hIssues.filter((i: string) => i.includes("[MÜFETTİŞ"));
 
-                      // Puan doğrudan veritabanından gelir — arka plan motoru zaten dürüst puanı hesaplar.
                       const displayScore = h.score;
-                      const isTrulyPerfect = displayScore === 100;
+                      const attemptLabel = getAttemptDisplayLabel(h, section.processed);
+                      const isTrulyPerfect = attemptLabel.isFullyApproved;
+                      const isKontrolorOnlyPerfect = attemptLabel.isKontrolorOnly;
 
                       return (
                         <>
@@ -424,14 +443,16 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                                 {h.attempt === 0 ? "İlk Analiz:" : `#${h.attempt}. Tur:`}
                               </span>
                               {isTrulyPerfect ? (
-                                <span className="text-emerald-400 font-bold">ONAYLANDI</span>
+                                <span className="text-emerald-400 font-bold">{attemptLabel.headline}</span>
+                              ) : isKontrolorOnlyPerfect ? (
+                                <span className="text-blue-400 font-bold">{attemptLabel.headline}</span>
                               ) : h.attempt === 0 ? (
                                 <span className="text-amber-400/90 font-bold">Eksikler / Öneriler Tespit Edildi</span>
                               ) : (
                                 <span className="text-amber-400/90 font-bold">Eksikler / Öneriler Giderildi</span>
                               )}
                             </div>
-                            <span className={`font-black text-xs ${displayScore >= 95 ? 'text-emerald-400' : 'text-slate-400'}`}>%{displayScore}</span>
+                            <span className={`font-black text-xs ${isTrulyPerfect ? 'text-emerald-400' : isKontrolorOnlyPerfect ? 'text-blue-400' : displayScore >= 95 ? 'text-emerald-400' : 'text-slate-400'}`}>%{displayScore}</span>
                           </div>
 
                           <div className="flex flex-col gap-2 mt-1">
@@ -441,11 +462,28 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                                   <Sparkles className="w-3.5 h-3.5" /> SİSTEM ONAY RAPORU
                                 </div>
                                 <div className="text-[11px] text-emerald-400/80 leading-relaxed font-medium">
-                                  Kalite Kontrolörü denetimi başarıyla tamamlandı. Kaynak materyaldeki kavramlar yüksek doğrulukla aktarıldı.
+                                  Kalite Kontrolörü ve Müfettiş denetimi tamamlandı. Kaynak materyaldeki kavramlar yüksek doğrulukla aktarıldı.
                                 </div>
                                 {hSuggestions.length > 0 && (
                                   <div className="text-[10px] text-emerald-400/90 mt-2 pt-2 border-t border-emerald-500/10">
                                     <span className="font-bold text-emerald-500/70">Not Düşülen Öneri:</span>
+                                    <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
+                                      {hSuggestions.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            ) : isKontrolorOnlyPerfect ? (
+                              <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/10">
+                                <div className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                  <Bot className="w-3.5 h-3.5" /> KONTROLÖR ONAY RAPORU
+                                </div>
+                                <div className="text-[11px] text-blue-400/80 leading-relaxed font-medium">
+                                  Kalite Kontrolörü %100 onay verdi. Müfettiş denetimi bu turda henüz tamamlanmadı veya devam ediyor.
+                                </div>
+                                {hSuggestions.length > 0 && (
+                                  <div className="text-[10px] text-blue-400/90 mt-2 pt-2 border-t border-blue-500/10">
+                                    <span className="font-bold text-blue-500/70">Not Düşülen Öneri:</span>
                                     <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
                                       {hSuggestions.map((m: string, idx: number) => <li key={idx}>{m}</li>)}
                                     </ul>

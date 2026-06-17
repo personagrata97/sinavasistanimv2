@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     await page.setViewport({ width: 1200, height: 800, deviceScaleFactor: 1 });
     
     // HTML'i yükle ve ağ isteklerinin tamamen durmasını bekle (Mermaid JS'in çalışması için)
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
     
     // Mermaid diagramlarının çizilmesi için fazladan bekleme payı
     await new Promise(r => setTimeout(r, 3000));

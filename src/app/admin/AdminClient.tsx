@@ -8,8 +8,9 @@ import { useRouter } from "next/navigation"
 import { createPortal } from "react-dom"
 import { motion, AnimatePresence } from "framer-motion"
 import { Modal } from "@/components/course/shared"
-import { Tooltip, ProgressRing } from "@/components/ui/shared"
+import { Tooltip } from "@/components/ui/shared"
 import { SectionQualityModal } from "@/components/admin/SectionQualityModal"
+import { parseQualityIssues, deriveQualityStages } from "@/lib/section-quality-gates"
 
 interface AdminClientProps {
   users: Array<{
@@ -64,7 +65,46 @@ interface AdminClientProps {
 
 type TabType = "users" | "reported" | "quality" | "api_usage"
 
+const MODEL_LABELS: Record<string, string> = {
+  "gemini-3.5-flash": "Gemini 3.5 Flash",
+  "gemini-2.5-flash": "Gemini 2.5 Flash",
+}
+
+function QuotaBar({
+  label,
+  used,
+  limit,
+  tooltip,
+}: {
+  label: string
+  used: number
+  limit: number
+  tooltip: string
+}) {
+  const remaining = Math.max(0, limit - used)
+  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0
+  const barColor = remaining <= 0 ? "bg-rose-500" : pct >= 85 ? "bg-amber-500" : "bg-emerald-500"
+
+  return (
+    <Tooltip content={tooltip}>
+      <div className="space-y-1 cursor-help">
+        <div className="flex items-center justify-between gap-2 text-[10px]">
+          <span className="text-slate-400 font-medium">{label}</span>
+          <span className="font-mono text-slate-200 shrink-0">
+            {used}/{limit}
+            <span className="text-slate-500 ml-1">({remaining} kalan)</span>
+          </span>
+        </div>
+        <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+    </Tooltip>
+  )
+}
+
 export default function AdminClient({ users, reportedQuestions, sectionsQuality, stats, apiLogs, systemKeys }: AdminClientProps) {
+  const [recentApiLogs, setRecentApiLogs] = useState(apiLogs || [])
   const [activeTab, setActiveTab] = useState<TabType>("users")
   const [userSearch, setUserSearch] = useState("")
   const [questionSearch, setQuestionSearch] = useState("")
@@ -85,7 +125,45 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
   const [questionPage, setQuestionPage] = useState(1)
   const [sectionPage, setSectionPage] = useState(1)
   const [apiPage, setApiPage] = useState(1)
+  const [liveKeyStats, setLiveKeyStats] = useState<any | null>(null)
   const itemsPerPage = 5
+
+  // Canlı RPM/RPD sayaçları (motor belleğinden — 5sn polling)
+  useEffect(() => {
+    if (activeTab !== "api_usage") return
+    let cancelled = false
+    const fetchLive = async () => {
+      try {
+        const res = await fetch("/api/admin/api-usage/live", { cache: "no-store" })
+        if (res.ok && !cancelled) {
+          setLiveKeyStats(await res.json())
+        }
+      } catch { /* sessiz */ }
+    }
+    fetchLive()
+    const id = setInterval(fetchLive, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [activeTab])
+
+  // Canlı istek akışı tablosu (veritabanından — 5sn polling)
+  useEffect(() => {
+    if (activeTab !== "api_usage") return
+    let cancelled = false
+    const fetchRecentLogs = async () => {
+      try {
+        const res = await fetch("/api/admin/api-usage/recent", { cache: "no-store" })
+        if (res.ok && !cancelled) {
+          const data = await res.json()
+          if (Array.isArray(data.logs)) {
+            setRecentApiLogs(data.logs)
+          }
+        }
+      } catch { /* sessiz */ }
+    }
+    fetchRecentLogs()
+    const id = setInterval(fetchRecentLogs, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [activeTab])
 
   const [activeSectionForHistory, setActiveSectionForHistory] = useState<any | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -229,7 +307,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
         {activeTab === "api_usage" && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {(() => {
-              const apiLogsList = apiLogs || []
+              const apiLogsList = recentApiLogs || []
               const totalReqs = apiLogsList.length
               const total429 = apiLogsList.filter(l => l.status === "RATE_LIMIT_429").length
               
@@ -605,15 +683,12 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                       </tr>
                     ) : (
                       paginatedSections.map((sec) => {
-                        let issuesObj: any = {}
-                        try {
-                          issuesObj = JSON.parse(sec.verificationIssues || "{}")
-                        } catch {
-                          issuesObj = {}
-                        }
+                        const issuesObj = parseQualityIssues(sec.verificationIssues)
+                        const stages = deriveQualityStages(issuesObj, sec.verificationScore ?? -1, sec.processed)
 
                         const score = sec.verificationScore ?? -1
-                        const isOK = score >= 95
+                        const isOK = score === 100
+                        const mufettisPassed = stages.mufettis
                         const issuesList = [
                           ...(issuesObj.missingTopics || []).map((t: string) => `Eksik: ${t}`),
                           ...(issuesObj.issues || []).map((i: string) => `Hata: ${i}`),
@@ -674,11 +749,13 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                       🔍 Kontrolör: %{score}
                                     </span>
                                     <span className={`text-[10px] px-2 py-0.5 rounded font-sans tracking-wide font-bold ${
-                                      issuesObj.auditResult?.passed 
+                                      mufettisPassed
                                         ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" 
-                                        : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                        : stages.kontrolorGroundTruth && !sec.processed
+                                          ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                          : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                                     }`}>
-                                      Müfettiş: {issuesObj.auditResult?.passed ? "GEÇTİ" : "KALDI"}
+                                      Müfettiş: {mufettisPassed ? "GEÇTİ" : stages.kontrolorGroundTruth ? "BEKLİYOR" : "KALDI"}
                                     </span>
                                   </div>
                                 )}
@@ -766,8 +843,8 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                     <div>
                       <h2 className="text-xl font-bold">Gerçek Zamanlı API Anahtar Durumları</h2>
                       <p className="text-[11px] text-slate-400 mt-1">
-                        Sistem her başarılı işlemde <span className="font-bold text-slate-300">Dakikalık 15 İstek (RPM)</span>, <span className="font-bold text-slate-300">Dakikalık 1 Milyon Token (TPM)</span> ve <span className="font-bold text-slate-300">Günlük 1500 İstek (RPD)</span> limitinden düşer.<br/>
-                        Kota Aşımı (429) yapay zeka servisinin o anahtara ait dakikalık (istek/token) veya günlük işlem limitinin dolduğunu, <span className="text-rose-400 font-bold">Yetkisiz Erişim (403)</span> ise anahtarın servis tarafından iptal edildiğini veya kısıtlandığını gösterir.
+                        Ücretsiz tier: <span className="font-bold text-slate-300">{liveKeyStats?.rpmLimit ?? 9} RPM</span> / dk / anahtar · 3.5-flash <span className="font-bold text-blue-300">~18/gün</span> · 2.5-flash <span className="font-bold text-violet-300">~240/gün</span> (PT günü: {liveKeyStats?.pacificDay ?? "—"}).<br/>
+                        Sayaçlar motorun gerçek bellek sayaçlarından okunur. Kota Aşımı (429) dakikalık/günlük limit dolduğunu gösterir.
                       </p>
                     </div>
                   </div>
@@ -792,101 +869,118 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                   </div>
                 </div>
                 
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {(() => {
-                    const apiLogsList = apiLogs || []
-                    const activeKeys = systemKeys || []
-                    const keyStats: Record<string, any> = {}
-                    const oneMinAgo = new Date(Date.now() - 60 * 1000).getTime()
-                    
-                    activeKeys.forEach((key, idx) => {
-                      const maskedKey = `Key #${idx + 1}`
-                      keyStats[maskedKey] = { total: 0, dailySuccess: 0, dailyLimitHit: 0, minuteSuccess: 0, model: "gemini-3.5-flash" }
+                    const apiLogsList = recentApiLogs || []
+                    const rpmLimit = liveKeyStats?.rpmLimit ?? 9
+                    const rpdLimit = liveKeyStats?.rpdLimit ?? 240
+                    const liveKeys = liveKeyStats?.keys ?? []
+                    const errorCounts: Record<string, number> = {}
+                    apiLogsList.forEach((log: any) => {
+                      if (log.status === "RATE_LIMIT_429") {
+                        errorCounts[log.apiKey] = (errorCounts[log.apiKey] || 0) + 1
+                      }
                     })
 
-                    apiLogsList.forEach((log: any) => {
-                      if (!keyStats[log.apiKey]) {
-                        keyStats[log.apiKey] = { total: 0, dailySuccess: 0, dailyLimitHit: 0, minuteSuccess: 0, model: log.model }
-                      }
-                      keyStats[log.apiKey].total += 1
-                      keyStats[log.apiKey].model = log.model || keyStats[log.apiKey].model
-                      
-                      const isRecent = new Date(log.createdAt).getTime() > oneMinAgo
-                      
-                      if (log.status === "SUCCESS") {
-                        keyStats[log.apiKey].dailySuccess += 1
-                        if (isRecent) keyStats[log.apiKey].minuteSuccess += 1
-                      } else if (log.status === "RATE_LIMIT_429") {
-                        keyStats[log.apiKey].dailyLimitHit += 1
-                      }
-                    })
-                    
-                    let entries = Object.entries(keyStats)
-                    
+                    const entries = liveKeys.length > 0
+                      ? liveKeys.map((lk: any) => {
+                          const m35 = lk.models?.find((m: any) => m.modelId === "gemini-3.5-flash") || lk.models?.[0]
+                          const m25 = lk.models?.find((m: any) => m.modelId === "gemini-2.5-flash")
+                          const dailyUsed = Math.max(m35?.rpdUsed ?? 0, m25?.rpdUsed ?? 0)
+                          const minuteUsed = Math.max(m35?.rpmUsed ?? 0, m25?.rpmUsed ?? 0)
+                          return [lk.keyLabel, {
+                            dailySuccess: dailyUsed,
+                            minuteSuccess: minuteUsed,
+                            dailyLimitHit: errorCounts[lk.keyLabel] || 0,
+                            suspended: lk.suspended,
+                            models: lk.models,
+                          }] as [string, any]
+                        })
+                      : (systemKeys || []).map((_, idx) => [`Key #${idx + 1}`, { dailySuccess: 0, minuteSuccess: 0, dailyLimitHit: 0, models: [] }])
+
+                    let sorted = [...entries]
                     if (apiSortMethod === "rpd_asc") {
-                      entries.sort((a, b) => b[1].dailySuccess - a[1].dailySuccess) // Most success = least remaining
+                      sorted.sort((a, b) => b[1].dailySuccess - a[1].dailySuccess)
                     } else if (apiSortMethod === "rpm_asc") {
-                      entries.sort((a, b) => b[1].minuteSuccess - a[1].minuteSuccess)
+                      sorted.sort((a, b) => b[1].minuteSuccess - a[1].minuteSuccess)
                     } else if (apiSortMethod === "errors_desc") {
-                      entries.sort((a, b) => b[1].dailyLimitHit - a[1].dailyLimitHit)
+                      sorted.sort((a, b) => b[1].dailyLimitHit - a[1].dailyLimitHit)
                     }
 
-                    return entries.map(([key, data]: [string, any]) => {
-                      const dailyRemaining = Math.max(0, 1500 - data.dailySuccess)
-                      const minuteRemaining = Math.max(0, 15 - data.minuteSuccess)
-                      const isFull = dailyRemaining <= 0 || minuteRemaining <= 0
-                      const statusText = dailyRemaining <= 0 ? "Günlük Doldu" : (minuteRemaining <= 0 ? "Dk. Doldu" : "Aktif")
-                      
+                    return sorted.map(([key, data]: [string, any]) => {
+                      const models: Array<{ modelId: string; rpmUsed: number; rpdUsed: number }> =
+                        data.models?.length > 0
+                          ? data.models
+                          : [
+                              { modelId: "gemini-3.5-flash", rpmUsed: data.minuteSuccess ?? 0, rpdUsed: data.dailySuccess ?? 0 },
+                            ]
+
+                      const primary = models.find((m) => m.modelId === "gemini-3.5-flash") ?? models[0]
+                      const dailyRemaining = Math.max(0, rpdLimit - (primary?.rpdUsed ?? 0))
+                      const minuteRemaining = Math.max(0, rpmLimit - (primary?.rpmUsed ?? 0))
+                      const isFull = data.suspended || dailyRemaining <= 0 || minuteRemaining <= 0
+                      const statusText = data.suspended ? "Askıda" : dailyRemaining <= 0 ? "Günlük Doldu" : minuteRemaining <= 0 ? "Dk. Doldu" : "Aktif"
+
                       return (
-                        <div key={key} className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${isFull ? 'bg-rose-500/5 border-rose-500/20' : 'bg-white/[0.02] border-white/[0.05] hover:border-white/[0.1]'}`}>
-                          <div className="flex items-center justify-between mb-3">
-                            <div>
-                              <div className="font-bold text-sm tracking-wide text-slate-200">{key}</div>
-                              <div className="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[9px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/20 shadow-sm"><Sparkles className="w-2.5 h-2.5 text-blue-400" />
-                                {data.model.replace("gemini-", "").replace("-flash", "")}
-                              </div>
-                            </div>
-                            <span className={`px-2 py-1 rounded text-[10px] font-bold shadow-sm ${isFull ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}>
+                        <div
+                          key={key}
+                          className={`p-4 rounded-xl border transition-all flex flex-col gap-3 min-w-0 ${
+                            isFull ? "bg-rose-500/5 border-rose-500/20" : "bg-white/[0.02] border-white/[0.05] hover:border-white/[0.10]"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.06]">
+                            <div className="font-bold text-sm tracking-wide text-slate-200 truncate">{key}</div>
+                            <span
+                              className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-bold ${
+                                isFull
+                                  ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                                  : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                              }`}
+                            >
                               {statusText}
                             </span>
                           </div>
-                          
-                          <div className="flex justify-between items-center mt-auto gap-4">
-                            {/* Günlük (RPD) Dairesel Gösterge */}
-                            <Tooltip content={`Günlük Kalan İstek: ${dailyRemaining} / 1500`}>
-                              <div className="flex flex-col items-center flex-1 cursor-help">
-                                <ProgressRing 
-                                  progress={Math.max(0, (dailyRemaining / 1500) * 100)} 
-                                  size={46} 
-                                  strokeWidth={5} 
-                                  color={dailyRemaining <= 0 ? "#f43f5e" : dailyRemaining < 300 ? "#f59e0b" : "#3b82f6"} 
-                                />
-                                <div className="text-[10px] font-bold text-slate-400 mt-1.5 tracking-wider">RPD</div>
-                              </div>
-                            </Tooltip>
 
-                            <div className="w-px h-8 bg-white/[0.08]" />
-                            
-                            {/* Dakikalık (RPM) Dairesel Gösterge */}
-                            <Tooltip content={`Dakikalık Kalan İstek: ${minuteRemaining} / 15`}>
-                              <div className="flex flex-col items-center flex-1 cursor-help">
-                                <ProgressRing 
-                                  progress={Math.max(0, (minuteRemaining / 15) * 100)} 
-                                  size={46} 
-                                  strokeWidth={5} 
-                                  color={minuteRemaining <= 0 ? "#f43f5e" : minuteRemaining < 3 ? "#f59e0b" : "#10b981"} 
-                                />
-                                <div className="text-[10px] font-bold text-slate-400 mt-1.5 tracking-wider">RPM</div>
-                              </div>
-                            </Tooltip>
+                          <div className="space-y-3">
+                            {models.map((m) => {
+                              const modelName = MODEL_LABELS[m.modelId] ?? m.modelId
+                              const is35 = m.modelId === "gemini-3.5-flash"
+                              return (
+                                <div
+                                  key={m.modelId}
+                                  className={`rounded-lg px-3 py-2.5 space-y-2.5 ${
+                                    is35 ? "bg-blue-500/5 border border-blue-500/15" : "bg-violet-500/5 border border-violet-500/15"
+                                  }`}
+                                >
+                                  <div className={`text-xs font-semibold ${is35 ? "text-blue-300" : "text-violet-300"}`}>
+                                    {modelName}
+                                  </div>
+                                  <QuotaBar
+                                    label="Bu dakika"
+                                    used={m.rpmUsed}
+                                    limit={rpmLimit}
+                                    tooltip={`${modelName} — Bu dakikada ${m.rpmUsed} istek atıldı, ${Math.max(0, rpmLimit - m.rpmUsed)} hak kaldı (limit ${rpmLimit}/dk)`}
+                                  />
+                                  <QuotaBar
+                                    label="Bugün"
+                                    used={m.rpdUsed}
+                                    limit={m.modelId === "gemini-3.5-flash" ? (liveKeyStats?.rpdLimit35 ?? 18) : (liveKeyStats?.rpdLimit ?? 240)}
+                                    tooltip={`${modelName} — Bugün ${m.rpdUsed} istek atıldı, ${Math.max(0, rpdLimit - m.rpdUsed)} hak kaldı (limit ${rpdLimit}/gün, PT takvimi)`}
+                                  />
+                                </div>
+                              )
+                            })}
                           </div>
-                          
-                          <div className="mt-4 pt-3 border-t border-white/[0.05] flex justify-between items-center text-[10px] text-slate-400">
-                            <span className="flex gap-2">Başarılı: <strong className="text-emerald-400">{data.dailySuccess}</strong></span>
-                            <span className="flex gap-2 text-rose-400">429 Hata: <strong>{data.dailyLimitHit}</strong></span>
-                          </div>
-                          <div className="mt-2 text-[9px] text-indigo-400/80 text-center font-medium bg-indigo-500/10 py-1 rounded">
-                            1M TPM Limiti Aktif
+
+                          <div className="pt-2 border-t border-white/[0.06] flex justify-between items-center gap-2 text-[10px] text-slate-400">
+                            <span>
+                              Bugün 429: <strong className="text-rose-400">{data.dailyLimitHit}</strong>
+                            </span>
+                            {liveKeyStats?.serverTime && (
+                              <span className="text-[9px] text-slate-500 shrink-0">
+                                {new Date(liveKeyStats.serverTime).toLocaleTimeString("tr-TR")}
+                              </span>
+                            )}
                           </div>
                         </div>
                       )
@@ -900,6 +994,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                   <div className="flex items-center gap-3">
                     <Database className="w-6 h-6 text-indigo-400" />
                     <h2 className="text-xl font-bold">Canlı İstek Akışı</h2>
+                    <p className="text-[10px] text-slate-500 mt-1">5 saniyede bir otomatik yenilenir</p>
                   </div>
                   <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 focus-within:border-indigo-500 transition-colors w-full sm:w-64">
                     <Search className="w-4 h-4 text-slate-500 shrink-0" />
@@ -926,13 +1021,23 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                     </thead>
                     <tbody>
                       {(() => {
-                        const apiLogsList = apiLogs || []
+                        const apiLogsList = recentApiLogs || []
                         const filtered = apiLogsList.filter((l: any) => l.apiKey.toLowerCase().includes(apiSearch.toLowerCase()) || l.operation.toLowerCase().includes(apiSearch.toLowerCase()) || (l.courseSlug || "").toLowerCase().includes(apiSearch.toLowerCase()) || (l.courseFullName || "").toLowerCase().includes(apiSearch.toLowerCase()))
                         const paginated = filtered.slice((apiPage - 1) * 10, apiPage * 10)
                         const totalPages = Math.ceil(filtered.length / 10) || 1
 
                         if (paginated.length === 0) {
-                          return <tr><td colSpan={5} className="py-8 text-center text-slate-500 text-sm">Henüz kayıt yok.</td></tr>
+                          return (
+                            <tr>
+                              <td colSpan={5} className="py-8 text-center text-slate-500 text-sm space-y-1">
+                                <div>Henüz kayıt yok veya arama sonucu boş.</div>
+                                <div className="text-[11px] text-slate-600 max-w-md mx-auto leading-relaxed">
+                                  PDF okuma (OCR), not, soru ve kart istekleri burada görünür. Bekleme satırları (WAITING) limit/rotasyon sırasında yazılır.
+                                  Üstteki anahtar kartları anlık sayaçtır — sunucu yeniden başlayınca sıfırlanabilir.
+                                </div>
+                              </td>
+                            </tr>
+                          )
                         }
 
                         return (
@@ -946,7 +1051,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                   <div className="font-bold text-sm text-slate-200">{log.apiKey}</div>
                                   <div className="inline-flex items-center gap-1.5 mt-0.5 px-2 py-0.5 rounded text-[10px] bg-slate-800/80 text-blue-300 font-mono border border-blue-500/30 shadow-sm">
                                     <Bot className="w-3 h-3 text-blue-400" />
-                                    <span>{log.model}</span>
+                                    <span>{MODEL_LABELS[log.model] ?? log.model}</span>
                                   </div>
                                 </td>
                                 <td className="py-3 px-4">
@@ -962,7 +1067,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                        log.operation === 'question_generation' ? <><Target className="w-3 h-3 text-purple-400" /> SORU HAVUZU ÜRETİMİ</> :
                                        log.operation === 'flashcard' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
                                        log.operation === 'flashcard_generation' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
-                                       log.operation === 'ocr_extraction' ? <><Search className="w-3 h-3 text-indigo-400" /> PDF OKUMA (OCR)</> :
+                                       log.operation === 'ocr_extraction' || log.operation === 'ocr_extraction_chunk' ? <><Search className="w-3 h-3 text-indigo-400" /> PDF OKUMA (OCR)</> :
                                        log.operation.toUpperCase()}
                                     </div>
                                     <div className="flex flex-col gap-0.5 pl-2 border-l-2 border-indigo-500/30">
@@ -994,7 +1099,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                                 <span className="font-semibold text-slate-400 w-11">Konu:</span> 
                                                 <Tooltip content={konu.trim()}>
                                                   <span className="truncate max-w-[180px] cursor-help">
-                                                    {konu.trim().split(' ').map(w => w.charAt(0).toLocaleUpperCase('tr-TR') + w.slice(1).toLocaleLowerCase('tr-TR')).join(' ')}
+                                                    {konu.trim().split(' ').map((w: string) => w.charAt(0).toLocaleUpperCase('tr-TR') + w.slice(1).toLocaleLowerCase('tr-TR')).join(' ')}
                                                   </span>
                                                 </Tooltip>
                                               </div>

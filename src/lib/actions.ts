@@ -1,7 +1,8 @@
 "use server"
 
 import { prisma } from "./prisma"
-import { SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES } from "./course-data"
+import { SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, getExamConfig } from "./course-data"
+import { ensureProgramsSeeded } from "./course-seed"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { answerSchema, reviewSchema } from "@/lib/validations"
@@ -31,95 +32,7 @@ async function requireAdmin() {
 // ==================== COURSE ACTIONS ====================
 
 export async function initializeCourses() {
-  // 1. Seed Programs
-  const programs = [
-    { slug: "spl-duzey-3", name: "Sermaye Piyasası Düzey 3", aiMode: "finance", description: "Sermaye Piyasası Faaliyetleri Düzey 3 Lisans Sınavı" },
-    { slug: "yds", name: "YDS / YÖKDİL", aiMode: "language", description: "Yabancı Dil Bilgisi Seviye Tespit Sınavı" },
-    { slug: "masak", name: "Uyum Görevlisi Sınavı", aiMode: "law", description: "MASAK Uyum Görevlisi Yetkilendirme Sınavı — AML/CFT mevzuatı, şüpheli işlem bildirimi ve risk yönetimi" },
-    { slug: "spl-bagimsiz-denetim", name: "Bilgi Sistemleri Bağımsız Denetim", aiMode: "finance", description: "SPL Bilgi Sistemleri Bağımsız Denetim Lisansı Sınavı" }
-  ]
-
-  for (const p of programs) {
-    await prisma.program.upsert({
-      where: { slug: p.slug },
-      update: { aiMode: p.aiMode, description: p.description },
-      create: p
-    })
-  }
-
-  const splProgram = await prisma.program.findUnique({ where: { slug: "spl-duzey-3" } })
-
-  // 2. Seed SPL Courses
-  if (splProgram) {
-    for (const course of SPL_LEVEL_3_COURSES) {
-      const existing = await prisma.course.findUnique({ where: { slug: course.slug } })
-      if (!existing) {
-        await prisma.course.create({
-          data: {
-            name: course.name,
-            slug: course.slug,
-            order: course.order,
-            description: course.description,
-            programId: splProgram.id
-          }
-        })
-      } else if (!existing.programId) {
-        // Link existing course to program
-        await prisma.course.update({
-          where: { id: existing.id },
-          data: { programId: splProgram.id }
-        })
-      }
-    }
-  }
-
-  const masakProgram = await prisma.program.findUnique({ where: { slug: "masak" } })
-  // 3. Seed MASAK Courses
-  if (masakProgram) {
-    for (const course of MASAK_COURSES) {
-      const existing = await prisma.course.findUnique({ where: { slug: course.slug } })
-      if (!existing) {
-        await prisma.course.create({
-          data: {
-            name: course.name,
-            slug: course.slug,
-            order: course.order,
-            description: course.description,
-            programId: masakProgram.id
-          }
-        })
-      } else if (!existing.programId) {
-        await prisma.course.update({
-          where: { id: existing.id },
-          data: { programId: masakProgram.id }
-        })
-      }
-    }
-  }
-
-  // 4. Seed SPL Bağımsız Denetim Courses
-  const bdProgram = await prisma.program.findUnique({ where: { slug: "spl-bagimsiz-denetim" } })
-  if (bdProgram) {
-    for (const course of SPL_BD_COURSES) {
-      const existing = await prisma.course.findUnique({ where: { slug: course.slug } })
-      if (!existing) {
-        await prisma.course.create({
-          data: {
-            name: course.name,
-            slug: course.slug,
-            order: course.order,
-            description: course.description,
-            programId: bdProgram.id
-          }
-        })
-      } else if (!existing.programId) {
-        await prisma.course.update({
-          where: { id: existing.id },
-          data: { programId: bdProgram.id }
-        })
-      }
-    }
-  }
+  await ensureProgramsSeeded()
 }
 
 export async function updateUserStreak() {
@@ -169,17 +82,15 @@ export async function getUserStats() {
 
   const user = await prisma.user.findUnique({
     where: { email: session.user.email },
-    select: { currentStreak: true, lastActiveAt: true, onboardingCompleted: true, targetExamDate: true, _count: { select: { mockResults: true, questionAnswers: true } } }
+    select: { currentStreak: true, lastActiveAt: true, onboardingCompleted: true, targetExamDate: true, targetHours: true, _count: { select: { mockResults: true, questionAnswers: true } } }
   })
   return user
 }
 
 export async function getPrograms() {
   try {
-    const count = await prisma.program.count()
-    if (count === 0) {
-      await initializeCourses()
-    }
+    // Yeni program/dersler mevcut DB'ye de eklensin (sadece boş DB'de değil)
+    await initializeCourses()
     return await prisma.program.findMany({
       orderBy: { createdAt: "asc" }
     })
@@ -194,10 +105,7 @@ export async function getAllCourses() {
     // Streak'i arka planda güncelle (hata fırlatsa da süreci bölmemesi için)
     updateUserStreak().catch(() => {})
 
-    const count = await prisma.course.count()
-    if (count === 0) {
-      await initializeCourses()
-    }
+    await initializeCourses()
 
     const courses = await prisma.course.findMany({
       orderBy: { order: "asc" },
@@ -241,10 +149,7 @@ export async function getAllCourses() {
 
 export async function getCourseBySlug(slug: string) {
   try {
-    const count = await prisma.course.count()
-    if (count === 0) {
-      await initializeCourses()
-    }
+    await initializeCourses()
 
     const course = await prisma.course.findUnique({
       where: { slug },
@@ -370,6 +275,8 @@ export async function refineSectionNotesAction(sectionId: string) {
 
     const course = section.course
     const aiMode = course.program?.aiMode || "general"
+    const programSlug = course.program?.slug || "spl-duzey-3"
+    const sourceMode = getExamConfig(programSlug)?.sourceMode ?? "strict"
 
     // Her key'in kendi fileUri'sini ayarla — merkezi helper ile (DRY)
     const { ensureGeminiFileUris } = await import("./gemini-file-helper")
@@ -473,16 +380,17 @@ export async function refineSectionNotesAction(sectionId: string) {
     }
 
     // Generate refined notes
+    const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`
     const notes = await generateCourseNotes(
-      enrichedContent, section.title, course.name, course.userLevel,
-      aiMode, activeFileUri, section.pageStart, section.pageEnd
+      enrichedContent, section.title, fullCourseName, course.userLevel,
+      aiMode, section.pageStart, section.pageEnd,
+      false, 0, 1, undefined, sourceMode,
     )
 
     // Verify notes - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
     // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
     const verification = await verifyNotesAgainstSource(
-      section.rawContent, notes, section.title,
-      undefined, section.pageStart, section.pageEnd
+      section.rawContent, notes, section.title, fullCourseName, sourceMode,
     )
 
     // Save back to DB
@@ -498,9 +406,9 @@ export async function refineSectionNotesAction(sectionId: string) {
     const updatedSection = await prisma.section.update({
       where: { id: sectionId },
       data: {
-        notes: notes,
+        notes: verification.score === 100 ? notes : null,
         verificationScore: verification.score,
-        processed: verification.score >= 95,
+        processed: verification.score === 100,
         verificationIssues: JSON.stringify({
           missingTopics: verification.missingTopics || [],
           issues: verification.issues || [],
@@ -510,23 +418,36 @@ export async function refineSectionNotesAction(sectionId: string) {
       }
     })
 
-    // Regenerate flashcards and questions based on the new notes and raw content
+    // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Not %100 onaylanmadıysa soru/flashcard üretilmez.
+    if (verification.score !== 100) {
+      return {
+        success: false,
+        score: verification.score,
+        message: `Not %${verification.score} aldı. Yalnızca %100 onaylı notlardan soru/flashcard üretilir. Lütfen tekrar deneyin.`,
+        missingTopics: verification.missingTopics || [],
+        issues: verification.issues || [],
+      }
+    }
+
+    // Regenerate flashcards and questions from approved notes (main pipeline ile aynı kaynak)
     try {
-      const { generateFlashcards, generateQuestions } = await import("./ai-service")
+      const { generateFlashcards, generateQuestions, validateFlashcardsWithSolver, validateQuestionsWithSolver } = await import("./ai-service")
       
-      const fullContent = `${section.rawContent}\n\n--- DERS NOTLARI (PDF görselleri dahil) ---\n${notes}`
+      const finalContent = notes
 
       // Recreate flashcards
-      const flashcards = await generateFlashcards(
-        fullContent, section.title, course.name, course.userLevel,
+      let flashcards = await generateFlashcards(
+        finalContent, section.title, fullCourseName, course.userLevel,
         aiMode, undefined, section.pageStart, section.pageEnd
       )
+      flashcards = await validateFlashcardsWithSolver(finalContent, flashcards)
 
       // Recreate questions
       let questions = await generateQuestions(
-        fullContent, section.title, course.name, course.userLevel,
+        finalContent, section.title, fullCourseName, course.userLevel,
         aiMode, undefined, section.pageStart, section.pageEnd, section.importance || undefined
       )
+      questions = await validateQuestionsWithSolver(finalContent, questions)
 
       // Save new flashcards if successfully generated using a diff approach to prevent wipping UserFlashcardProgress
       if (flashcards && flashcards.length > 0) {
@@ -1478,11 +1399,16 @@ export async function generateMoreContentAction(courseSlug: string, contentType:
     
     const { generateQuestions, generateFlashcards, validateQuestionsWithSolver, validateFlashcardsWithSolver } = await import("./ai-service")
     
-    const targetSections = sectionId 
+    const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`
+
+    const approvedSections = (sectionId
       ? course.sections.filter(s => s.id === sectionId)
-      : course.sections.filter(s => s.rawContent && s.rawContent.length > 100)
-    
-    if (targetSections.length === 0) return { success: false, message: "İşlenecek bölüm bulunamadı." }
+      : course.sections
+    ).filter(s => s.notes && s.notes.length > 500 && (s.verificationScore ?? 0) >= 98)
+
+    if (approvedSections.length === 0) {
+      return { success: false, message: "Onaylı ders notu bulunamadı. Önce bölüm notları %98+ skorla üretilmeli." }
+    }
     
     let totalGenerated = 0
     const aiMode = course.program?.aiMode || "general"
@@ -1491,13 +1417,14 @@ export async function generateMoreContentAction(courseSlug: string, contentType:
       const existingItems = await prisma.question.findMany({ where: { courseId: course.id }, select: { text: true } })
       const existingTexts = new Set(existingItems.map(eq => eq.text.trim().toLowerCase()))
       
-      for (const section of targetSections) {
+      for (const section of approvedSections) {
         if (totalGenerated >= count) break
         const remaining = count - totalGenerated
-        let questions = await generateQuestions(section.rawContent, section.title, course.name, course.userLevel, aiMode, course.geminiFileUri || undefined, section.pageStart, section.pageEnd, section.importance || undefined)
+        const sourceNotes = section.notes!
+        let questions = await generateQuestions(sourceNotes, section.title, fullCourseName, course.userLevel, aiMode, undefined, section.pageStart, section.pageEnd, section.importance || undefined)
         
-        // SOLVER AI: Üretilen soruları test et
-        questions = await validateQuestionsWithSolver(section.rawContent, questions);
+        // SOLVER AI: Üretilen soruları test et (ana pipeline ile aynı kaynak: onaylı notlar)
+        questions = await validateQuestionsWithSolver(sourceNotes, questions);
 
         for (const q of questions.slice(0, remaining)) {
           try {
@@ -1516,13 +1443,14 @@ export async function generateMoreContentAction(courseSlug: string, contentType:
       const existingItems = await prisma.flashcard.findMany({ where: { courseId: course.id }, select: { front: true } })
       const existingTexts = new Set(existingItems.map(eq => eq.front.trim().toLowerCase()))
       
-      for (const section of targetSections) {
+      for (const section of approvedSections) {
         if (totalGenerated >= count) break
         const remaining = count - totalGenerated
-        let cards = await generateFlashcards(section.rawContent, section.title, course.name, course.userLevel, aiMode, course.geminiFileUri || undefined, section.pageStart, section.pageEnd, section.importance || undefined)
+        const sourceNotes = section.notes!
+        let cards = await generateFlashcards(sourceNotes, section.title, fullCourseName, course.userLevel, aiMode, undefined, section.pageStart, section.pageEnd)
         
-        // SOLVER AI: Üretilen kartları test et
-        cards = await validateFlashcardsWithSolver(section.rawContent, cards);
+        // SOLVER AI: Üretilen kartları test et (ana pipeline ile aynı kaynak: onaylı notlar)
+        cards = await validateFlashcardsWithSolver(sourceNotes, cards);
 
         for (const c of cards.slice(0, remaining)) {
           try {

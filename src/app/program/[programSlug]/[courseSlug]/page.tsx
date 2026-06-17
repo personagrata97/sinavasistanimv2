@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, use } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   ArrowLeft, Calendar, BookOpen, HelpCircle, Clock, BarChart3,
   Upload, Brain, ChevronRight, Sparkles, Target,
@@ -184,6 +184,7 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
   const { programSlug, courseSlug } = use(params)
   const slug = courseSlug
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { data: session } = useSession()
     const isAdmin = (session?.user as any)?.role === "admin"
 
@@ -192,6 +193,14 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
   const [userStats, setUserStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState("overview")
+
+  // Dashboard görev linklerinden gelen ?tab=notes vb. parametrelerini oku
+  useEffect(() => {
+    const tabParam = searchParams.get("tab")
+    if (tabParam && COURSE_TABS.some(t => t.id === tabParam)) {
+      setActiveTab(tabParam)
+    }
+  }, [searchParams])
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(undefined)
   const [selectedScrollKeyword, setSelectedScrollKeyword] = useState<string | undefined>(undefined)
   const [showExamDateModal, setShowExamDateModal] = useState(false)
@@ -226,6 +235,13 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
         body: JSON.stringify({ slug, forceRetry }),
       })
       if (res.ok) {
+        const data = await res.json()
+        if (data.alreadyRunning) {
+          toast.info(data.message || "İşlem zaten devam ediyor.")
+          processLockRef.current = false
+          setProcessLock(false)
+          return false
+        }
         toast.success(forceRetry ? "Sistem kilidi kırıldı, işlem zorla başlatıldı!" : "İşlem başlatıldı!")
         setTimeout(loadCourse, 1500)
         return true
@@ -631,6 +647,21 @@ export default function CourseDetailPage({ params }: { params: Promise<{ program
                             <Play className="w-2.5 h-2.5 fill-current" /> Devam Ettir
                           </>
                         )}
+                      </button>
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmAction({
+                            title: "Zorla Devam Ettir",
+                            message: "Ekran uzun süredir aynı adımda kaldıysa (API hareketi yoksa) bu buton işlemi kaldığı yerden yeniden başlatır. Tamamlanmış bölümler silinmez.",
+                            onConfirm: async () => {
+                              triggerProcess(true)
+                            }
+                          })
+                        }}
+                        className="text-[10px] whitespace-nowrap px-2 py-0.5 rounded-md border border-amber-500/20 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-semibold flex items-center gap-1 shadow-sm"
+                      >
+                        <AlertTriangle className="w-2.5 h-2.5" /> Zorla
                       </button>
                       <button 
                         onClick={(e) => {

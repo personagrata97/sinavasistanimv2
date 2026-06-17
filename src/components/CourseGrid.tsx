@@ -4,6 +4,7 @@ import { motion } from "framer-motion"
 import Link from "next/link"
 import { ChevronRight, Flame, BookOpen, BarChart3, TrendingUp, Landmark, Globe, RefreshCw, CircleDollarSign, ScrollText, ClipboardList, Globe2, Calculator, Receipt, Scale, ShieldCheck, Monitor, Code, Server } from "lucide-react"
 import { getDaysUntilExam, getUrgencyLevel } from "@/lib/schedule-engine"
+import { getCourseCardBadge, getCourseCardCta } from "@/lib/program-catalog"
 
 const COURSE_ICON_MAP: Record<string, any> = {
   BookOpen, BarChart3, TrendingUp, Landmark, Globe, RefreshCw,
@@ -11,7 +12,7 @@ const COURSE_ICON_MAP: Record<string, any> = {
   ShieldCheck, Monitor, Code, Server
 }
 
-export default function CourseGrid({ courses, stats, programName, programSlug }: { courses: any[]; stats: any; programName?: string; programSlug?: string }) {
+export default function CourseGrid({ courses, stats, programName, programSubtitle, programSlug, gridCountLabel }: { courses: any[]; stats: any; programName?: string; programSubtitle?: string; programSlug?: string; gridCountLabel?: string }) {
   // Progress hesaplamaları kaldırıldı çünkü sistemin PDF işleme durumunu gösteriyordu, kullanıcı ilerlemesini değil.
 
   return (
@@ -24,7 +25,10 @@ export default function CourseGrid({ courses, stats, programName, programSlug }:
           </Link>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">{programName || "Sınav Düzey 3"}</h1>
+              <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">{programName || "Sınav Programı"}</h1>
+              {programSubtitle && (
+                <p className="text-sm text-slate-500 mt-1">{programSubtitle}</p>
+              )}
               {stats?.currentStreak > 0 && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-500/20 border border-orange-500/20 text-orange-400 text-xs font-bold shadow-[0_0_15px_rgba(249,115,22,0.2)]">
                   <Flame className="w-3 h-3" />
@@ -32,7 +36,7 @@ export default function CourseGrid({ courses, stats, programName, programSlug }:
                 </div>
               )}
             </div>
-            <p className="text-slate-400 text-sm mt-1">{courses.length} Ders</p>
+            <p className="text-slate-400 text-sm mt-1">{gridCountLabel ?? `${courses.length} Ders`}</p>
           </div>
         </div>
 
@@ -48,6 +52,7 @@ export default function CourseGrid({ courses, stats, programName, programSlug }:
             not_started: { label: "Başlanmadı", color: "text-slate-500" },
             uploading: { label: "Yükleniyor", color: "text-amber-400" },
             processing: { label: "İşleniyor", color: "text-blue-400" },
+            paused: { label: "Duraklatıldı", color: "text-amber-400" },
             ready: { label: "Hazır", color: "text-emerald-400" },
             error: { label: "Hata Oluştu", color: "text-red-400" },
           }
@@ -78,7 +83,7 @@ export default function CourseGrid({ courses, stats, programName, programSlug }:
                         )
                       })()}
                       <span className="text-xs font-semibold text-slate-600 bg-white/5 px-2 py-1 rounded">
-                        Modül {course.order}
+                        {getCourseCardBadge(programSlug, course.order)}
                       </span>
                     </div>
                     {urgency && (
@@ -114,7 +119,7 @@ export default function CourseGrid({ courses, stats, programName, programSlug }:
 
                   {/* CTA */}
                   <div className="flex items-center gap-1 text-xs font-semibold text-slate-500 group-hover:text-sky-400 transition-colors">
-                    Derse Git <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                    {getCourseCardCta(programSlug)} <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </div>
               </Link>

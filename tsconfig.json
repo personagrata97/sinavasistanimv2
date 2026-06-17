@@ -31,5 +31,14 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "scratch", "reset-admin-password.ts", "eski_testler"]
+  "exclude": [
+    "node_modules",
+    "scratch",
+    "reset-admin-password.ts",
+    "eski_testler",
+    "fix_*.ts",
+    "fix_logs*.ts",
+    "check-db.ts",
+    "check-issues.ts"
+  ]
 }

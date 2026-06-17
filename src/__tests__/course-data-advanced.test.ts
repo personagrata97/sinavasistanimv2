@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getCourseBySlug, getCourseByOrder, getExamConfig, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, MASAK_EXAM_CONFIG, SPL_EXAM_CONFIG } from '@/lib/course-data'
+import { getCourseBySlug, getCourseByOrder, getExamConfig, getCourseMockExamParams, estimateScaledScore, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, MASAK_EXAM_CONFIG, SPL_EXAM_CONFIG, CISA_EXAM_CONFIG } from '@/lib/course-data'
 
 describe('course-data gelişmiş testler', () => {
   describe('veri bütünlüğü', () => {
@@ -36,8 +36,11 @@ describe('course-data gelişmiş testler', () => {
       expect(SPL_BD_COURSES.length).toBe(5)
     })
 
-    it('ALL_COURSES toplam 18 olmalı', () => {
-      expect(ALL_COURSES.length).toBe(18)
+    it('ALL_COURSES tüm program kurslarının toplamı olmalı', () => {
+      expect(ALL_COURSES.length).toBe(
+        SPL_LEVEL_3_COURSES.length + MASAK_COURSES.length + SPL_BD_COURSES.length +
+        CIA_COURSES.length + CISA_COURSES.length + SMMM_COURSES.length
+      )
     })
 
     it('her kursun order numarası pozitif olmalı', () => {
@@ -72,6 +75,54 @@ describe('course-data gelişmiş testler', () => {
 
     it('bilinmeyen program için undefined dönmeli', () => {
       expect(getExamConfig('bilinmeyen')).toBeUndefined()
+    })
+  })
+
+  describe('getCourseMockExamParams', () => {
+    it('SPL dersi 25 soru / 45 dk dönmeli', () => {
+      const params = getCourseMockExamParams('spl-duzey-3', 'sermaye-piyasasi-mevzuati')
+      expect(params?.questionCount).toBe(25)
+      expect(params?.durationMinutes).toBe(45)
+      expect(params?.passingScore).toBe(60)
+      expect(params?.scoreDisplayMode).toBe('percent')
+    })
+
+    it('MASAK modülü 50 soru / min havuz 50 olmalı', () => {
+      const params = getCourseMockExamParams('masak', 'masak-uyum-gorevlisi')
+      expect(params?.questionCount).toBe(50)
+      expect(params?.minQuestionPool).toBe(50)
+    })
+
+    it('CISA 150 soru / ölçekli geçme 450 olmalı', () => {
+      const params = getCourseMockExamParams('cisa', 'cisa')
+      expect(params?.questionCount).toBe(150)
+      expect(params?.durationMinutes).toBe(240)
+      expect(params?.passingScore).toBe(450)
+      expect(params?.scoreDisplayMode).toBe('scaled')
+    })
+
+    it('CIA Part 1 = 125 soru / 150 dk olmalı', () => {
+      const params = getCourseMockExamParams('cia', 'cia-part-1')
+      expect(params?.questionCount).toBe(125)
+      expect(params?.durationMinutes).toBe(150)
+      expect(params?.passingScore).toBe(600)
+    })
+
+    it('BSBD dersi 25 soru / 45 dk olmalı', () => {
+      const params = getCourseMockExamParams('spl-bagimsiz-denetim', 'bd-bilgi-sistemleri-guvenligi')
+      expect(params?.questionCount).toBe(25)
+      expect(params?.durationMinutes).toBe(45)
+      expect(params?.passingScore).toBe(60)
+    })
+  })
+
+  describe('estimateScaledScore', () => {
+    it('CISA tam doğru ≈ 800 olmalı', () => {
+      expect(estimateScaledScore(150, 150, CISA_EXAM_CONFIG)).toBe(800)
+    })
+
+    it('CISA yarı doğru ≈ 500 olmalı', () => {
+      expect(estimateScaledScore(75, 150, CISA_EXAM_CONFIG)).toBe(500)
     })
   })
 

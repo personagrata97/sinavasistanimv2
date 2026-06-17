@@ -17,6 +17,7 @@ import { Tooltip } from "@/components/ui/shared"
 import { getBookmarkForCourse, setBookmark, removeBookmark, getHighlightsForSection, getHighlightsForCourse, addHighlight, removeHighlight, getColorClass, type Highlight } from "@/lib/study-marks"
 import { PremiumMarkdownRenderer } from "./PremiumMarkdownRenderer"
 import { SectionQualityModal } from "@/components/admin/SectionQualityModal"
+import { parseQualityIssues, deriveQualityStages, getQualityBadgeState } from "@/lib/section-quality-gates"
 
 const PDF_SHARED_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
@@ -996,18 +997,16 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                         </span>
                       )}
                       {isAdmin && (() => {
-                        let attempt = 1;
-                        let currentMicroPhase = null;
-                        try {
-                          const issues = JSON.parse(section.verificationIssues || "{}");
-                          attempt = issues.currentAttempt || (issues.attemptHistory?.length > 0 ? issues.attemptHistory.length : 1);
-                          currentMicroPhase = issues.currentMicroPhase;
-                        } catch(e) {}
+                        const issues = parseQualityIssues(section.verificationIssues)
+                        const attempt = issues.currentAttempt || (issues.attemptHistory?.length ? issues.attemptHistory.length : 1)
+                        const currentMicroPhase = issues.currentMicroPhase ?? null
+                        const stages = deriveQualityStages(issues, section.verificationScore ?? -1, section.processed)
+                        const badge = getQualityBadgeState(section.verificationScore, section.processed, stages, currentMicroPhase)
 
-                        const showScore = section.verificationScore != null && section.notes;
-                        const showAttempt = showScore || (!section.processed && attempt > 0);
+                        const showScore = section.verificationScore != null && section.notes
+                        const showAttempt = showScore || (!section.processed && attempt > 0)
 
-                        if (!showScore && !currentMicroPhase) return null;
+                        if (!showScore && !currentMicroPhase) return null
 
                         return (
                           <div className="flex items-center gap-1.5 flex-wrap">
@@ -1025,14 +1024,13 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                                   e.stopPropagation();
                                   setActiveScoreSection(section);
                                 }}
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center gap-1 ${
-                                  section.verificationScore === -1 ? "bg-slate-500/10 text-slate-400 border border-slate-500/20" :
-                                  section.verificationScore >= 95 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-md shadow-emerald-950/20 hover:bg-emerald-500/20" :
-                                  section.verificationScore >= 70 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20" :
-                                  "bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
-                                }`}
+                                title={badge.hint || undefined}
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center gap-1 ${badge.badgeClass}`}
                               >
-                                <ShieldCheck className="w-3 h-3" /> {section.verificationScore === -1 ? "Atlandı" : `Skor: %${section.verificationScore}`}
+                                <ShieldCheck className="w-3 h-3" /> {badge.scoreLabel}
+                                {badge.hint && !currentMicroPhase && (
+                                  <span className="text-[8px] opacity-80 ml-0.5 hidden sm:inline">· {badge.hint}</span>
+                                )}
                               </span>
                             )}
 
@@ -1114,17 +1112,8 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                                 ...prev,
                                 [section.id]: prev[section.id].filter(h => h.id !== hl.id)
                               }))
-                              const res = await removeHighlight(hl.id)
-                              if (res.success) {
-                                toast.success("İşaret kaldırıldı")
-                              } else {
-                                toast.error("Kaldırılamadı: " + res.error)
-                                // Geri al
-                                setSectionHighlights(prev => ({
-                                  ...prev,
-                                  [section.id]: [...(prev[section.id] || []), hl]
-                                }))
-                              }
+                              removeHighlight(hl.id)
+                              toast.success("İşaret kaldırıldı")
                             }}
                             className="ml-2 hover:text-red-400"
                           >
@@ -1138,11 +1127,13 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
 
                 <div className="text-sm text-slate-300 leading-relaxed markdown-notes">
                   {section.notes ? (
+                    <>
                     <PremiumMarkdownRenderer 
                       content={cleanMarkdown(section.notes, true)}
                       renderTooltips={section.title.toUpperCase().includes("KISALTMALAR") ? undefined : renderTooltips}
                       autoScrollKeyword={scrollKeyword}
                     />
+                    </>
                   ) : (
                     <EmptyState
                       icon={BookOpen}
@@ -1334,8 +1325,6 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                         <PremiumMarkdownRenderer 
                           content={cleanMarkdown(section.notes, true)}
                           renderTooltips={section.title.toUpperCase().includes("KISALTMALAR") ? undefined : renderTooltips}
-                          courseId={course.id}
-                          sectionId={section.id}
                         />
                       ) : (
                         <p className="text-slate-500 italic">Notlar hazırlanıyor...</p>

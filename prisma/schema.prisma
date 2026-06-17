@@ -105,6 +105,7 @@ model Section {
   rawContent  String   // Orijinal PDF metni
   summary     String?  // AI üretimi özet
   notes       String?  // AI üretimi kapsamlı ders notu
+  notes_en    String?  // İngilizce paralel not (CISA/CIA gibi uluslararası sınavlar)
   importance  String?  // High, Medium, Low
   topics      String?  // JSON array
   verificationScore  Int?     // AI doğrulama skoru (0-100), sadece admin'e gösterilir
@@ -130,6 +131,8 @@ model Flashcard {
   section     Section? @relation(fields: [sectionId], references: [id])
   front       String
   back        String
+  front_en    String?  // İngilizce paralel soru yüzü
+  back_en     String?  // İngilizce paralel cevap
   difficulty  String   @default("medium") // easy, medium, hard
   createdAt   DateTime @default(now())
 
@@ -146,9 +149,12 @@ model Question {
   sectionId   String?
   section     Section? @relation(fields: [sectionId], references: [id])
   text        String
+  text_en     String?  // İngilizce paralel soru metni
   options     String   // JSON array of options
+  options_en  String?  // JSON array — İngilizce şıklar
   correct     String   // Correct answer
   explanation String?
+  explanation_en String?
   difficulty  String   @default("medium") // easy, medium, hard
   module      String?  // Hangi sınav modülüne ait (Section'dan miras)
   reported    Boolean  @default(false) // Kullanıcı tarafından hatalı olarak bildirildi
@@ -353,9 +359,11 @@ model SystemError {
 
 model ApiUsageLog {
   id          String   @id @default(cuid())
-  apiKey      String   // Masked key or ID
+  apiKey      String   // Masked key or ID (örn. Key #3)
+  keyIndex    Int?     // 0-based anahtar indeksi (canlı sayaç eşleştirmesi)
   model       String   // e.g., gemini-1.5-flash
-  operation   String   // e.g., generateFlashcards, generateQuestions, ProcessSection
+  operation   String   // e.g., generateFlashcards, ocr_extraction_chunk
+  stage       String?  // ocr | notes | kontrolor | ground_truth | mufettis | yama | questions | flashcards
   courseSlug  String?  // the context
   sectionId   String?  // the context
   status      String   // "SUCCESS", "RATE_LIMIT_429", "SERVER_ERROR_503", "TIMEOUT"

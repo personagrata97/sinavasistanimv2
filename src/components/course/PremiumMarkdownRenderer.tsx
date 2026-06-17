@@ -177,8 +177,8 @@ export function PremiumMarkdownRenderer({
 
       // Eğer hiç eşleşme bulamadıysa, biraz daha toleranslı arayalım (en az 1 kelime kökü)
       if (!bestMatch) {
-         for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
+         for (let i = 0; i < elementsList.length; i++) {
+            const el = elementsList[i];
             const text = (el.textContent || '').toLowerCase();
             let score = 0;
             keywordTokens.forEach(token => {
@@ -193,8 +193,8 @@ export function PremiumMarkdownRenderer({
       }
 
       // 🚨 KESİN GARANTİ: Eğer hala hiçbir şey bulamadıysa (ki imkansız gibi bir şey), en azından ilk paragrafı seçsin!
-      if (!bestMatch && elements.length > 0) {
-         bestMatch = elements[0] as HTMLElement;
+      if (!bestMatch && elementsList.length > 0) {
+         bestMatch = elementsList[0];
       }
 
       // Çıkan sonucu tam olarak o satırda göster (üst başlığa gitme)

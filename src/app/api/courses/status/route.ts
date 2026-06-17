@@ -102,9 +102,20 @@ export async function GET(req: NextRequest) {
             }
             const lastUpdate = new Date(dateStr).getTime();
           
-            // Timeout 15 dakikadan 45 dakikaya çıkarıldı çünkü Flashcard/Soru üretimi ve API Kota Beklemeleri 30-40 dakika sürebiliyor.
-            if (now - lastUpdate > 45 * 60 * 1000) {
-              console.log(`[STATUS] 🧟‍♂️ Zombi süreç tespit edildi! (${course.name}) 45 dakikadır hareket yok. Otomatik duraklatılıyor.`);
+            // Timeout: 5 dakika hareketsizlik → zombi (OCR beklerken heartbeat API logu üretmeyebilir)
+            if (now - lastUpdate > 5 * 60 * 1000) {
+              console.log(`[STATUS] 🧟‍♂️ Zombi süreç tespit edildi! (${course.name}) 15 dakikadır hareket yok. Otomatik duraklatılıyor.`);
+              const pauseMessage = "İşlem yanıt vermiyor (5 dk hareketsiz). «Zorla» veya «Devam Ettir» ile yeniden başlatın.";
+              await prisma.section.update({
+                where: { id: currentSection.id },
+                data: {
+                  verificationIssues: JSON.stringify({
+                    currentMicroPhase: pauseMessage,
+                    pauseReason: "zombie_timeout",
+                    pausedAt: new Date().toISOString(),
+                  }),
+                },
+              });
               await prisma.course.update({ where: { id: course.id }, data: { status: "paused" } });
               course.status = "paused";
             }
@@ -128,6 +139,20 @@ export async function GET(req: NextRequest) {
     } else if (course.status === "ready") {
       phase = "ready"
       phaseLabel = "İşlem Tamamlandı"
+    } else if (course.status === "paused") {
+      phase = "paused"
+      phaseLabel = "Duraklatıldı — Devam Ettir ile yeniden başlatın"
+      const pausedSection = await prisma.section.findFirst({
+        where: { courseId: course.id, processed: false },
+        orderBy: { order: "asc" },
+        select: { verificationIssues: true },
+      })
+      if (pausedSection?.verificationIssues) {
+        try {
+          const issues = JSON.parse(pausedSection.verificationIssues)
+          if (issues?.currentMicroPhase) phaseLabel = issues.currentMicroPhase
+        } catch { /* ignore */ }
+      }
     } else if (course.status === "error") {
       phase = "error"
       phaseLabel = "Hata Oluştu (Limit Doldu)"

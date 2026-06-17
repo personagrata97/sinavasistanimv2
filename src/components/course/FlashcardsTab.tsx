@@ -344,6 +344,14 @@ function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string 
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
                 {flattenNestedMarkdown((flipped ? card.back : card.front).replace(/\[KAYNAK BAŞLIĞI:.*?\]/gi, '').replace(/💡/g, '\n\n💡').replace(/🪤/g, '\n\n🪤'))}
               </ReactMarkdown>
+              {(flipped ? card.back_en : card.front_en) && (
+                <div className="mt-3 pt-3 border-t border-blue-500/20 text-sm text-slate-400 italic">
+                  <div className="text-[9px] font-bold uppercase tracking-widest text-blue-400/80 mb-1">English</div>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {(flipped ? card.back_en : card.front_en) || ""}
+                  </ReactMarkdown>
+                </div>
+              )}
             </div>
             {flipped && (
               <div className="mt-8 pt-4 border-t border-emerald-500/20 flex justify-center">

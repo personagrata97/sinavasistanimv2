@@ -2,11 +2,14 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { BookOpen, ArrowRight, Shield, Brain, Scale, BarChart3, CreditCard, FileText, Flame, MessageSquare, Zap } from "lucide-react"
+import { BookOpen, ArrowRight, Shield, Brain, Scale, BarChart3, FileText, Flame, Zap } from "lucide-react"
 import Link from "next/link"
+import { getReadyPrograms } from "@/lib/program-catalog"
+import { resolveProgramIcon } from "@/lib/program-icons"
 
 export default function LandingPage() {
   const [mounted, setMounted] = useState(false)
+  const programs = getReadyPrograms()
 
   useEffect(() => setMounted(true), [])
 
@@ -21,20 +24,17 @@ export default function LandingPage() {
 
   return (
     <main className="min-h-screen bg-[#020617] text-white overflow-hidden relative">
-      {/* Background glows */}
       <div className="absolute inset-0 z-0">
         <div className="absolute top-[-20%] left-[15%] w-[40%] h-[40%] rounded-full bg-indigo-900/20 blur-[200px]" />
         <div className="absolute bottom-[-15%] right-[10%] w-[35%] h-[35%] rounded-full bg-slate-800/30 blur-[180px]" />
       </div>
 
-      {/* Grid pattern */}
       <div className="absolute inset-0 z-0 opacity-[0.015]" style={{
         backgroundImage: "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px)",
         backgroundSize: "80px 80px",
       }} />
 
       <div className="relative z-10">
-        {/* Navbar */}
         <nav className="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center">
@@ -52,7 +52,6 @@ export default function LandingPage() {
           </Link>
         </nav>
 
-        {/* Hero */}
         <div className="container mx-auto px-6 pt-16 pb-24 flex flex-col items-center text-center">
           {mounted && (
             <motion.div
@@ -61,9 +60,7 @@ export default function LandingPage() {
               transition={{ duration: 0.6 }}
             >
               <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight mb-6 leading-[1.1]">
-                <span className="text-white/95">
-                  Her Sınava
-                </span>
+                <span className="text-white/95">Her Sınava</span>
                 <br />
                 <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
                   Hazır Ol.
@@ -71,56 +68,44 @@ export default function LandingPage() {
               </h1>
 
               <p className="text-base md:text-lg text-slate-400 max-w-xl mx-auto leading-relaxed mb-14">
-                Yapay zeka destekli ders notları, akıllı soru bankası ve kişiselleştirilmiş 
+                Yapay zeka destekli ders notları, akıllı soru bankası ve kişiselleştirilmiş
                 çalışma planı ile hedefine en kısa yoldan ulaş.
               </p>
             </motion.div>
           )}
 
-          {/* Program Cards */}
           {mounted && (
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.15 }}
-              className="w-full max-w-3xl grid md:grid-cols-3 gap-4 mb-16"
+              className="w-full max-w-5xl grid sm:grid-cols-2 md:grid-cols-3 gap-4 mb-16"
             >
-              {[
-                { slug: "spl-duzey-3", icon: Shield, name: "Sermaye Piyasası Faaliyetleri Düzey 3 Lisansı", desc: "SPL Lisanslama Sınavı", colorText: "text-indigo-400", colorBorder: "hover:border-indigo-500/30", colorCta: "text-indigo-400", ready: true },
-                { slug: "masak", icon: Scale, name: "MASAK Uyum Görevlisi Yetkilendirme Sınavı", desc: "Uyum Görevlisi Sınavı", colorText: "text-amber-400", colorBorder: "hover:border-amber-500/30", colorCta: "text-amber-400", ready: true },
-                { slug: "spl-bagimsiz-denetim", icon: Brain, name: "Bilgi Sistemleri Bağımsız Denetim Lisansı", desc: "SPL Bağımsız Denetim Sınavı", colorText: "text-emerald-400", colorBorder: "hover:border-emerald-500/30", colorCta: "text-emerald-400", ready: true },
-              ].map((prog, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.25 + i * 0.08 }}
-                >
-                  {prog.ready ? (
+              {programs.map((prog, i) => {
+                const Icon = resolveProgramIcon(prog.icon)
+                return (
+                  <motion.div
+                    key={prog.slug}
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.25 + i * 0.08 }}
+                  >
                     <Link href={`/program/${prog.slug}`}>
-                      <div className={`group relative p-6 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] ${prog.colorBorder} transition-all cursor-pointer text-left`}>
-                        <prog.icon className={`w-6 h-6 ${prog.colorText} mb-4`} />
-                        <h3 className="text-lg font-bold mb-1">{prog.name}</h3>
-                        <p className="text-xs text-slate-500 mb-4">{prog.desc}</p>
-                        <div className={`flex items-center gap-1 text-xs ${prog.colorCta} font-semibold group-hover:gap-2 transition-all`}>
+                      <div className={`group relative p-6 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] ${prog.theme.border} transition-all cursor-pointer text-left`}>
+                        <Icon className={`w-6 h-6 ${prog.theme.text} mb-4`} />
+                        <h3 className="text-lg font-bold mb-1">{prog.displayName}</h3>
+                        <p className="text-xs text-slate-500 mb-4">{prog.subtitle}</p>
+                        <div className={`flex items-center gap-1 text-xs ${prog.theme.cta} font-semibold group-hover:gap-2 transition-all`}>
                           Başla <ArrowRight className="w-3.5 h-3.5" />
                         </div>
                       </div>
                     </Link>
-                  ) : (
-                    <div className="relative p-6 rounded-2xl border border-white/[0.04] bg-white/[0.01] text-left opacity-50">
-                      <div className="absolute top-3 right-3 px-2 py-0.5 rounded bg-slate-800 text-[9px] font-bold text-slate-500 uppercase">Yakında</div>
-                      <prog.icon className="w-6 h-6 text-slate-600 mb-4" />
-                      <h3 className="text-lg font-bold mb-1 text-slate-400">{prog.name}</h3>
-                      <p className="text-xs text-slate-600">{prog.desc}</p>
-                    </div>
-                  )}
-                </motion.div>
-              ))}
+                  </motion.div>
+                )
+              })}
             </motion.div>
           )}
 
-          {/* Features Grid */}
           {mounted && (
             <motion.div
               initial={{ opacity: 0, y: 15 }}

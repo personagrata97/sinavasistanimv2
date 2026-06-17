@@ -3,19 +3,29 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { prisma } from "@/lib/prisma"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { BookOpen, Target, Brain, ArrowRight, Shield, Scale, Flame, ShieldCheck, Sparkles, Dumbbell, Crown, Diamond, Zap, FileText, ClipboardList, CheckCircle, Award } from "lucide-react"
+import { BookOpen, Target, Brain, ArrowRight, Flame, ShieldCheck, Sparkles, Dumbbell, Crown, Diamond, Zap, FileText, ClipboardList, CheckCircle, Award, Trophy, Medal, Star } from "lucide-react"
 import { getUserStats, getPrograms, getUserAchievements, getWeeklyLeaderboard, getDailyTasks } from "@/lib/actions"
+import { getProgramBySlug, PROGRAM_CATALOG } from "@/lib/program-catalog"
+import { resolveProgramIcon } from "@/lib/program-icons"
 import UserMenu from "@/components/UserMenu"
 import DailyTasksList from "@/components/DailyTasksList"
-import { Trophy, Medal, Star } from "lucide-react"
 import ProgressChart from "@/components/ProgressChart"
 
-const PROGRAM_UI: Record<string, { icon: any; gradient: string; accentText: string; accentBorder: string; bgAccent: string; href: string; ready: boolean }> = {
-  "spl-duzey-3":         { icon: Shield, gradient: "from-indigo-900/40 to-slate-900/40", accentText: "text-indigo-400", accentBorder: "hover:border-indigo-500/30", bgAccent: "bg-indigo-500/10", href: "/program/spl-duzey-3", ready: true },
-  "yds":                 { icon: Brain, gradient: "from-emerald-900/40 to-slate-900/40", accentText: "text-emerald-400", accentBorder: "hover:border-emerald-500/30", bgAccent: "bg-emerald-500/10", href: "/program/yds", ready: false },
-  "masak":               { icon: Scale, gradient: "from-amber-900/40 to-slate-900/40", accentText: "text-amber-400", accentBorder: "hover:border-amber-500/30", bgAccent: "bg-amber-500/10", href: "/program/masak", ready: true },
-  "spl-bagimsiz-denetim": { icon: Brain, gradient: "from-emerald-900/40 to-slate-900/40", accentText: "text-emerald-400", accentBorder: "hover:border-emerald-500/30", bgAccent: "bg-emerald-500/10", href: "/program/spl-bagimsiz-denetim", ready: true },
-}
+const PROGRAM_UI: Record<string, { icon: any; gradient: string; accentText: string; accentBorder: string; bgAccent: string; href: string; ready: boolean }> =
+  Object.fromEntries(
+    PROGRAM_CATALOG.map(p => [
+      p.slug,
+      {
+        icon: resolveProgramIcon(p.icon),
+        gradient: p.theme.gradient,
+        accentText: p.theme.text,
+        accentBorder: p.theme.border,
+        bgAccent: p.theme.bgAccent,
+        href: `/program/${p.slug}`,
+        ready: p.ready,
+      },
+    ])
+  )
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions)
@@ -144,15 +154,18 @@ export default async function DashboardPage() {
               <div className="grid md:grid-cols-2 gap-6">
               {programs.filter(p => PROGRAM_UI[p.slug]?.ready).map((program) => {
                 const ui = PROGRAM_UI[program.slug]
+                const catalog = getProgramBySlug(program.slug)
                 const IconComp = ui.icon
+                const title = catalog?.displayName ?? program.name
+                const subtitle = catalog?.subtitle ?? program.description
 
                 return (
                   <Link href={ui.href} key={program.id}>
                     <div className={`group relative p-7 rounded-3xl bg-gradient-to-br ${ui.gradient} border border-white/5 ${ui.accentBorder} transition-all overflow-hidden h-full`}>
                       <div className={`absolute top-0 right-0 w-28 h-28 ${ui.bgAccent} rounded-bl-full`} />
                       <IconComp className={`w-7 h-7 ${ui.accentText} mb-5`} />
-                      <h3 className="text-xl font-bold mb-2">{program.name}</h3>
-                      <p className="text-slate-400 text-sm mb-6 line-clamp-2">{program.description}</p>
+                      <h3 className="text-xl font-bold mb-1">{title}</h3>
+                      <p className="text-slate-400 text-sm mb-6 line-clamp-2">{subtitle}</p>
                       <div className={`flex items-center gap-2 ${ui.accentText} font-semibold text-sm group-hover:gap-4 transition-all`}>
                         Eğitime Devam Et <ArrowRight className="w-4 h-4" />
                       </div>

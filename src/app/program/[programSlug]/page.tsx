@@ -4,40 +4,57 @@ import { notFound } from "next/navigation"
 import CourseGrid from "@/components/CourseGrid"
 import { getUserStats } from "@/lib/actions"
 import { ALL_COURSES } from "@/lib/course-data"
+import { ensureProgramsSeeded } from "@/lib/course-seed"
+import { getProgramBySlug, getProgramGridLabel } from "@/lib/program-catalog"
+import { getExamPartCourseSlugs } from "@/lib/course-data"
 
 export async function generateMetadata({ params }: { params: Promise<{ programSlug: string }> }): Promise<Metadata> {
   const { programSlug } = await params
+  await ensureProgramsSeeded()
+  const catalog = getProgramBySlug(programSlug)
   const program = await prisma.program.findUnique({ where: { slug: programSlug } })
-  if (!program) return { title: "Program Bulunamadı" }
+  const title = catalog?.displayName ?? program?.name ?? "Program Bulunamadı"
+  if (!program && !catalog) return { title: "Program Bulunamadı" }
   return {
-    title: `${program.name} | Sınav Asistanım`,
-    description: program.description || `${program.name} sınavına hazırlık materyalleri.`,
+    title: `${title} | Sınav Asistanım`,
+    description: catalog?.dbDescription ?? program?.description ?? `${title} sınavına hazırlık materyalleri.`,
   }
 }
 
 export default async function ProgramCoursesPage({ params }: { params: Promise<{ programSlug: string }> }) {
   const { programSlug } = await params
-  
-  const program = await prisma.program.findUnique({ 
+
+  await ensureProgramsSeeded()
+
+  const catalog = getProgramBySlug(programSlug)
+  if (!catalog?.ready) {
+    notFound()
+  }
+
+  const program = await prisma.program.findUnique({
     where: { slug: programSlug },
     include: {
       courses: {
         orderBy: { order: "asc" },
         include: {
           _count: {
-            select: { sections: true, flashcards: true, questions: true }
-          }
-        }
-      }
-    }
+            select: { sections: true, flashcards: true, questions: true },
+          },
+        },
+      },
+    },
   })
 
   if (!program) notFound()
 
   const stats = await getUserStats()
+  const displayName = catalog.displayName
 
-  // CourseGrid'in beklediği format — statik konfigden icon ve color'ı al
-  const courses = program.courses.map(c => {
+  const allowedSlugs = new Set(getExamPartCourseSlugs(programSlug))
+
+  const courses = program.courses
+    .filter(c => allowedSlugs.has(c.slug))
+    .map(c => {
     const staticInfo = ALL_COURSES.find(sc => sc.slug === c.slug)
     return {
       ...c,
@@ -46,8 +63,10 @@ export default async function ProgramCoursesPage({ params }: { params: Promise<{
       questionCount: c._count.questions,
       icon: staticInfo?.icon || "BookOpen",
       color: staticInfo?.color || "from-indigo-600 to-violet-700",
+      sortOrder: staticInfo?.order ?? c.order,
     }
   })
+    .sort((a, b) => a.sortOrder - b.sortOrder)
 
   return (
     <div className="min-h-screen bg-[#0a0f1a] text-white">
@@ -57,7 +76,14 @@ export default async function ProgramCoursesPage({ params }: { params: Promise<{
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto px-6 py-8">
-        <CourseGrid courses={courses} stats={stats} programName={program.name} programSlug={programSlug} />
+        <CourseGrid
+          courses={courses}
+          stats={stats}
+          programName={displayName}
+          programSubtitle={catalog.subtitle}
+          programSlug={programSlug}
+          gridCountLabel={getProgramGridLabel(programSlug)}
+        />
       </div>
     </div>
   )
