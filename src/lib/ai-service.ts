@@ -2476,42 +2476,29 @@ Eğer içerik yoğunluğu DÜŞÜK ise:
 
 Bu kural SADECE yukarıdaki düşük içerikli bölümler için geçerlidir. Gerçek ders anlatımı, kavram tanımı, formül veya mevzuat detayı içeren bölümlerde HER ZAMANKİ GİBİ ACIMADAN DENETLE.
 ${headingVerificationBlock}
-PUAN KIRAN DURUMLAR VE ASİMETRİK CEZA MATEMATİĞİ (KESİN KURAL):
-- Kaynak metinde DETAYLI OLARAK AÇIKLANMIŞ bir KONU/KAVRAM ders notunda hiç ele alınmamışsa (tamamen atlanmış): Her atlanan konu için net -15 PUAN.
-- Rakam, oran, süre, tarih, limit YANLIŞ yazılmış (örn: 5 yıl yerine 3 yıl): Her yanlış rakam/süre için net -20 PUAN.
-- Mevzuat adı veya madde numarası YANLIŞ: -10 PUAN.
-- Tablo veya liste YARIDA kesilmiş: -10 PUAN.
-- Ceza miktarı veya yaptırım türü HATALI: -20 PUAN.
-- 🚨 KISMİ ANLATIM KURALI (ÖNEMLİ): Kaynak metinde bir kavramın, kanunun veya sürecin ALT MADDELERİ (örn: 5 alt bent, 4 özellik) varsa ve üretilen notta bu maddelerin SADECE BAZILARI (örn: 3 tanesi) yer alıp diğerleri EKSİK BIRAKILMIŞSA, bu kabul edilemez! "Ana başlık var" diyerek konuyu tam sayma. Atlanan her alt maddeyi "missingTopics" listesine KESİNLİKLE detaylıca yaz ve kısmi anlatım için -15 PUAN KIR.
-- 🚨🚨🚨 UYDURMA / FAZLALIK KURALI (TERS YÖN DENETİMİ — ÇOK KRİTİK): Şimdi yönü TERS çevir ve nottaki HER somut iddiayı kaynakta ARA. Üretilen notta geçen AMA kaynak metinde KARŞILIĞI BULUNMAYAN her olgusal/sayısal/hukuki iddia (rakam, süre, oran, ceza miktarı, kurum adı, kanun/madde numarası, istisna, tarih, kural) bir UYDURMADIR (halüsinasyon). Bunları "issues" listesine "[UYDURMA] ..." diye KESİNLİKLE yaz ve her uydurma somut iddia için net -20 PUAN kır.
-  ⚠️ NE UYDURMA DEĞİLDİR (bunlar için ceza kesme): Tanımın kendi cümlelerinle yeniden ifade edilmesi, eş anlamlı anlatım, benzetme/analoji, akılda kalıcı senaryo/hikaye, görsel/tablo/diyagram, genel bağlayıcı cümleler. Sadece kaynakta KARŞILIĞI OLMAYAN OLGUSAL/SAYISAL/HUKUKİ iddialar uydurmadır.
+İKİLİ DEĞERLENDİRME SİSTEMİ (DUAL-EVALUATION):
 
+1. PEDAGOJİK VE YAPISAL KALİTE (score):
+Bu puan (0-100) SADECE metnin eğitim kalitesini, okunabilirliğini, pedagojik dilini, Markdown formatını, tablo/şema kullanımını ve genel akıcılığını ölçer.
+BİLGİ EKSİKLİKLERİ VE ÇELİŞKİLER BU PUANI ASLA DÜŞÜRMEMELİDİR. Eğer üretilen not çok güzel yazılmış, akıcı, okunabilir ve profesyonel bir ders notu formatındaysa (ama içinde unuttuğu veya yanlış yazdığı detaylar olsa bile) "score" alanına 90-100 arası yüksek bir puan ver. 
+Eğer not çok sıkıcı, blok metin halinde, tablosuz, okunması zor veya yarım kalmış (yapısal çöküş) ise "score" alanına 70'in altında bir puan ver.
 
-PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL):
-- Tanımın kendi cümleleriyle basitleştirilerek veya eşanlamlı kelimelerle anlatılması (Birebir kelime ezberi arama!) ✅
-- Eğlenceli örnekler, hikayeler, benzetmeler eklenmesi ✅
-- 🚨 KAYNAK HATASI YÖNETİMİ (TRIVIAL vs CRITICAL):
-  - A) Trivial (Şekilsel) Hatalar: Yazarın, kaynak metindeki basit bir harf/imla/telaffuz hatasını (örn: 'Standard' yerine 'Standart', Asynchronous yerine Asynchrous) KESİNLİKLE düzeltmemesi ve uyarı eklememesi BEKLENEN KURALDIR. Yazarın kaynağa birebir sadık kalıp "Standart" olarak bırakması BİR HATA DEĞİLDİR! "Yazar bunu düzeltmemiş, kaynak hatası notlara aktarılmış" DİYEREK KESİNLİKLE PUAN KIRMA, bunu "issues" listesine ASLA YAZMA!
-  - B) Critical (Yasal/Sayısal) Hatalar: Kaynaktaki yanlış kanun numarası (610 yerine 6102) gibi hayati hataların yazar tarafından "Not: Mevzuata göre doğrusu şudur" diye düzeltilmesi takdir edilir ve ceza sebebi değildir.
-${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş/yeniden adlandırılmış başlık PUAN KIRAR ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
+2. HATA VE EKSİK TAKİBİ (missingTopics & issues):
+Bu alanlar metnin pedagojik puanından TAMAMEN BAĞIMSIZ olarak, saf bilgi doğruluğunu raporlar.
+- KISMİ ANLATIM VE EKSİKLER: Kaynak metinde DETAYLI AÇIKLANMIŞ bir konu veya bir kavramın alt maddeleri (örn: 5 özellikten 2'si unutulmuşsa) eksik bırakılmışsa bunları "missingTopics" listesine yaz.
+- KRİTİK BİLGİ HATALARI: Rakam, oran, süre, tarih, ceza miktarı veya mevzuat numarası YANLIŞ yazılmışsa bunları "issues" listesine yaz.
+- UYDURMA / HALÜSİNASYON: Üretilen notta geçen AMA kaynak metinde KARŞILIĞI BULUNMAYAN her olgusal/sayısal/hukuki iddia (örnek, analoji, genel ifade HARİÇ) bir uydurmadır. Bunları "issues" listesine "[UYDURMA]" önekiyle KESİNLİKLE yaz.
+
+PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL, eksi/issue olarak YAZMA):
+- Tanımın kendi cümleleriyle basitleştirilerek veya eşanlamlı kelimelerle anlatılması ✅
+- Eğlenceli örnekler, hikayeler, benzetmeler (analoji) eklenmesi ✅
 - Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
 - Kaynak metindeki dolgu cümlelerinin atlanması ✅
-- İçindekiler, önsöz veya kaynakça gibi düşük içerikli bölümlerde başlıkların detaylandırılmamış olması ✅
+- Yazarın, kaynaktaki basit bir harf/imla hatasını düzeltmemiş olması (örn: 'Standard' yerine 'Standart') bir hata değildir ✅
+${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş başlıklar "issues"a yazılır ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
 
-5 BOYUTLU RUBRİK PUANLAMA KURALLARI (TAVİZSİZ VE KESİN):
-Başlangıç puanı 100'dür. Bulduğun her eksiklik için yukarıdaki ceza matematiğini uygulayarak puanı düşür.
-- 100 PUAN: Eğer metinde hiçbir eksik konu (missingTopics) ve hiçbir bilgi hatası (issues) YOKSA tam 100 puan verilir. "Öneri varsa 100 kalır" mantığını UNUT, eksik varsa KESİNLİKLE puan kıracaksın.
-- 85-99 PUAN: Kapsam ve doğruluk yeterli, yayınlanabilir kalitede.
-- 70-84 PUAN: Birden fazla önemli konu atlanmış.
-- 50-69 PUAN: Ciddi eksiklikler, halüsinasyon veya rakam hataları var.
-
-🎯 ÇAPRAZ DOĞRULAMA (Kendini Test Et Kuralı):
-Ders notunun içindeki "Kendini Test Et" sorularının cevaplarını kaynak metne bakarak çapraz doğrula. Eğer cevabı kaynak metinde YOKSA veya YANLIŞSA -25 PUAN ver.
-
-⚠️ MUTLAK DOĞRULUK VE ÖNERİ KURALI: 
-1. Eksikleri doğrudan "missingTopics" veya "issues" alanına aktarmak zorundasın.
-2. Kaynak metinde bulunmayan hiçbir dış konuyu "öneri" (suggestions) olarak yazamazsın!
-3. Eksik varsa Puan KESİNLİKLE 100'ün altında olmalıdır.
+⚠️ MUTLAK DOĞRULUK KURALI: 
+Eksikleri ve hataları sadece "missingTopics" veya "issues" alanlarına aktar. Kaynak metinde bulunmayan dış konuları "suggestions" (öneri) olarak yazma!
 
 Sadece JSON döndür:
 {

@@ -1,19 +1,6 @@
 import { remark } from 'remark';
-import { visit } from 'unist-util-visit';
 import { callAI, extractCleanJson } from './ai-service';
 
-// Tip tanımları
-interface ASTNode {
-  type: string;
-  depth?: number;
-  children?: ASTNode[];
-  value?: string;
-  position?: any;
-}
-
-/**
- * AST-Tabanlı Cerrahi Yama Motoru (Surgical Micro-Patching Engine)
- */
 export async function generateAndInjectPatch(
   markdownContent: string,
   missingFacts: string[],
@@ -21,61 +8,58 @@ export async function generateAndInjectPatch(
   rawContent: string,
   sectionTitle: string
 ): Promise<{ success: boolean; newMarkdown: string; failedFacts: string[] }> {
-  console.log(`[PATCH_ENGINE] 🚀 Yama motoru başlatılıyor. Toplam eksik: ${missingFacts.length}`);
+  console.log(`[PATCH_ENGINE] 🚀 AST Enjeksiyon Motoru başlatılıyor. Toplam eksik: ${missingFacts.length}`);
 
   if (missingFacts.length === 0) {
     return { success: true, newMarkdown: markdownContent, failedFacts: [] };
   }
 
   // 1. Markdown'u AST'ye çevir
-  const ast = remark().parse(markdownContent);
+  const ast: any = remark().parse(markdownContent);
+  const children = ast.children || [];
 
-  // 2. Belgenin İskeletini (Outline) Çıkar
-  const outline: { title: string; index: number; depth: number }[] = [];
-  let headingIndex = 0;
-
-  visit(ast, 'heading', (node: any) => {
-    let title = '';
-    visit(node, 'text', (textNode: any) => {
-      title += textNode.value;
-    });
-    outline.push({ title: title.trim(), index: headingIndex++, depth: node.depth });
-  });
-
-  let isFallback = false;
-  if (outline.length === 0) {
-    console.log(`[PATCH_ENGINE] ⚠️ Belgede hiç başlık bulunamadı. Fallback moduna geçiliyor.`);
-    // Fallback: Tüm metni tek bir yama işlemine sok (Çok riskli ama başlık yoksa mecburi)
-    isFallback = true;
-    outline.push({ title: "Genel Kapsam", index: 0, depth: 1 });
+  if (children.length === 0) {
+    console.log(`[PATCH_ENGINE] ⚠️ Belge boş. Fallback iptal.`);
+    return { success: false, newMarkdown: markdownContent, failedFacts: missingFacts };
   }
 
-  const outlineText = outline.map(h => `${'#'.repeat(h.depth)} ${h.title} (ID: ${h.index})`).join('\n');
-  console.log(`[PATCH_ENGINE] 🗺️ Belge İskeleti Çıkarıldı:\n${outlineText}`);
+  // 2. Blok Numaralandırma (Indexleme)
+  const blockList = children.map((node: any, idx: number) => {
+    // Sadece bu node'u string'e çevirip içeriğine bakıyoruz
+    const blockText = remark().stringify({ type: 'root', children: [node] } as any).trim();
+    return { id: idx, text: blockText, type: node.type };
+  });
 
-  // 3. Micro-Finder (Yer Tespit Ajanı)
-  console.log(`[PATCH_ENGINE] 🕵️‍♂️ Micro-Finder: Eksik bilgilerin rotası çiziliyor...`);
+  const numberedBlocksText = blockList.map((b: any) => `[ID: ${b.id}] (${b.type})\n${b.text}`).join('\n\n');
+
+  // 3. Micro-Finder (Hedef Belirleyici)
+  console.log(`[PATCH_ENGINE] 🕵️‍♂️ Micro-Finder: Blok hedefleri belirleniyor...`);
   const finderPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
-Sen bir yer tespit ajanısın. Aşağıda bir ders notunun "Başlık İskeleti" ve nota eklenmesi unutulmuş "Eksik Bilgiler" listesi var.
-Görev: Her eksik bilginin mantıksal olarak hangi başlığın (ID) altına eklenmesi gerektiğini bul. Eğer hiçbir başlık uygun değilse, tamamen yeni bir alt konuysa ID olarak -1 ver (Evsiz Bilgi).
-Eğer bir bilgi [ÇELİŞKİ DÜZELTMESİ] etiketiyle başlıyorsa, bu notta yanlış yazılmış bir bilginin düzeltilmesi anlamına gelir. Bu bilginin de mantıksal olarak ait olduğu başlığı bul.
+Sen bir Cerrahi Yama (AST) Yer Tespit Ajanısın.
+Aşağıda, her bir paragrafı, başlığı ve listesi numaralandırılmış ([ID: X]) bir ders notu var.
+Ayrıca bu nota eklenmesi/düzeltilmesi gereken "Eksik/Hatalı Bilgiler" listesi var.
 
-İSKELET:
-${outlineText}
+Görev: Her bilgi için notta MÜDAHALE EDİLECEK EN MANTIKLI bloğu (ID) seç.
+- Yeni bir bilgi eklenecekse, o bilginin mantıksal olarak hangi bloğun DEVAMINA (altına) gelmesi gerektiğini bul ve "insert_after" seç.
+- Çelişkili/hatalı bir bilginin düzeltilmesi isteniyorsa ([ÇELİŞKİ DÜZELTMESİ]), o hatalı bilginin geçtiği bloğu (ID) bul ve "replace" seç.
 
-EKSİK BİLGİLER:
+NUMARALANDIRILMIŞ BELGE İSKELETİ:
+${numberedBlocksText}
+
+EKSİK/HATALI BİLGİLER:
 ${missingFacts.map((f, i) => `[F${i}] ${f}`).join('\n')}
 
 SADECE şu JSON formatında cevap ver:
 {
   "routing": [
-    { "factId": "F0", "targetHeadingId": 2 },
-    { "factId": "F1", "targetHeadingId": -1 }
+    { "factId": "F0", "action": "insert_after", "targetBlockId": 2 },
+    { "factId": "F1", "action": "replace", "targetBlockId": 5 }
   ]
 }
+Dikkat: targetBlockId belge içindeki geçerli bir ID olmalıdır.
 `;
 
-  let routing: { factId: string; targetHeadingId: number }[] = [];
+  let routing: { factId: string; action: string; targetBlockId: number }[] = [];
   try {
     const finderRaw = await callAI(finderPrompt, 1, "cerrahi_yama");
     const parsed = extractCleanJson(finderRaw) as any;
@@ -89,173 +73,94 @@ SADECE şu JSON formatında cevap ver:
     return { success: false, newMarkdown: markdownContent, failedFacts: missingFacts };
   }
 
-  // Gruplama (Çarpışan Yamaları Engelleme)
-  const groupedFacts = new Map<number, string[]>();
+  // Gruplama (Hedef Block ID'sine ve Action'a göre)
+  // key format: "targetId_action"
+  const groupedFacts = new Map<string, string[]>();
   for (const route of routing) {
     const factIndex = parseInt(route.factId.replace('F', ''));
     if (isNaN(factIndex) || factIndex < 0 || factIndex >= missingFacts.length) continue;
     
+    // Geçerli bir target ID mi?
+    if (route.targetBlockId < 0 || route.targetBlockId >= children.length) continue;
+
     const factText = missingFacts[factIndex];
-    const targetId = route.targetHeadingId;
+    const key = `${route.targetBlockId}_${route.action}`;
     
-    if (!groupedFacts.has(targetId)) {
-      groupedFacts.set(targetId, []);
+    if (!groupedFacts.has(key)) {
+      groupedFacts.set(key, []);
     }
-    groupedFacts.get(targetId)!.push(factText);
+    groupedFacts.get(key)!.push(factText);
   }
 
-  console.log(`[PATCH_ENGINE] 📦 Eksikler gruplandı. Hedef Nokta Sayısı: ${groupedFacts.size}`);
+  console.log(`[PATCH_ENGINE] 📦 Eksikler hedeflere gruplandı. Operasyon Sayısı: ${groupedFacts.size}`);
 
-  let currentMarkdown = markdownContent;
   const stillFailedFacts: string[] = [];
+  
+  // AST'yi kopyalayalım, çünkü üzerine eklemeler/değiştirmeler yapacağız
+  let newChildren = [...children];
+  // Index kaymalarını takip etmek için bir offset map kullanacağız
+  // Veya tersten işlem yapabiliriz! Tersten işlersek (Büyük ID'den küçüğe), eklediğimiz şeyler önceki ID'leri kaydırmaz.
+  
+  // Anahtarları targetId'ye göre azalan sırada sıralayalım.
+  const sortedKeys = Array.from(groupedFacts.keys()).sort((a, b) => {
+    const idA = parseInt(a.split('_')[0]);
+    const idB = parseInt(b.split('_')[0]);
+    return idB - idA; // Büyükten küçüğe
+  });
 
-  // 4. Chunk İşleme ve Micro-Writer (Sıralı işlem, çarpışmayı önler)
-  // Not: İşlemleri AST üzerinde yapmak yerine, şimdilik güvenilir olması için her adımda string -> ast -> string yapıyoruz,
-  // çünkü düğüm indeksleri değişebilir.
-
-  for (const [targetId, facts] of groupedFacts.entries()) {
-    console.log(`[PATCH_ENGINE] 🛠️ Düğüm ID: ${targetId} işleniyor. Eklenecek ${facts.length} bilgi var.`);
+  for (const key of sortedKeys) {
+    const [idStr, action] = key.split('_');
+    const targetId = parseInt(idStr);
+    const facts = groupedFacts.get(key)!;
     
-    const isGlossary = sectionTitle.toLocaleLowerCase('tr-TR').includes("kısaltma") || sectionTitle.toLocaleLowerCase('tr-TR').includes("sözlük");
-    const tempAst = remark().parse(currentMarkdown);
+    const targetBlockText = blockList[targetId].text;
+
+    console.log(`[PATCH_ENGINE] 🛠️ Operasyon: ID=${targetId}, Action=${action}. Bekleyen ${facts.length} fact var.`);
     
-    if (targetId === -1) {
-      // Evsiz Bilgiler (En alta yeni bölüm olarak ekle)
-      console.log(`[PATCH_ENGINE] 🏠 Evsiz Bilgi (Orphan Fact) tespiti. Yeni modül üretiliyor...`);
-      
-      const glossaryConstraints = isGlossary ? `
-🚨 KISALTMALAR / SÖZLÜK BÖLÜMÜ KURALLARI:
-- Bu bölüm bir kısaltma/sözlük listesidir! KESİNLİKLE hikaye, analoji, derin analiz (örn: Kurumsal Yapı Analizi) YAZMA!
-- ASLA MERMAID (AKIŞ ŞEMASI) ÇİZME!
-- Eksik olan bu bilgiyi SADECE mevcut formata uygun, sade bir şekilde listeye/tabloya dahil et.
-` : `gerekirse açıklayıcı bir tablo veya hikaye/analoji içeren profesyonel bir Markdown modülü üret.`;
+    const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
+Sen bir Cerrahi Yama Yazarı (Micro-Writer) ajanısın. Görevin bir Markdown bloğuna noktasal müdahale yapmaktır.
+Sana bir hedef blok verilecek ve bazı eksik/hatalı bilgiler verilecek.
 
-      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
-Aşağıdaki bilgiler notta tamamen unutulmuş veya yanlış yazılmış ([ÇELİŞKİ DÜZELTMESİ]) ancak eklenecek mevcut bir başlık yok.
-Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık) bir Markdown modülü üretmeni istiyorum. Eğer çelişki düzeltmesi varsa, yanlış bilgiyi yazmadan sadece doğru olanı ekle.
+HEDEF BLOK:
+${targetBlockText}
 
-${glossaryConstraints}
-
-⚠️ GEÇİCİ TEST KURALI: Eklediğin tüm metinleri ve bilgileri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap. Kesinlikle unutma!
-
-🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
-Eksik bilgileri eklerken kaynak metinde yazar veya dizgi kaynaklı bir hata (Standart/Standard gibi harf, imla veya telaffuz farklılığı) fark edersen, KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Asla "Doğrusu budur" diye ukalalık yapma. SADECE yanlış kanun veya ceza miktarı gibi yasal/sayısal hatalarda parantez içinde uyarı ekleyebilirsin.
-
-EKSİK BİLGİLER:
+EKSİK/HATALI BİLGİLER:
 ${facts.join('\n')}
 
-SADECE EKLENECEK MARKDOWN METNİNİ ÜRET. (Başına ve sonuna json vs yazma, direkt markdown ver).`;
-      
-      try {
-        const newModule = await callAI(writerPrompt, 1, "notes_generation"); // Micro-Writer yüksek zekalı model kullanmalı
-        currentMarkdown += `\n\n${newModule.trim()}\n`;
-        console.log(`[PATCH_ENGINE] ✅ Evsiz modül belge sonuna başarıyla eklendi.`);
-      } catch (err) {
-        console.log(`[PATCH_ENGINE] ❌ Evsiz modül üretilemedi.`);
-        stillFailedFacts.push(...facts);
+GÖREV:
+${action === 'insert_after' 
+  ? "Bu hedef bloğu YENİDEN YAZMA. Sadece bu bilgileri anlatan, bu bloğun altına GİRİNTİ OLARAK EKLENECEK yeni bir paragraf, tablo veya liste üret. Sadece YENİ EKLENECEK markdown metnini ver." 
+  : "Bu hedef blokta çelişkili veya yanlış bir bilgi var. Bu bloğu DÜZELTEREK baştan yaz. Sadece düzeltilmiş bloğu (markdown) ver. Ekstra bir şey yazma."}
+
+⚠️ GEÇİCİ TEST KURALI: Eklediğin veya değiştirdiğin tüm metinleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap.
+
+SADECE MARKDOWN KODUNU DÖNDÜR. (Başına ve sonuna json vs yazma).`;
+
+    try {
+      const newModule = await callAI(writerPrompt, 1, "notes_generation");
+      const generatedAst: any = remark().parse(newModule.trim());
+      const generatedNodes = generatedAst.children || [];
+
+      if (action === 'insert_after') {
+        // targetId'nin hemen sonrasına ekle
+        newChildren.splice(targetId + 1, 0, ...generatedNodes);
+        console.log(`[PATCH_ENGINE] ✅ [ID:${targetId}] sonrasına enjeksiyon başarılı.`);
+      } else if (action === 'replace') {
+        // targetId ile değiştir
+        newChildren.splice(targetId, 1, ...generatedNodes);
+        console.log(`[PATCH_ENGINE] ✅ [ID:${targetId}] değişimi başarılı.`);
       }
-      continue;
-    }
 
-    // Mevcut bir başlığa yama yapılacak
-    // Başlığı ve altındaki içeriği AST'den çek
-    let chunkText = '';
-    let inTargetHeading = false;
-    let targetDepth = 0;
-    
-    let headingCounter = 0;
-    let chunkStartIndex = -1;
-    let chunkEndIndex = -1;
-
-    // AST'nin root.children dizisini tarayalım
-    const children = (tempAst as any).children || [];
-    
-    for (let i = 0; i < children.length; i++) {
-      const node = children[i];
-      if (node.type === 'heading') {
-        if (headingCounter === targetId) {
-          inTargetHeading = true;
-          targetDepth = node.depth;
-          chunkStartIndex = i;
-        } else if (inTargetHeading) {
-          // Başka bir başlığa geldik. Eğer derinliği hedef başlığa eşit veya daha büyükse (daha küçük rakam) o bölüm bitmiştir.
-          if (node.depth <= targetDepth) {
-            inTargetHeading = false;
-            chunkEndIndex = i;
-            break;
-          }
-        }
-        headingCounter++;
-      }
-    }
-      
-    if (chunkEndIndex === -1) chunkEndIndex = children.length;
-
-    // Position ile ham stringden kesit alalım
-    let startPos = -1;
-    let endPos = -1;
-
-    if (isFallback) {
-      startPos = 0;
-      endPos = currentMarkdown.length;
-    } else if (chunkStartIndex !== -1) {
-      startPos = children[chunkStartIndex].position.start.offset;
-      endPos = chunkEndIndex < children.length ? children[chunkEndIndex].position.start.offset : currentMarkdown.length;
-    }
-
-    if (startPos !== -1) {
-      const originalChunk = currentMarkdown.substring(startPos, endPos);
-      
-      console.log(`[PATCH_ENGINE] ✂️ Kesit alındı (${originalChunk.length} karakter). Yama ajanına gönderiliyor...`);
-
-      const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
-Sen bir cerrahi yama (surgical patch) uzmanısın. Ders notunun belli bir paragrafı (Mevcut Metin) ve oraya ustaca kaynaştırılması gereken yeni bilgiler (Eksik Bilgiler) sana veriliyor.
-
-MEVCUT KESİT:
-${originalChunk}
-
-EKSİK/HATALI BİLGİLER (Şu an kesitte yok veya yanlış, sen ekleyecek/düzelteceksin):
-${facts.join('\n')}
-
-GÖREV: Mevcut kesiti al, eksik bilgileri içine kusursuzca (sanki ilk seferde yazılmış gibi) yedirerek KESİTİ YENİDEN YAZ.
-Eğer listede [ÇELİŞKİ DÜZELTMESİ] etiketiyle başlayan bir madde varsa, mevcut metindeki yanlış bilgiyi bul ve DOĞRUSUYLA DEĞİŞTİR. Yanlış olan eski bilgiyi sil.
-${isGlossary ? `
-🚨 KISALTMALAR / SÖZLÜK BÖLÜMÜ KURALLARI:
-- Bu bölüm bir kısaltma/sözlük listesidir! KESİNLİKLE hikaye, analoji, derin analiz YAZMA!
-- ASLA MERMAID (AKIŞ ŞEMASI) ÇİZME!
-- Eksik bilgiyi SADECE mevcut listeye/tabloya kısa bir tanım olarak ekle.
-` : `
-- Eksik bilgi bir süreç/hiyerarşi gerektiriyorsa şema (mermaid) kullanabilirsin, tanım gerektiriyorsa tabloya ekleyebilirsin veya sadece doğal bir paragraf olarak yedirebilirsin.
-- Eksik bilgiyi körü körüne sonuna yapıştırma, mantıklı olan yere yedir.
-`}
-
-🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
-Eksik bilgileri eklerken kaynak metinde yazar veya dizgi kaynaklı bir hata (Standart/Standard gibi harf, imla veya telaffuz farklılığı) fark edersen, KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Asla "Doğrusu budur" diye ukalalık yapma. SADECE yanlış kanun veya ceza miktarı gibi yasal/sayısal hatalarda parantez içinde uyarı ekleyebilirsin.
-
-⚠️ GEÇİCİ TEST KURALI: Cümlelerin akışını bozmadan, içine yedirdiğin ve yeni eklediğin tüm kelimeleri/cümleleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkte parlamasını sağla. Mevcut kesitteki orijinal metinlere bu etiketi ekleme.
-
-SADECE yenilenmiş kesiti Markdown formatında ver. Başka hiçbir açıklama yazma.
-`;
-
-      try {
-        let patchedChunk = await callAI(writerPrompt, 1, "notes_generation");
-        patchedChunk = patchedChunk.replace(/^```markdown/g, '').replace(/```$/g, '').trim();
-        
-        // String değişimi
-        currentMarkdown = currentMarkdown.substring(0, startPos) + patchedChunk + "\n\n" + currentMarkdown.substring(endPos);
-        console.log(`[PATCH_ENGINE] ✅ Yama başarıyla kesite enjekte edildi.`);
-      } catch (err) {
-        console.log(`[PATCH_ENGINE] ❌ Yama ajanı çuvalladı. Bu düğüm atlanıyor.`);
-        stillFailedFacts.push(...facts);
-      }
-    } else {
-      console.log(`[PATCH_ENGINE] ❌ Hedef düğüm AST'de bulunamadı.`);
+    } catch (err) {
+      console.log(`[PATCH_ENGINE] ❌ [ID:${targetId}] operasyonu başarısız:`, err);
       stillFailedFacts.push(...facts);
     }
   }
 
+  // Sonuç ağacını tekrar string'e çevir
+  ast.children = newChildren;
+  const finalMarkdown = remark().stringify(ast);
+  
   const success = stillFailedFacts.length === 0;
-  console.log(`[PATCH_ENGINE] 🎉 Yama operasyonu bitti. Başarı: ${success}. Çözülemeyen eksik: ${stillFailedFacts.length}`);
-
-  return { success, newMarkdown: currentMarkdown, failedFacts: stillFailedFacts };
+  return { success, newMarkdown: finalMarkdown, failedFacts: stillFailedFacts };
 }

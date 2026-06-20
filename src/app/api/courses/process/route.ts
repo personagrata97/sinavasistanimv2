@@ -987,15 +987,16 @@ export async function processInBackground(slug: string, course: any) {
                     // DONDURMA VE YAMA KARAR MATRİSİ
                     console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}`);
                     
-                    // Esnek Eşik: Yapısal puan ne kadar yüksekse o kadar çok eksiği yamalayabilir (Oransal hesaplama).
-                    // Örn: Puan 85 ise 7 eksiğe kadar, 90 ise 10 eksiğe kadar, 100 ise 15 eksiğe kadar yama yapar.
-                    const maxPatchLimit = Math.floor((kontrolorStructuralScore - 70) * 0.5); 
+                    // Frankenstein Kuralı: Hata yoğunluğu %15'i aşarsa veya pedagojik skor 75'in altındaysa sıfırdan yazım
+                    const blockCount = Math.max(10, notes.split('\n\n').length);
                     const totalDefects = missingCount + contradictionCount;
-                    if (contradictionCount <= 3 && totalDefects <= Math.max(4, maxPatchLimit) && totalDefects > 0 && kontrolorStructuralScore >= 80) {
-                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${contradictionCount} Çelişki, ${missingCount} Eksik, %${kontrolorStructuralScore} Puan. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
+                    const defectDensity = totalDefects / blockCount;
+                    
+                    if (kontrolorStructuralScore >= 75 && defectDensity <= 0.15 && totalDefects > 0) {
+                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${totalDefects} Toplam Hata, Yoğunluk: %${(defectDensity*100).toFixed(1)}, Pedagojik Puan: %${kontrolorStructuralScore}. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
                       isSurgicalPatch = true;
                     } else {
-                      console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Cerrahi Yama iptal, sıfırdan yazıma dönülüyor.`);
+                      console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Puan (${kontrolorStructuralScore}) çok düşük veya Hata Yoğunluğu (%${(defectDensity*100).toFixed(1)}) çok yüksek. Sıfırdan yazıma dönülüyor.`);
                       isSurgicalPatch = false;
                     }
 
