@@ -2,6 +2,11 @@ import axios from "axios"
 import { randomUUID } from "node:crypto"
 import { prisma } from "./prisma"
 import { isGlossarySectionTitle } from "./glossary-utils"
+import { type DocumentType, requiresHeadingPreservation } from "./document-processing-profile"
+import { MAX_CHUNK_OCR_ATTEMPTS } from "./quota-guard"
+
+/** PDF görsel okuma (extractPerfectMarkdownOCR, ocr_extraction_chunk) — 2.5 Flash, ~20 RPD/key */
+export const OCR_MODEL = "gemini-2.5-flash"
 
 /** Tüm API anahtarlarının günlük kotası doldu — yeniden denemek aynı gün işe yaramaz. */
 export class ApiQuotaExhaustedError extends Error {
@@ -11,6 +16,14 @@ export class ApiQuotaExhaustedError extends Error {
     super(message)
     this.name = "ApiQuotaExhaustedError"
     this.kind = kind
+  }
+}
+
+/** OCR parçası 429 sonrası yeniden deneme limiti aşıldı — ders duraklatılmalı */
+export class OcrChunkRateLimitError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "OcrChunkRateLimitError"
   }
 }
 
@@ -134,14 +147,14 @@ const SUSPENDED_KEY_TTL_MS = 65 * 1000 // 65 saniye — Google'ın dakikalık sa
 const keyMinuteCounters = new Map<string, number>() // "keyIndex|modelId|minuteKey" → count
 const keyDailyCounters = new Map<string, number>()  // "keyIndex|modelId|ptDayKey" → count
 
-// Dakikalık limit (RPM): ücretsiz tier ~10 RPM → varsayılan 9 (güvenlik payı). .env: GEMINI_RPM_LIMIT
-const RPM_LIMIT = Number(process.env.GEMINI_RPM_LIMIT ?? 9)
-// Günlük limit (RPD): model bazlı — 3.5-flash ücretsiz ~20/gün, 2.5-flash ~250/gün
-const RPD_LIMIT = Number(process.env.GEMINI_RPD_LIMIT ?? 240)
+// Dakikalık limit (RPM): ücretsiz tier 5 RPM (Google AI Studio teyitli). .env: GEMINI_RPM_LIMIT
+const RPM_LIMIT = Number(process.env.GEMINI_RPM_LIMIT ?? 5)
+// Günlük limit (RPD): her iki model de 20 RPD/key (Google AI Studio teyitli, Haziran 2026)
+const RPD_LIMIT = Number(process.env.GEMINI_RPD_LIMIT ?? 20)
 
 function getModelRpdLimit(modelId: string): number {
   if (modelId === "gemini-3.5-flash") {
-    return Number(process.env.GEMINI_RPD_LIMIT_35 ?? 18)
+    return Number(process.env.GEMINI_RPD_LIMIT_35 ?? 20)
   }
   return RPD_LIMIT
 }
@@ -171,6 +184,8 @@ function getKeyDailyCount(keyIndex: number, modelId: string): number {
 }
 
 let dailyCountersHydrated = false
+let hydratedRecordCount = 0
+const serverStartedAt = new Date().toISOString()
 
 /** Sunucu yeniden başladığında bellek sayacını bugünkü ApiUsageLog ile senkronize et. */
 async function ensureDailyCountersHydrated(): Promise<void> {
@@ -178,6 +193,7 @@ async function ensureDailyCountersHydrated(): Promise<void> {
   dailyCountersHydrated = true
   try {
     const pacificDay = getPacificDayKey()
+    const minuteKey = getMinuteKey()
     const since = new Date(Date.now() - 48 * 60 * 60 * 1000)
     const logs = await prisma.apiUsageLog.findMany({
       where: { createdAt: { gte: since } },
@@ -185,23 +201,32 @@ async function ensureDailyCountersHydrated(): Promise<void> {
     })
     let loaded = 0
     for (const log of logs) {
+      // Sadece gerçekten tüketilen istekler sayılır — 429 geçici reddir, günlük kotayı doldurmaz
+      if (log.status !== "SUCCESS") continue
+      const idx = parseKeyIndexFromLog(log.apiKey, log.keyIndex)
+      if (idx == null) continue
+
       const logDay = new Intl.DateTimeFormat("en-CA", {
         timeZone: "America/Los_Angeles",
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
       }).format(log.createdAt)
-      if (logDay !== pacificDay) continue
-      // Sadece gerçekten tüketilen istekler sayılır — 429 geçici reddir, günlük kotayı doldurmaz
-      if (log.status !== "SUCCESS") continue
-      const idx = parseKeyIndexFromLog(log.apiKey, log.keyIndex)
-      if (idx == null) continue
-      const dk = `${idx}|${log.model}|${pacificDay}`
-      keyDailyCounters.set(dk, (keyDailyCounters.get(dk) || 0) + 1)
-      loaded++
+      if (logDay === pacificDay) {
+        const dk = `${idx}|${log.model}|${pacificDay}`
+        keyDailyCounters.set(dk, (keyDailyCounters.get(dk) || 0) + 1)
+        loaded++
+      }
+
+      const logMinuteKey = `${log.createdAt.getHours()}:${log.createdAt.getMinutes()}`
+      if (logMinuteKey === minuteKey) {
+        const mk = `${idx}|${log.model}|${minuteKey}`
+        keyMinuteCounters.set(mk, (keyMinuteCounters.get(mk) || 0) + 1)
+      }
     }
+    hydratedRecordCount = loaded
     if (loaded > 0) {
-      console.log(`[AI_ENGINE] 📊 Günlük kota sayaçları DB'den yüklendi (${loaded} kayıt, PT günü: ${pacificDay})`)
+      console.log(`[AI_ENGINE] 📊 Kota sayaçları DB'den yüklendi (${loaded} kayıt, PT günü: ${pacificDay})`)
     }
   } catch (e) {
     console.warn("[AI_ENGINE] Kota sayacı DB senkronu atlandı:", e)
@@ -243,8 +268,39 @@ function recordKeyUsage(keyIndex: number, modelId: string): void {
   dayKeysToDelete.forEach(key => keyDailyCounters.delete(key))
 }
 
+/** pdf-engine / section-detector gibi doğrudan axios çağrıları — ApiUsageLog + canlı RPM/RPD sayacı */
+export async function logDirectGeminiApiCall(args: {
+  apiKey: string
+  model: string
+  operation: string
+  stage?: string | null
+  courseSlug?: string | null
+  status: string
+  errorDetail?: string | null
+  durationMs?: number | null
+}): Promise<void> {
+  const trimmed = args.apiKey.trim()
+  const keyIndex = geminiKeys.findIndex((k) => k.trim() === trimmed)
+  const masked = keyIndex >= 0 ? `Key #${keyIndex + 1}` : "Key #?"
+  if (args.status === "SUCCESS" && keyIndex >= 0) {
+    recordKeyUsage(keyIndex, args.model)
+  }
+  await writeApiUsageLog({
+    apiKey: masked,
+    keyIndex: keyIndex >= 0 ? keyIndex : null,
+    model: args.model,
+    operation: args.operation,
+    stage: args.stage ?? null,
+    courseSlug: args.courseSlug ?? null,
+    status: args.status,
+    errorDetail: args.errorDetail ?? null,
+    durationMs: args.durationMs ?? null,
+  })
+}
+
 /** Admin paneli: motorun gerçek RPM/RPD sayaçlarını döndürür (bellek-içi, anlık). */
-export function getLiveApiKeyStats() {
+export async function getLiveApiKeyStats() {
+  await ensureDailyCountersHydrated()
   const modelIds = ["gemini-3.5-flash", "gemini-2.5-flash"] as const
   const keys = geminiKeys.map((_, idx) => {
     const suspended = suspendedKeys.has(idx)
@@ -272,6 +328,9 @@ export function getLiveApiKeyStats() {
     pacificDay: getPacificDayKey(),
     keyCount: geminiKeys.length,
     serverTime: new Date().toISOString(),
+    serverStartedAt,
+    hydratedFromDb: hydratedRecordCount > 0,
+    hydratedRecordCount,
     keys,
   }
 }
@@ -407,6 +466,18 @@ SINAV TİPİ: BİLGİ SİSTEMLERİ VE SİBER GÜVENLİK SINAVI
 - Teknik kavramları (DMZ, WAF, MFA, SSO, IDS/IPS, Sızma Testleri, SOME vb.) gerçekçi BT senaryoları ile açıkla.
 - Soru ve pratik örneklerde kesinlikle finansal türev ürünleri (opsiyon, vadeli işlem) veya MASAK kara para aklama mevzuatını karıştırma! Bu tamamen siber güvenlik ve bilgi sistemleri altyapı yönetimi dersidir.
 `
+  } else if (aiMode === "mevzuat") {
+    const moduleLabel = getCourseModuleLabel(courseName)
+    modeSpecificRules = `
+MEVZUAT UZMANLIĞI — ${moduleLabel}
+- Bu içerik sınav hazırlığı değil; iş hayatında mevzuat uygunluğu ve kişisel gelişim içindir.
+- Kanun maddesi, süre, yetkili merci, idari para cezası, yaptırım ve istisnaları kaynak metne sadık yaz.
+- Vaka tabanlı sorular: "Bu işlem mevzuata uygun mu?", "Hangi merci onaylar?", "Süre kaç gün?", "Hangi belge gerekir?"
+- Kambiyo, ithalat/ihracat rejimi, gümrük, transfer fiyatı ve KVKK konularını birbirine karıştırma.
+- Örnek, hikâye, benzetme ve vaka senaryoları YALNIZCA "${moduleLabel}" modülü ve kaynak metindeki kavramlarla sınırlı olmalı. Başka modülün kanun/kavramlarını veya SPL/SPK kalıp örneklerini (ihraççı, pay senedi, portföy vb.) KULLANMA.
+- İhracat kredisi, alıcı kredisi ve DİR senaryolarını SADECE bu modülün konusu gerçekten bunları kapsıyorsa kullan.
+- Örnek ve vaka senaryolarında belirli bir banka/kurum ticari adını zorunlu kılma; kaynak metinde geçmiyorsa kurum adı uydurma.
+`
   } else if (isMasak || aiMode === "law") {
     modeSpecificRules = `
 SINAV TİPİ: HUKUK VE MEVZUAT SINAVI (MASAK / SPK HUKUK)
@@ -458,10 +529,24 @@ ${modeSpecificRules}
 11. 🇹🇷 DİL SAFİYETİ: İngilizce terimleri Türkçe karşılıklarıyla yaz. "Critical" yerine "kritik", "comprehensive" yerine "kapsamlı", "key" yerine "kilit/önemli" kullan. Puanlama veya değerlendirme etiketleri tamamen Türkçe olmalı (Önem Derecesi: Yüksek/Orta/Düşük). Teknik kısaltmalar (ISO, COBIT vb.) ise aynen kalabilir.
 12. 📊 TABLO KURALI: Eğer ürettiğin içerik 'Kısaltmalar' veya kavram sözlüğü ise, bunu ASLA madde işaretli liste olarak yazma. KESİNLİKLE Markdown tablosu (Örn: | Kısaltma | Anlamı |) kullan.
 13. 🗂️ KATEGORİLİ TABLO KURALI: Eğer 'Kısaltmalar' üretiyorsan, bunları mutlaka mantıklı alt başlıklara (Örn: "🏢 Düzenleyici Kurumlar", "🌐 Ağ Protokolleri" vb.) böl. Ancak her alt başlığın altında KESİNLİKLE ayrı bir Markdown tablosu oluştur. Kaynak metindeki TÜM kısaltmaları EKSİKSİZ olarak bu tablolara aktar. Hiçbir kısaltmayı atlamak, özetlemek veya "vb." diyerek kesmek KESİNLİKLE YASAKTIR.
+${courseName ? `14. 🎯 ALAN UYUMU (ÖRNEK/HİKÂYE): Örnek, benzetme, vaka senaryosu ve mini quiz "${getCourseModuleLabel(courseName)}" dersinin kapsamıyla birebir uyumlu olmalı. Başka ders/modül alanından hazır kalıp örnek kullanma; kaynak metinde olmayan olay/rakam/kural uydurma.` : ""}
 `
 }
 
-export function getDisciplineExamples(isSecurity: boolean, isMasak: boolean) {
+/** "Program > Ders" formatından ders/modül adını çıkarır */
+export function getCourseModuleLabel(courseName: string): string {
+  const trimmed = courseName.trim()
+  if (!trimmed) return "ilgili ders"
+  const parts = trimmed.split(">")
+  return parts[parts.length - 1]?.trim() || trimmed
+}
+
+export function getDisciplineExamples(
+  isSecurity: boolean,
+  isMasak: boolean,
+  aiMode: string = "general",
+  courseName: string = "",
+) {
   if (isSecurity) {
     return {
       disciplineName: "bilgi güvenliği ve denetim",
@@ -509,8 +594,31 @@ export function getDisciplineExamples(isSecurity: boolean, isMasak: boolean) {
       `,
       labelExample: `(Örn: "## Şüpheli İşlem Bildirimi [Uyum Yönetimi]" veya "## 5549 Sayılı Kanun [Hukuki Çerçeve]")`
     };
-  } else {
-    // Default general/finance course
+  } else if (aiMode === "mevzuat" || aiMode === "law") {
+    const moduleLabel = getCourseModuleLabel(courseName)
+    return {
+      disciplineName: moduleLabel,
+      analogies: `
+  * Benzetmeleri YALNIZCA "${moduleLabel}" modülündeki ve kaynak metindeki kavramlara üret.
+  * Konu dışı SPL/SPK kalıp örnekleri (ihraççı, pay senedi, portföy, vadeli işlem) KESİNLİKLE YASAK.
+  * Örnek: KVKK modülünde veri sorumlusu/açık rıza; kambiyo modülünde ihracat bedeli/döviz; gümrük modülünde beyan/rejim — ders adına uygun terimler kullan.
+      `,
+      stories: `
+  Örnek format (içerik "${moduleLabel}" kapsamından ve kaynak metinden türetilmeli):
+  Örn: "[Kaynak metindeki kural] → [Gerçekçi kurumsal aktör] → [Merci / süre / belge] → [Sonuç]"
+  Örn: Senaryodaki rakam, süre ve merci bilgileri kaynak metinde geçmeli; uydurma yasak.
+      `,
+      akrostiş: `Sadece kaynak metindeki sıralı maddeler anlamlı kısaltma oluşturuyorsa kullan; zorlama.`,
+      quiz: `
+  🧪 Kendini Test Et: "${moduleLabel}" kapsamındaki bir kural/süre/merci sorusu (kaynak metne dayalı).
+  <details>
+  <summary>💡 Cevabı Göster</summary>
+  Cevap: (Kaynak metindeki doğru bilgi)
+  </details>
+      `,
+      labelExample: `(Örn: "## [Konu Başlığı] [${moduleLabel}]")`
+    };
+  } else if (aiMode === "finance") {
     return {
       disciplineName: "finans ve kurumsal yönetim",
       analogies: `
@@ -530,6 +638,27 @@ export function getDisciplineExamples(isSecurity: boolean, isMasak: boolean) {
   </details>
       `,
       labelExample: `(Örn: "## Portföy Yönetimi [Yatırım Stratejileri]" veya "## Sermaye Piyasası Kanunu [Yasal Mevzuat]")`
+    };
+  } else {
+    const moduleLabel = getCourseModuleLabel(courseName)
+    return {
+      disciplineName: moduleLabel || "akademik ders",
+      analogies: `
+  * Benzetmeleri YALNIZCA "${moduleLabel}" dersindeki kavramlara üret; kaynak metindeki terimleri kullan.
+  * Başka program/ders alanından hazır kalıp örnek (finans, MASAK, BT vb.) KULLANMA.
+      `,
+      stories: `
+  Örn: "[Ders kapsamındaki kural/süreç] → [Gerçekçi kurumsal aktör] → [Kaynak metindeki sonuç]"
+      `,
+      akrostiş: `Sadece kaynak metindeki sıralı maddeler anlamlı kısaltma oluşturuyorsa kullan.`,
+      quiz: `
+  🧪 Kendini Test Et: "${moduleLabel}" kapsamında kaynak metne dayalı kısa bir soru.
+  <details>
+  <summary>💡 Cevabı Göster</summary>
+  Cevap: (Kaynak metindeki doğru bilgi)
+  </details>
+      `,
+      labelExample: `(Örn: "## [Konu Başlığı] [${moduleLabel}]")`
     };
   }
 }
@@ -642,10 +771,11 @@ export async function extractPerfectMarkdownOCR(
   pageStart: number,
   pageEnd: number,
   courseName: string = "PDF Okuma (OCR)",
-  options?: { onProgress?: (message: string) => void | Promise<void> },
+  options?: { onProgress?: (message: string) => void | Promise<void>; logCourseSlug?: string },
 ): Promise<string> {
   await ensureDailyCountersHydrated()
   const onProgress = options?.onProgress
+  const logCourseSlug = options?.logCourseSlug ?? courseName.substring(0, 150)
   const report = async (msg: string) => {
     if (onProgress) await onProgress(msg)
   }
@@ -671,8 +801,9 @@ Kurallar:
     throw new Error("Geçersiz sayfa aralığı.");
   }
 
-  const CHUNK_SIZE = 5;
-  const PAGE_OVERLAP = 2;
+  // Kısa belgeler (≤20 sayfa): örtüşme yok, daha büyük parça — 16 sayfa = 2 OCR çağrısı
+  const CHUNK_SIZE = totalPagesToExtract <= 20 ? 8 : 5;
+  const PAGE_OVERLAP = totalPagesToExtract <= 20 ? 0 : 2;
   const MIN_OCR_ATTEMPT_GAP_MS = 3000;
   const stride = CHUNK_SIZE - PAGE_OVERLAP;
   let finalMarkdown = "";
@@ -694,18 +825,21 @@ Kurallar:
     const chunkPdfBytes = await newPdf.save();
     const chunkBase64 = Buffer.from(chunkPdfBytes).toString('base64');
 
-    const OCR_MODEL = "gemini-2.5-flash";
-    const startKeyIndex = currentKeyIndex;
-    let triedAllKeys = false;
     let chunkSuccess = false;
     let chunkResult = "";
-    let quotaHit = false;
     let lastOcrError = "";
     let lastOcrAttemptAt = 0;
-    let consecutiveWaitCycles = 0;
 
-    while (!triedAllKeys) {
-      const currentKey = getNextGeminiKeyWithFallback(OCR_MODEL, consecutiveWaitCycles);
+    for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_OCR_ATTEMPTS && !chunkSuccess; chunkAttempt++) {
+      if (chunkAttempt > 1) {
+        const backoffMs = Math.min(20_000 * Math.pow(2, chunkAttempt - 2), 120_000);
+        await report(
+          `Yoğunluk sınırı — ${Math.round(backoffMs / 1000)} sn bekleniyor (deneme ${chunkAttempt}/${MAX_CHUNK_OCR_ATTEMPTS})`,
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+
+      const currentKey = getNextGeminiKeyWithFallback(OCR_MODEL, 0);
       if (!currentKey) {
         if (allKeysDailyExhausted(OCR_MODEL)) {
           console.error(`[AI_ENGINE] ⛔ Tüm projelerin GÜNLÜK (RPD) kotası doldu — yarın PT gece yarısı sıfırlanır`);
@@ -714,24 +848,22 @@ Kurallar:
             "daily",
           );
         }
-        consecutiveWaitCycles++
-        const waitSec = getSecondsUntilKeyAvailable(OCR_MODEL)
+        const waitSec = getSecondsUntilKeyAvailable(OCR_MODEL);
         await writeApiUsageLog({
           apiKey: "Key #—",
           model: OCR_MODEL,
           operation: "ocr_extraction_chunk",
           stage: "ocr",
-          courseSlug: courseName.substring(0, 150),
+          courseSlug: logCourseSlug,
           status: "WAITING",
           errorDetail: `${waitSec} sn bekleniyor (anahtar dinleniyor)`,
           durationMs: 0,
-        })
-        await report(`Anahtarlar dinleniyor — ${waitSec} sn`)
-        console.log(`[MARKDOWN_OCR] ⏳ Uygun key yok (askı/RPM). ${waitSec}sn bekleniyor... (döngü ${consecutiveWaitCycles})`)
-        await new Promise(r => setTimeout(r, waitSec * 1000))
-        continue
+        });
+        await report(`Anahtarlar dinleniyor — ${waitSec} sn`);
+        chunkAttempt--;
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+        continue;
       }
-      consecutiveWaitCycles = 0
 
       const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey };
       const body = {
@@ -760,17 +892,6 @@ Kurallar:
         }
         lastOcrAttemptAt = Date.now()
 
-        await writeApiUsageLog({
-          apiKey: `Key #${logKeyIndex + 1}`,
-          keyIndex: logKeyIndex,
-          model: OCR_MODEL,
-          operation: "ocr_extraction_chunk",
-          stage: "ocr",
-          courseSlug: courseName.substring(0, 150),
-          status: "REQUEST",
-          durationMs: 0,
-        })
-
         const axiosMod = (await import('axios')).default;
         const response = await axiosMod.post(
           `https://generativelanguage.googleapis.com/v1beta/models/${OCR_MODEL}:generateContent`,
@@ -787,9 +908,9 @@ Kurallar:
             console.error(`[MARKDOWN_OCR] 🔴 KESİLME: Sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1} token sınırını aştı. Aralık ikiye bölünüp yeniden OCR ediliyor...`);
             const mid0 = chunkStartIdx + Math.floor((chunkPageCount - 1) / 2);
             await new Promise(r => setTimeout(r, 3000));
-            const firstHalf = (await extractPerfectMarkdownOCR(pdfPath, chunkStartIdx + 1, mid0 + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
+            const firstHalf = (await extractPerfectMarkdownOCR(pdfPath, chunkStartIdx + 1, mid0 + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*\[VISUAL_OCR_COMPLETE\]\s*/, "").replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
             await new Promise(r => setTimeout(r, 3000));
-            const secondHalf = (await extractPerfectMarkdownOCR(pdfPath, mid0 + 2, chunkEndIdx + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
+            const secondHalf = (await extractPerfectMarkdownOCR(pdfPath, mid0 + 2, chunkEndIdx + 1, courseName, options)).replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*\[VISUAL_OCR_COMPLETE\]\s*/, "").replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "");
             chunkResult = `${firstHalf}\n\n${secondHalf}`;
             chunkSuccess = true;
             break;
@@ -809,13 +930,12 @@ Kurallar:
             model: OCR_MODEL,
             operation: "ocr_extraction_chunk",
             stage: "ocr",
-            courseSlug: courseName.substring(0, 150),
+            courseSlug: logCourseSlug,
             status: "SUCCESS",
             durationMs: Date.now() - startTime,
           })
 
           rotateToNextKey(OCR_MODEL);
-          break;
         }
       } catch (e: any) {
         const quotaInfo = parseGoogleQuotaError(e)
@@ -827,7 +947,7 @@ Kurallar:
         else if (errMsg.includes("503") || errData.includes("503")) errStatus = "SERVER_ERROR_503"
         else if (errMsg.includes("timeout") || errMsg.includes("ECONNABORTED")) errStatus = "TIMEOUT"
 
-        console.warn(`[MARKDOWN_OCR] Key #${logKeyIndex + 1} başarısız (${errStatus}): ${lastOcrError.substring(0, 120)}`)
+        console.warn(`[MARKDOWN_OCR] Key #${logKeyIndex + 1} başarısız (${errStatus}, deneme ${chunkAttempt}/${MAX_CHUNK_OCR_ATTEMPTS}): ${lastOcrError.substring(0, 120)}`)
 
         await writeApiUsageLog({
           apiKey: `Key #${logKeyIndex + 1}`,
@@ -835,37 +955,21 @@ Kurallar:
           model: OCR_MODEL,
           operation: "ocr_extraction_chunk",
           stage: "ocr",
-          courseSlug: courseName.substring(0, 150),
+          courseSlug: logCourseSlug,
           status: errStatus,
           errorDetail: (errData || errMsg).substring(0, 500),
           durationMs: Date.now() - startTime,
         })
 
-        const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503"
-        if (isQuotaError) {
-          quotaHit = true
+        if (quotaInfo.isDaily) {
           suspendedKeys.set(logKeyIndex, Date.now())
-          if (quotaInfo.isDaily) {
-            await report(`Günlük kota doldu (Key #${logKeyIndex + 1}) — başka anahtar deneniyor`)
-          } else {
-            const baseRetry =
-              quotaInfo.retrySecs > 0
-                ? quotaInfo.retrySecs
-                : errStatus === "RATE_LIMIT_429"
-                  ? 20
-                  : 15
-            const waitSec = Math.max(baseRetry, 15, getSecondsUntilKeyAvailable(OCR_MODEL))
-            await report(`Key #${logKeyIndex + 1} yoğun — ${waitSec} sn bekleniyor`)
-            await new Promise((r) => setTimeout(r, waitSec * 1000))
-          }
+          await report(`Günlük kota doldu (Key #${logKeyIndex + 1})`)
         }
 
-        const nextKey = rotateToNextKey(OCR_MODEL)
-        if (!nextKey || currentKeyIndex === startKeyIndex) {
-          triedAllKeys = true
-        } else if (quotaHit) {
-          await report(`Key #${currentKeyIndex + 1} deneniyor`)
-          await new Promise((r) => setTimeout(r, MIN_OCR_ATTEMPT_GAP_MS))
+        const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503"
+        if (isQuotaError) {
+          suspendedKeys.set(logKeyIndex, Date.now())
+          rotateToNextKey(OCR_MODEL)
         }
       }
     }
@@ -877,11 +981,10 @@ Kurallar:
           "daily",
         )
       }
-      // Geçici 429 (retry in Xs) günlük limit DEĞİLDİR — dersi duraklatma
-      throw new Error(
+      throw new OcrChunkRateLimitError(
         lastOcrError
-          ? `OCR başarısız (API reddi): ${lastOcrError.substring(0, 200)}`
-          : "OCR İşlemi başarısız oldu: Tüm API anahtarları reddedildi veya Google yanıt vermedi.",
+          ? `OCR yoğunluk sınırı (${MAX_CHUNK_OCR_ATTEMPTS} deneme): ${lastOcrError.substring(0, 200)}`
+          : `OCR yoğunluk sınırı aşıldı (${MAX_CHUNK_OCR_ATTEMPTS} deneme). Birkaç dakika sonra «Devam Ettir» ile tekrar deneyin.`,
       )
     }
 
@@ -895,7 +998,7 @@ Kurallar:
     }
   }
 
-  return `[MARKDOWN_OCR_SUCCESS]\n\n${finalMarkdown.trim()}`;
+  return `[MARKDOWN_OCR_SUCCESS]\n[VISUAL_OCR_COMPLETE]\n\n${finalMarkdown.trim()}`;
 }
 
 
@@ -1235,10 +1338,13 @@ export async function generateCourseNotes(
   chunkCount = 1,
   previousContext?: string,
   sourceMode: "strict" | "enriched" = "strict",
+  documentNoteStyle?: string,
+  documentType?: DocumentType,
 ): Promise<string> {
   // (OCR ŞART olduğu için fileUri asla iptal edilmez)
   const isBibliography = sectionTitle.toLocaleLowerCase('tr-TR').includes("kaynakça") || sectionTitle.toLocaleLowerCase('tr-TR').includes("referans") || sectionTitle.toLocaleLowerCase('tr-TR').includes("bibliography")
   const isGlossary = sectionTitle.toLocaleLowerCase('tr-TR').includes("kısaltma") || sectionTitle.toLocaleLowerCase('tr-TR').includes("terimler") || sectionTitle.toLocaleLowerCase('tr-TR').includes("sözlük") || sectionTitle.toLocaleLowerCase('tr-TR').includes("glossary")
+  const preserveHeadings = documentType ? requiresHeadingPreservation(documentType) : false
 
   // Çıktı limiti 65536 token'a yükseltildiği için tüm bölümler 15000 karaktere kadar
   // tek seferde işlenebilir. Bu, parça birleştirme sırasında oluşan içerik kaybını tamamen önler.
@@ -1269,6 +1375,8 @@ export async function generateCourseNotes(
           chunks.length,
           lastChunkTail,
           sourceMode,
+          documentNoteStyle,
+          documentType,
         )
         if (idx === 0) {
           mergedNotes = chunkResult
@@ -1276,11 +1384,14 @@ export async function generateCourseNotes(
           // DİNAMİK BAŞLIK TEMİZLİĞİ — hardcoded ders isimleri yerine
           // sectionTitle'dan türetilen genel kalıplarla HER ders için çalışır
           const escapedTitle = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-          const cleanNotes = chunkResult
+          let cleanNotes = chunkResult
             .replace(new RegExp(`##\\s*📌\\s*${escapedTitle}`, "gi"), "")
             .replace(new RegExp(`##\\s*${escapedTitle}`, "gi"), "")
-            // Genel kalıp: "## BÜYÜK HARFLI BAŞLIK" formatındaki tekrarlı ana başlıkları temizle
-            .replace(/^##\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]{5,}$/gm, "")
+          if (!preserveHeadings) {
+            // Mevzuat/prosedür: kaynak ## başlıkları (1. AMAÇ VE KAPSAM vb.) korunmalı — silme!
+            cleanNotes = cleanNotes.replace(/^##\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]{5,}$/gm, "")
+          }
+          cleanNotes = cleanNotes
             // "Bu Bölüm Ne Anlatıyor?" giriş bloğunu temizle (2. ve sonraki parçalarda tekrar etmemeli)
             .replace(/###\s*🎯\s*Bu Bölüm Ne Anlatıyor\??[\s\S]*?(?=###\s*(?:🏢|🔑|📊|🔄|##))/gi, "")
             .replace(/###\s*🎯\s*Bu Bölüm Ne Anlatıyor\??[\s\S]*?(?=##)/gi, "")
@@ -1304,7 +1415,7 @@ export async function generateCourseNotes(
   const normalizedCourse = courseName.toLowerCase();
   const isSecurity = normalizedCourse.includes("güvenlik") || normalizedCourse.includes("bilgi sistem") || normalizedCourse.includes("security") || sectionTitle.toLowerCase().includes("güvenlik") || sectionTitle.toLowerCase().includes("bilgi sistem");
   const isMasak = normalizedCourse.includes("masak") || normalizedCourse.includes("uyum görev");
-  const disc = getDisciplineExamples(isSecurity, isMasak);
+  const disc = getDisciplineExamples(isSecurity, isMasak, aiMode, courseName);
 
   // Not: Glossary bölümleri için talimatlar, aşağıdaki NOT YAPISI şablonunda
   // (SADE KISALTMALAR SÖZLÜĞÜ formatında) zaten eksiksiz tanımlanmıştır.
@@ -1405,9 +1516,13 @@ ${disc.quiz}
     ? `\n🎓 ZENGİNLEŞTİRİLMİŞ MOD (SMMM): Pedagojik hikaye, benzetme ve senaryolar teşvik edilir; olgusal doğruluk korunmalı.\n`
     : `\n🔒 STRICT KAYNAK MODU: PDF dışı olgusal/sayısal/hukuki iddia ekleme. Sadece kaynak kapsamında kal.\n`
 
+  const documentTypeInstruction = documentNoteStyle
+    ? `\n📋 BELGE TİPİ REHBERİ: ${documentNoteStyle}\n`
+    : ""
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
-${sourceModeInstruction}
+${sourceModeInstruction}${documentTypeInstruction}
 ${glossaryInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
@@ -1445,7 +1560,9 @@ ${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diy
    - Listeler → **Madde işaretli liste**
 4. TEMİZLİK: Parantez içindeki kaynakça referanslarını (örn: (ISO 27001, Madde 7.5), (SPK Tebliğ No: III-56.1)) notlardan tamamen temizle. Sadece anlamlı bilgiyi bırak (MD5, SHA-1 gibi teknik standart adları kalabilir).
 5. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
-6. ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.
+6. ${preserveHeadings
+    ? `BAŞLIK SADAKATİ (MEVZUAT/PROSEDÜR): Kaynak PDF'teki numaralı bölüm başlıklarını (1. AMAÇ VE KAPSAM, 2. DAYANAK vb.) ## ile AYNEN ve kaynak sırasıyla yaz. Birleştirme, yeniden adlandırma, atlama veya "3-4 konuya" indirgeme YASAK. Alt başlıklar (6.1, Madde 5 vb.) ### ile koru.`
+    : `ASLA yeni bir alt başlık açma, mevcut başlıkların hiyerarşisini bozma.`}
 7. 🚨 KAYNAK HATALARINI YÖNETME MUHAKEMESİ (TRIVIAL vs CRITICAL):
    Kaynak metinde yazar veya dizgi kaynaklı bir hata fark edersen, şu filtreye göre davran:
    - A) TRIVIAL (Önemsiz/Şekilsel) Hatalar: Harf eksikliği, imla hatası, İngilizce-Türkçe kelime veya telaffuz farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous'). KURAL: Bunlar için KESİNLİKLE uyarı veya şerh düşme! Okunabilirliği bozmamak için kaynağa BİREBİR sadık kal, kaynakta ne yazıyorsa aynen yaz ve geç. Trivial hataların varlığını tamamen yok say, "Dikkat: kaynakta şu kelime yanlış yazılmış" diyerek metnin hiçbir yerinde liste yapma!
@@ -1474,8 +1591,8 @@ ${visualRulesInstruction}
 
 ‼️ KRİTİK: Tanım cümlesini asla sadeleştirme, kısaltma veya kendi cümlenle anlatma. Sınavda "aşağıdakilerden hangisi X'in tanımıdır?" diye birebir bu cümle sorulabilir. Tanımı AYNEN yaz.
 
-ÖRNEK:
-- **İhraççı:** Sermaye piyasası araçlarını ihraç eden, ihraç etmek üzere Kurula başvuruda bulunan veya sermaye piyasası araçları halka arz edilen tüzel kişilerdir.
+ÖRNEK (tanım formatı — terim mutlaka ders kapsamından seçilmeli):
+- **[Resmi Terim]:** [Kaynak metindeki resmi tanım cümlesi birebir]
 
 ⚠️ KESİN KURALLAR:
 1. Resmi terimleri KESİNLİKLE değiştirme. Sınavda birebir bu terimler sorulur.
@@ -1503,6 +1620,31 @@ Her alt başlığın altında AYRI bir Markdown tablosu kullan:
 | (Kaynaktaki terim) | (Kaynaktaki resmi tanım/açılım — birebir, tek kelime değiştirmeden) |
 
 ⚠️ KESİNLİKLE EKLEME: hikâye, senaryo, benzetme, akrostiş, Mermaid/akış şeması, zihin haritası, "Ekstra Dikkat", "Bölüm Özeti", "Kendini Test Et".
+` : preserveHeadings ? `
+📋 NOT YAPISI (Markdown - KAYNAK BAŞLIK SADAKATİ):
+
+## 📌 ${sectionTitle}
+
+### 🎯 Bu Bölüm Ne Anlatıyor?
+(2-3 cümle ile belgenin/bölümün özü — tek parça modda tüm belgeyi kapsayan kısa özet)
+
+🚨 BAŞLIK SADAKATİ (YAPISAL ÖĞRETİM — EN ÖNCELİKLİ):
+Kaynak metindeki TÜM numaralı ana bölüm başlıklarını kaynak sırasıyla ## olarak yaz. Örnek format:
+## 1. AMAÇ VE KAPSAM
+## 2. DAYANAK
+## 3. TANIMLAR
+- Başlık numarası ve metni PDF'teki gibi AYNEN olmalı (büyük/küçük harf dahil).
+- Alt başlıklar (6.1, Madde 12 vb.) kaynakta varsa ### ile koru.
+- Başlıkları birleştirme, yeniden adlandırma veya atlama YASAK.
+- Her ## başlık altında o bölümün tüm içeriğini öğret: resmi tanımlar birebir, tablolar, süreçler, kısa senaryolar.
+
+## [Kaynaktaki 1. ana başlık — aynen]
+(Bölüm içeriği: tanımlar, tablolar, Mermaid süreçleri, 💡 ipuçları)
+
+## [Kaynaktaki 2. ana başlık — aynen]
+(...)
+
+(Tüm kaynak ana başlıkları bu şekilde devam eder)
 ` : `
 📋 NOT YAPISI (Markdown - KONUSAL ENTEGRASYON MODELİ):
 
@@ -1693,9 +1835,9 @@ export async function generateFlashcards(
 
   VARYASYON KURALI (ÇOK ÖNEMLİ):
   Aynı kavramı FARKLI açılardan soran birden fazla kart üret. Örneğin:
-  - Kart 1: "İhraççı nedir?" (tanım)
-  - Kart 2: "İhraççı ile aracı kuruluş arasındaki fark nedir?" (karşılaştırma)
-  - Kart 3: "Hangi durumlarda ihraççı SPK'ya başvurmak zorundadır?" (uygulama)`;
+  - Kart 1: "X nedir?" (tanım — X kaynak metindeki kavram)
+  - Kart 2: "X ile Y arasındaki fark nedir?" (karşılaştırma)
+  - Kart 3: "Hangi durumda [kaynak metindeki süre/merci/belge] uygulanır?" (uygulama)`;
 
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
   ${getExamIntelligence(aiMode, courseName)}
@@ -1903,7 +2045,7 @@ SORU TİPLERİ VE DAĞILIMI (GERÇEK ÖSYM/SPL FORMATI):
    II. [İkinci ifade]
    III. [Üçüncü ifade]
    Soru Kökü: Yukarıdakilerden hangisi/hangileri doğrudur? (Şıklar: A) Yalnız I, B) Yalnız II, C) I ve II, D) I ve III, E) I, II ve III)
-2. Kurumsal Vaka Tabanlı: ŞAHIS İSİMLERİ (Ahmet, Mehmet, Ayşe vb.) KESİNLİKLE YASAKTIR! Vaka senaryolarında SADECE tüzel kişiler ("X Aracı Kurumu", "Y Portföy Yönetim Şirketi") veya genel unvanlar ("Kurumun Uyum Görevlisi", "İç Denetim Uzmanı") kullanılmalıdır.
+2. Kurumsal Vaka Tabanlı: ŞAHIS İSİMLERİ (Ahmet, Mehmet, Ayşe vb.) KESİNLİKLE YASAKTIR! Vaka senaryoları "${courseName}" dersinin kapsamında olmalı; tüzel kişiler veya genel unvanlar kullan (ör. "X İhracat AŞ", "Kurumun Mevzuat Uzmanı", "Veri Sorumlusu").
 3. Ters Köşe Soru: "Aşağıdakilerden hangisi YANLIŞTIR / DEĞİLDİR / İSTİSNADIR?"
 4. Kavramsal Çeldirici: Şıkların birbirine %90 benzediği, ince detayları ölçen doğrudan bilgi sorusu.
 5. Hesaplama/Süre: Metinde rakam, gün, süre veya oran varsa KESİNLİKLE bunları ölç.
@@ -2280,7 +2422,18 @@ export async function verifyNotesAgainstSource(
   sectionTitle: string,
   courseName: string,
   sourceMode: "strict" | "enriched" = "strict",
+  documentType?: DocumentType,
 ): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[] }> {
+  const preserveHeadings = documentType ? requiresHeadingPreservation(documentType) : false
+  const headingVerificationBlock = preserveHeadings ? `
+🚨 BAŞLIK SADAKATİ DENETİMİ (MEVZUAT/PROSEDÜR — ZORUNLU):
+Kaynak metindeki numaralı ana bölüm başlıklarını (örn: "1. AMAÇ VE KAPSAM", "2. DAYANAK", "3. TANIMLAR") tek tek tespit et.
+Her birinin ders notunda ## başlık olarak AYNI sıra ve AYNI metinle (numara dahil) geçip geçmediğini kontrol et.
+- Eksik ana başlık → "missingTopics"e yaz (örn: "Kaynak başlık eksik: 2. DAYANAK"), her eksik başlık için -15 PUAN.
+- Birleştirilmiş veya yeniden adlandırılmış başlık (örn: kaynakta "1. AMAÇ VE KAPSAM" varken notta "Genel Bilgiler") → "issues"a yaz, -15 PUAN.
+- Başlık sırası kaynakla uyumsuzsa → "issues"a yaz, -10 PUAN.
+- İçeriğin farklı sırayla organize edilmesi bu belge türünde KABUL EDİLMEZ — yapı sadakati önceliklidir.
+` : ""
   const sourceModeBlock = sourceMode === "enriched"
     ? `🎓 ZENGİNLEŞTİRİLMİŞ KAYNAK MODU (SMMM):
 - Hikaye, benzetme, analoji, 💡 örnekler ve pedagojik senaryolar BEKLENEN içeriktir — bunları "[UYDURMA]" sayma.
@@ -2322,7 +2475,7 @@ Eğer içerik yoğunluğu DÜŞÜK ise:
 → suggestions alanına isteğe bağlı yapısal öneriler yazabilirsin ama bunlar puanı düşürmez.
 
 Bu kural SADECE yukarıdaki düşük içerikli bölümler için geçerlidir. Gerçek ders anlatımı, kavram tanımı, formül veya mevzuat detayı içeren bölümlerde HER ZAMANKİ GİBİ ACIMADAN DENETLE.
-
+${headingVerificationBlock}
 PUAN KIRAN DURUMLAR VE ASİMETRİK CEZA MATEMATİĞİ (KESİN KURAL):
 - Kaynak metinde DETAYLI OLARAK AÇIKLANMIŞ bir KONU/KAVRAM ders notunda hiç ele alınmamışsa (tamamen atlanmış): Her atlanan konu için net -15 PUAN.
 - Rakam, oran, süre, tarih, limit YANLIŞ yazılmış (örn: 5 yıl yerine 3 yıl): Her yanlış rakam/süre için net -20 PUAN.
@@ -2340,7 +2493,7 @@ PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL):
 - 🚨 KAYNAK HATASI YÖNETİMİ (TRIVIAL vs CRITICAL):
   - A) Trivial (Şekilsel) Hatalar: Yazarın, kaynak metindeki basit bir harf/imla/telaffuz hatasını (örn: 'Standard' yerine 'Standart', Asynchronous yerine Asynchrous) KESİNLİKLE düzeltmemesi ve uyarı eklememesi BEKLENEN KURALDIR. Yazarın kaynağa birebir sadık kalıp "Standart" olarak bırakması BİR HATA DEĞİLDİR! "Yazar bunu düzeltmemiş, kaynak hatası notlara aktarılmış" DİYEREK KESİNLİKLE PUAN KIRMA, bunu "issues" listesine ASLA YAZMA!
   - B) Critical (Yasal/Sayısal) Hatalar: Kaynaktaki yanlış kanun numarası (610 yerine 6102) gibi hayati hataların yazar tarafından "Not: Mevzuata göre doğrusu şudur" diye düzeltilmesi takdir edilir ve ceza sebebi değildir.
-- İçeriğin farklı sırayla organize edilmesi ✅
+${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş/yeniden adlandırılmış başlık PUAN KIRAR ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
 - Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
 - Kaynak metindeki dolgu cümlelerinin atlanması ✅
 - İçindekiler, önsöz veya kaynakça gibi düşük içerikli bölümlerde başlıkların detaylandırılmamış olması ✅

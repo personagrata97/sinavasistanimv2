@@ -1,14 +1,71 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { extractAllText, checkPdfQuality, detectSectionsMultimodal, SCANNED_PDF_PENDING_OCR, isPendingOcrContent } from "@/lib/pdf-engine"
-import { detectSectionsSystematic, sectionsToDetected } from "@/lib/section-detector"
-import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError } from "@/lib/ai-service"
+import {
+  extractAllText,
+  checkPdfQuality,
+  assessPdfSearchability,
+  detectSectionsMultimodal,
+  joinPageTextsForRange,
+  NATIVE_TEXT_LOG_MESSAGE,
+  SCANNED_PDF_PENDING_OCR,
+  isPendingOcrContent,
+  shouldRunMarkdownOcr,
+  prepareSearchablePdfSectionContent,
+} from "@/lib/pdf-engine"
+import {
+  buildSingleSectionFromPages,
+  detectSectionsSystematic,
+  sectionsToDetected,
+} from "@/lib/section-detector"
+import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
-import { getExamConfig } from "@/lib/course-data"
+import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
+import {
+  formatProcessingProfileLog,
+  getDocumentNoteInstructions,
+  getDocumentProcessingProfile,
+} from "@/lib/document-processing-profile"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
+import {
+  getStudyNotFoundMessage,
+  getNotesGenerationPhaseLabel,
+  isProfessionalProgram,
+} from "@/lib/program-catalog"
 import { readFile } from "fs/promises"
-import { activeProcesses, cancelledProcesses } from "@/lib/process-registry"
+import {
+  activeProcesses,
+  cancelCourseProcessing,
+  clearCancelSignal,
+  clearHeartbeat,
+  hasFreshHeartbeat,
+  isCancelled,
+  isHeartbeatStale,
+  isWorkerLive,
+  recordHeartbeat,
+  releaseProcessing,
+  STALE_PROCESS_MAX_AGE_MS,
+  tryClaimProcessing,
+} from "@/lib/process-registry"
+import { pauseOrphanedProcessingOnBoot } from "@/lib/process-startup"
+import {
+  HEARTBEAT_STALE_MESSAGE,
+  clearProcessTriggerDebounce,
+  pauseGhostProcessingInDb,
+} from "@/lib/course-processing-status"
+import {
+  isAdminSession,
+  MAX_NOTES_GENERATION_RETRIES,
+  MAX_OCR_ROUTE_ATTEMPTS,
+  MAX_QUOTA_FAILURES_PER_SECTION,
+  MAX_SECTION_OUTER_RETRIES,
+  PROCESS_TRIGGER_DEBOUNCE_MS,
+  RECENT_API_ACTIVITY_MS,
+  computeDebounceRemainingMs,
+  debounceUntilIso,
+  sectionsLookValid,
+  shouldApplyProcessTriggerDebounce,
+} from "@/lib/quota-guard"
 
 // Chapter/section detection patterns for Turkish academic PDFs
 const SECTION_PATTERNS = [
@@ -35,17 +92,12 @@ interface DetectedSection {
 const MAX_CHUNK_CHARS = 12000 // ~5 sayfa = daha detaylı, eksik konu riski düşük
 
 /** Son birkaç dakikada bu derse ait API hareketi var mı? Yoksa arka plan işi kopmuş olabilir. */
-async function hasRecentCourseApiActivity(courseName: string, slug: string): Promise<boolean> {
-  const since = new Date(Date.now() - 4 * 60 * 1000)
-  const shortName = courseName.split(">").pop()?.trim() || courseName
+async function hasRecentCourseApiActivity(slug: string): Promise<boolean> {
+  const since = new Date(Date.now() - RECENT_API_ACTIVITY_MS)
   const hit = await prisma.apiUsageLog.findFirst({
     where: {
       createdAt: { gte: since },
-      OR: [
-        { courseSlug: { contains: slug } },
-        { courseSlug: { contains: shortName.substring(0, 40) } },
-        { courseSlug: { contains: courseName.substring(0, 50) } },
-      ],
+      courseSlug: slug,
     },
     select: { id: true },
   })
@@ -54,38 +106,220 @@ async function hasRecentCourseApiActivity(courseName: string, slug: string): Pro
 
 export async function POST(req: NextRequest) {
   try {
+    await pauseOrphanedProcessingOnBoot()
+
     const body = await req.json()
     const session = await getServerSession(authOptions)
-    if (!session?.user?.email && body.secretToken !== process.env.CRON_SECRET) {
+    const isCron = Boolean(process.env.CRON_SECRET && body.secretToken === process.env.CRON_SECRET)
+    if (!session?.user?.email && !isCron) {
       console.warn("[PROCESS] 🔴 Yetkisiz tetikleme engellendi.")
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 })
     }
 
-    const { slug, forceRetry = false } = body
+    const { slug, forceRetry = false, userInitiated = false, source: bodySource } = body
     if (!slug) return NextResponse.json({ error: "Missing slug" }, { status: 400 })
+
+    const explicitResume = userInitiated || forceRetry
+
+    // 🚨 SIFIR OTOMATİK TETİKLEME — yalnızca kullanıcı butonu / zorla / cron
+    if (!explicitResume && !isCron) {
+      console.warn(`[PROCESS] 🔴 Kullanıcı onayı olmadan tetikleme reddedildi: ${slug}`)
+      return NextResponse.json(
+        {
+          error: "İşleme yalnızca «İşleme Başlat» veya «Devam Ettir» ile başlatılabilir.",
+          needsUserAction: true,
+        },
+        { status: 403 },
+      )
+    }
 
     const course = await prisma.course.findUnique({
       where: { slug },
       include: { program: true }
     })
     if (!course) {
-      return NextResponse.json({ error: "Ders bulunamadı." }, { status: 404 })
+      return NextResponse.json(
+        { error: `${getStudyNotFoundMessage(slug.startsWith("zeliha-") ? "zeliha-mevzuat" : "")}.` },
+        { status: 404 },
+      )
     }
 
-    // Zombi işlemi önleme: Eğer önceden iptal edildiyse listeden çıkar
-    if (cancelledProcesses.has(slug)) {
-      cancelledProcesses.delete(slug)
-      activeProcesses.delete(slug)
+    const isAdmin = isAdminSession(session?.user)
+
+    if (forceRetry && !isAdmin && !isCron) {
+      console.warn(`[PROCESS] 🔴 Zorla devam yalnızca yönetici: ${slug}`)
+      return NextResponse.json(
+        { error: "Zorla devam yalnızca yönetici hesabıyla kullanılabilir." },
+        { status: 403 },
+      )
+    }
+
+    const workerAlive =
+      course.status === "processing" && isWorkerLive(slug)
+    const heartbeatFresh = hasFreshHeartbeat(slug)
+
+    const recentDuplicate = await prisma.processTriggerLog.findFirst({
+      where: {
+        courseSlug: slug,
+        createdAt: { gte: new Date(Date.now() - PROCESS_TRIGGER_DEBOUNCE_MS) },
+      },
+      orderBy: { createdAt: "desc" },
+    })
+
+    const debounceApplies =
+      recentDuplicate &&
+      shouldApplyProcessTriggerDebounce({
+        workerLive: workerAlive,
+        courseStatus: course.status,
+        hasFreshHeartbeat: heartbeatFresh,
+      })
+
+    if (debounceApplies && !(forceRetry && isAdmin)) {
+      const retryAfterMs = computeDebounceRemainingMs(recentDuplicate!.createdAt)
+      console.warn(
+        `[PROCESS] 🔴 60 sn içinde tekrar tetikleme reddedildi (işçi canlı): ${slug}`,
+      )
+      return NextResponse.json(
+        {
+          message: `Bu modüle az önce işlem başlatıldı. Lütfen ${Math.ceil(retryAfterMs / 1000)} saniye bekleyin.`,
+          duplicateTrigger: true,
+          alreadyRunning: workerAlive,
+          workerLive: workerAlive,
+          retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
+          debounceUntil: debounceUntilIso(recentDuplicate!.createdAt),
+        },
+        { status: 429 },
+      )
+    }
+
+    if (recentDuplicate && !debounceApplies) {
+      console.log(
+        `[PROCESS] 🧹 Eski tetikleme kaydı — işçi yok, debounce atlanıyor: ${slug}`,
+      )
+      await clearProcessTriggerDebounce(slug)
+    }
+
+    if (workerAlive && !(forceRetry && isAdmin)) {
+      console.log(`[PROCESS] 🔒 Tek uçuş kilidi: ${course.name} zaten işleniyor`)
+      return NextResponse.json(
+        {
+          message: "Bu modül zaten işleniyor. Bitmesini bekleyin; tekrar «Devam Ettir» tıklamayın.",
+          alreadyRunning: true,
+        },
+        { status: 200 },
+      )
+    }
+
+    try {
+      const triggerSource = isCron
+        ? "cron"
+        : (bodySource as string) ||
+          (forceRetry ? "force_retry" : userInitiated ? "user_button" : "unknown")
+      await prisma.processTriggerLog.create({
+        data: {
+          courseSlug: slug,
+          userId: session?.user?.id ?? null,
+          userEmail: session?.user?.email ?? null,
+          forceRetry: Boolean(forceRetry),
+          source: triggerSource,
+        },
+      })
+      console.log(
+        `[PROCESS] 📋 Tetikleme kaydı: ${slug} ← ${triggerSource} (${session?.user?.email ?? "cron"})`,
+      )
+    } catch (auditErr) {
+      console.warn("[PROCESS] Tetikleme kaydı yazılamadı:", auditErr)
+    }
+
+    // İptal edilmiş iş — kullanıcı açıkça devam ettirmedikçe yeniden başlatma
+    if (isCancelled(slug, course.name) && !explicitResume) {
+      console.log(`[PROCESS] 🛑 İptal edilmiş iş — otomatik devam engellendi: ${course.name}`)
+      return NextResponse.json(
+        {
+          message: "Bu modül durdurulmuş. Devam ettirmek için «Devam Ettir» butonuna tıklayın.",
+          needsUserAction: true,
+        },
+        { status: 200 },
+      )
+    }
+
+    if (explicitResume) {
+      clearCancelSignal(slug, course.name)
+    }
+
+    recordHeartbeat(slug, true)
+
+    // Duraklatılmış / hatalı modül — sayfa açılışı veya arka plan tetiklemesiyle otomatik başlatma
+    if ((course.status === "paused" || course.status === "error") && !explicitResume) {
+      console.log(`[PROCESS] ⏸️ Duraklatılmış modül — kullanıcı onayı olmadan başlatılmıyor: ${course.name}`)
+      return NextResponse.json(
+        {
+          message: "Modül duraklatılmış. Devam ettirmek için «Devam Ettir» butonuna tıklayın.",
+          needsUserAction: true,
+        },
+        { status: 200 },
+      )
     }
 
     const staleProcess =
       course.status === "processing" &&
-      !forceRetry &&
-      !(await hasRecentCourseApiActivity(course.name, slug)) &&
+      !explicitResume &&
+      !(await hasRecentCourseApiActivity(slug)) &&
       !activeProcesses.has(slug)
 
-    // 🔒 ÇİFT TIKLAMA KORUMASI — kopuk (zombi) işlemde kilidi kır, gerçekten çalışan işlemi koru
-    if (course.status === "processing" && !forceRetry && !staleProcess) {
+    const processAgeMs = Date.now() - course.updatedAt.getTime()
+    const isOldProcessing =
+      course.status === "processing" && processAgeMs > STALE_PROCESS_MAX_AGE_MS && !explicitResume
+
+    // Kopuk veya çok eski işlem — OTOMATİK DEVAM ETME, duraklat
+    if ((staleProcess || isOldProcessing) && !explicitResume) {
+      const pauseMessage =
+        "Eski arka plan işi duraklatıldı (otomatik devam kapalı). «Devam Ettir» ile yeniden başlatın."
+      console.log(`[PROCESS] 🧟 Kopuk/eski işlem duraklatıldı (otomatik devam yok): ${course.name}`)
+      releaseProcessing(slug)
+      const pendingSection = await prisma.section.findFirst({
+        where: { courseId: course.id, processed: false },
+        orderBy: { order: "asc" },
+        select: { id: true },
+      })
+      if (pendingSection) {
+        await prisma.section.update({
+          where: { id: pendingSection.id },
+          data: {
+            verificationIssues: JSON.stringify({
+              currentMicroPhase: pauseMessage,
+              pauseReason: staleProcess ? "stale_worker" : "stale_age",
+              pausedAt: new Date().toISOString(),
+            }),
+          },
+        })
+      }
+      await prisma.course.update({
+        where: { slug },
+        data: { status: "paused", updatedAt: new Date() },
+      })
+      return NextResponse.json(
+        { message: pauseMessage, stalePaused: true, needsUserAction: true },
+        { status: 200 },
+      )
+    }
+
+    // 🔒 TEK GLOBAL İŞ — başka bir ders işlenirken yeni iş başlatma
+    const globalBlock = tryClaimProcessing(slug)
+    if (!globalBlock.ok && !forceRetry) {
+      console.log(`[PROCESS] 🔒 Global kilit: ${course.name} bekliyor (${globalBlock.blockedBy} aktif)`)
+      return NextResponse.json(
+        {
+          message: `Başka bir modül işleniyor. Lütfen önce onun bitmesini bekleyin veya durdurun.`,
+          alreadyRunning: true,
+          blockedBy: globalBlock.blockedBy,
+        },
+        { status: 200 },
+      )
+    }
+
+    // 🔒 ÇİFT TIKLAMA KORUMASI — gerçekten çalışan işlemi koru
+    if (course.status === "processing" && !explicitResume) {
       const timeSinceLastUpdate = Date.now() - course.updatedAt.getTime()
 
       if (timeSinceLastUpdate < 15 * 60 * 1000) {
@@ -95,17 +329,30 @@ export async function POST(req: NextRequest) {
           { status: 200 },
         )
       }
-      console.log(`[PROCESS] 🔄 15 dk hareketsiz — kilit kırılıyor: ${course.name}`)
-    }
-
-    if (forceRetry || staleProcess) {
-      activeProcesses.delete(slug)
-      if (staleProcess) {
-        console.log(`[PROCESS] 🧟 Kopuk işlem tespit edildi (4 dk API yok, bellekte yok) — yeniden başlatılıyor: ${course.name}`)
+      if (!forceRetry) {
+        console.log(`[PROCESS] ⏸️ 15 dk hareketsiz — otomatik devam yok, duraklatılıyor: ${course.name}`)
+        releaseProcessing(slug)
+        await prisma.course.update({
+          where: { slug },
+          data: { status: "paused", updatedAt: new Date() },
+        })
+        return NextResponse.json(
+          {
+            message: "İşlem yanıt vermiyor. «Devam Ettir» veya «Zorla» ile yeniden başlatın.",
+            needsUserAction: true,
+          },
+          { status: 200 },
+        )
       }
+      console.log(`[PROCESS] 🔄 Zorla devam: ${course.name}`)
     }
 
-    if (activeProcesses.has(slug) && course.status === "processing" && !forceRetry && !staleProcess) {
+    if (forceRetry) {
+      releaseProcessing(slug)
+      tryClaimProcessing(slug)
+    }
+
+    if (activeProcesses.has(slug) && course.status === "processing" && isWorkerLive(slug) && !explicitResume) {
       console.log(`[PROCESS] ⚠️ Bellekte aktif işlem: ${course.name}`)
       return NextResponse.json(
         { message: "İşlem zaten arka planda devam ediyor. Lütfen birkaç dakika bekleyin.", alreadyRunning: true },
@@ -113,7 +360,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    activeProcesses.add(slug)
+    if (!activeProcesses.has(slug)) {
+      tryClaimProcessing(slug)
+    }
 
     // Update status
     await prisma.course.update({
@@ -121,11 +370,10 @@ export async function POST(req: NextRequest) {
       data: { status: "processing" }
     })
 
-    // Zombi dedektörünün anında öldürmesini (3 saniye bug'ı) engellemek için 
-    // kalan bölümlerin updatedAt süresini şimdiki zamana çekiyoruz.
+    // Zombi dedektörünün anında öldürmesini engellemek için kalan bölümlerin updatedAt'ini tazele
     await prisma.section.updateMany({
       where: { courseId: course.id, processed: false },
-      data: { createdAt: new Date() }
+      data: { updatedAt: new Date() },
     })
 
     // Read PDF buffer
@@ -135,17 +383,34 @@ export async function POST(req: NextRequest) {
 
     // ========== PHASE 1 & 2: Extract text & detect sections (hızlı, senkron) ==========
     const existingSections = await prisma.section.count({ where: { courseId: course.id } })
+    const existingSectionRows =
+      existingSections > 0
+        ? await prisma.section.findMany({
+            where: { courseId: course.id },
+            select: { pageStart: true, pageEnd: true, title: true },
+            orderBy: { order: "asc" },
+          })
+        : []
 
-    if (existingSections === 0) {
+    if (existingSections > 0 && sectionsLookValid(existingSectionRows)) {
+      console.log(
+        `[PROCESS] Devam: ${existingSections} bölüm zaten var (sayfa aralıkları geçerli) — bölüm algılama atlanıyor`,
+      )
+    } else if (existingSections === 0) {
       console.log(`[PROCESS] İlk işleme: ${course.name} (${totalPages} sayfa)...`)
 
       const pageTexts = await extractAllText(pdfBuffer)
 
-      // ⚠️ PDF KALİTE KONTROLÜ — taranmış PDF REDDEDİLMEZ, görsel OCR yoluna yönlendirilir
+      // ⚠️ PDF KALİTE KONTROLÜ — aranabilir PDF yerel metinle bölümlenir; görsel okuma arka planda yine çalışır
+      const pdfSearchability = assessPdfSearchability(pageTexts)
       const pdfQuality = checkPdfQuality(pageTexts, totalPages)
-      const isScannedPdf = pdfQuality.isNonSearchable
+      const isScannedPdf = pdfSearchability.isNonSearchable
 
-      if (isScannedPdf) {
+      if (pdfSearchability.isSearchable) {
+        console.log(
+          `[PROCESS] ✅ ${NATIVE_TEXT_LOG_MESSAGE} (${pdfSearchability.totalChars} karakter, ${pageTexts.length} sayfa, ortalama ${Math.round(pdfSearchability.avgCharsPerPage)}/sayfa)`,
+        )
+      } else if (isScannedPdf) {
         console.warn(`[PROCESS] 📷 Taranmış PDF algılandı (metin katmanı yok). Görsel OCR yoluna yönlendiriliyor — RED EDİLMEDİ.`)
       } else if (pdfQuality.isPartiallySearchable) {
         console.warn(`[PROCESS] ⚠️ KISMEN SEARCHABLE: ${pdfQuality.message}`)
@@ -192,34 +457,55 @@ export async function POST(req: NextRequest) {
           console.log(`[PROCESS] 📷 Tek bölüm modu: tüm kitap (${totalPages} sayfa) OCR ile işlenecek.`)
         }
       } else {
-        while (sections.length === 0 && tocAttempts < MAX_TOC_ATTEMPTS) {
-          tocAttempts++
-          console.log(`[PROCESS] 🔄 Sistematik bölüm algılama (Deneme ${tocAttempts}/${MAX_TOC_ATTEMPTS})...`)
+        const programSlug = course.program?.slug || ""
+        const aiMode = course.program?.aiMode || "general"
+        const staticMeta = getCourseBySlug(slug)
+        const processingProfile = getDocumentProcessingProfile({
+          slug,
+          name: course.name,
+          sourceKind: staticMeta?.sourceKind,
+          sourceKindLabel: staticMeta?.sourceKindLabel,
+          gridGroup: staticMeta?.gridGroup,
+          programSlug,
+          aiMode,
+          totalPages: pageTexts.length,
+        })
 
-          const result = await detectSectionsSystematic(pageTexts, {
-            geminiFileUri: course.geminiFileUri,
-            geminiKeys,
-          })
+        console.log(`[PROCESS] ${formatProcessingProfileLog(processingProfile, slug)}`)
 
-          if (result && result.sections.length >= 2 && result.validation.valid) {
-            sections = sectionsToDetected(result.sections, pageTexts)
-            console.log(
-              `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score})`
-            )
-            break
-          }
+        if (processingProfile.mode === "single") {
+          sections = buildSingleSectionFromPages(pageTexts, course.name)
+        } else {
+          while (sections.length === 0 && tocAttempts < MAX_TOC_ATTEMPTS) {
+            tocAttempts++
+            console.log(`[PROCESS] 🔄 Sistematik bölüm algılama (Deneme ${tocAttempts}/${MAX_TOC_ATTEMPTS})...`)
 
-          if (result) {
-            console.warn(
-              `[PROCESS] ⚠️ Sistematik algılama yetersiz (skor ${result.validation.score}): ${result.validation.errors.join("; ")}`
-            )
-          }
+            const result = await detectSectionsSystematic(pageTexts, {
+              geminiFileUri: course.geminiFileUri,
+              geminiKeys,
+              logCourseSlug: slug,
+            })
 
-          if (tocAttempts < MAX_TOC_ATTEMPTS) {
-            const waitMinutes = Math.min(Math.pow(2, tocAttempts - 1), 5)
-            const waitMs = waitMinutes * 60000
-            console.log(`[PROCESS] ⏱️ ${waitMinutes} dakika beklenip tekrar denenecek...`)
-            await new Promise((resolve) => setTimeout(resolve, waitMs))
+            if (result && result.sections.length >= 2 && result.validation.valid) {
+              sections = sectionsToDetected(result.sections, pageTexts)
+              console.log(
+                `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score})`
+              )
+              break
+            }
+
+            if (result) {
+              console.warn(
+                `[PROCESS] ⚠️ Sistematik algılama yetersiz (skor ${result.validation.score}): ${result.validation.errors.join("; ")}`
+              )
+            }
+
+            if (tocAttempts < MAX_TOC_ATTEMPTS) {
+              const waitMinutes = Math.min(Math.pow(2, tocAttempts - 1), 5)
+              const waitMs = waitMinutes * 60000
+              console.log(`[PROCESS] ⏱️ ${waitMinutes} dakika beklenip tekrar denenecek...`)
+              await new Promise((resolve) => setTimeout(resolve, waitMs))
+            }
           }
         }
 
@@ -227,7 +513,7 @@ export async function POST(req: NextRequest) {
 
     // Bölüm algılanamazsa dur — tek parça veya elle tablo yok (otonom sistem).
     if (sections.length === 0) {
-      activeProcesses.delete(slug)
+      releaseProcessing(slug)
       await prisma.course.update({ where: { slug }, data: { status: "error" } })
       console.error(`[PROCESS] 🛑 Bölüm algılama başarısız — işlem durduruldu (${course.name}).`)
       return NextResponse.json(
@@ -270,6 +556,28 @@ export async function POST(req: NextRequest) {
 
     console.log(`[PROCESS] ${sections.length} bölüm algılandı (Tüm filtreler sonrası).`)
 
+    // Aranabilir PDF: yerel metin bölüm ham içeriğine yazılır — görsel okuma arka planda yapılır (şema/resim kaçmasın)
+    if (pdfSearchability.isSearchable) {
+      for (let i = 0; i < sections.length; i++) {
+        const nativeRange = joinPageTextsForRange(
+          pageTexts,
+          sections[i].pageStart,
+          sections[i].pageEnd,
+        )
+        const prepared = prepareSearchablePdfSectionContent(
+          nativeRange.length >= sections[i].content.length
+            ? nativeRange
+            : sections[i].content,
+        )
+        if (prepared !== sections[i].content) {
+          console.log(
+            `[PROCESS] 📄 ${NATIVE_TEXT_LOG_MESSAGE} — "${sections[i].title}" (${prepared.length} karakter)`,
+          )
+          sections[i].content = prepared
+        }
+      }
+    }
+
     for (let i = 0; i < sections.length; i++) {
       await prisma.section.create({
         data: {
@@ -306,7 +614,12 @@ export async function POST(req: NextRequest) {
     console.error("[PROCESS_FATAL]", error);
   })
 
-  return NextResponse.json({ success: true, message: "İşleme başlatıldı" })
+  return NextResponse.json({
+    success: true,
+    message: "İşleme başlatıldı",
+    status: "processing",
+    workerLive: true,
+  })
 } catch (error: any) {
   console.error("[PROCESS_FATAL]", error);
   return NextResponse.json({ error: error.message, stack: error.stack }, { status: 500 })
@@ -317,9 +630,52 @@ export async function POST(req: NextRequest) {
 // HTTP response döndükten sonra Node.js event loop'unda çalışmaya devam eder.
 // Timeout problemi olmaz çünkü artık HTTP request'e bağlı değil.
 
-async function processInBackground(slug: string, course: any) {
+export async function processInBackground(slug: string, course: any) {
   try {
     let fileUrisReady = false
+
+    const staticMeta = getCourseBySlug(slug)
+    const programSlug = course.program?.slug || ""
+    const aiMode = course.program?.aiMode || "general"
+    const documentProfile = getDocumentProcessingProfile({
+      slug,
+      name: course.name,
+      sourceKind: staticMeta?.sourceKind,
+      sourceKindLabel: staticMeta?.sourceKindLabel,
+      gridGroup: staticMeta?.gridGroup,
+      programSlug,
+      aiMode,
+      totalPages: course.totalPages ?? 0,
+    })
+    const isProfessional = isProfessionalProgram(programSlug)
+    const shouldStop = async (): Promise<boolean> => {
+      if (isCancelled(slug, course.name)) return true
+      if (isHeartbeatStale(slug)) {
+        console.log(`[BG] 💔 Heartbeat kopuk — ${course.name} duraklatılıyor`)
+        cancelCourseProcessing(slug, course.name)
+        clearHeartbeat(slug)
+        try {
+          await pauseGhostProcessingInDb(
+            course.id,
+            slug,
+            HEARTBEAT_STALE_MESSAGE,
+            "heartbeat_stale",
+          )
+        } catch (pauseErr) {
+          console.warn("[BG] Heartbeat duraklatma DB yazılamadı:", pauseErr)
+        }
+        return true
+      }
+      try {
+        const fresh = await prisma.course.findUnique({
+          where: { slug },
+          select: { status: true },
+        })
+        return fresh?.status === "paused" || fresh?.status === "error"
+      } catch {
+        return false
+      }
+    }
     const ensureFileUrisForNotes = async () => {
       if (fileUrisReady) return
       const { ensureGeminiFileUris } = await import("@/lib/gemini-file-helper")
@@ -347,27 +703,18 @@ async function processInBackground(slug: string, course: any) {
       orderBy: { order: "asc" }
     })
 
-    // Reset cancel signal if exists
-    const globalAny = global as any;
-    if (globalAny.cancelSignals) {
-      globalAny.cancelSignals[course.name] = false;
-    }
-
     const totalSections = await prisma.section.count({ where: { courseId: course.id } })
     const alreadyDone = totalSections - savedSections.length
     console.log(`[BG] AI: ${savedSections.length} kalan (${alreadyDone}/${totalSections} bitti)`)
 
-    // KULLANICI KESİN TALİMATI: "Kaliteden taviz yok, pes etmeyecek, zaman önemli değil!"
-    // Limit 5'ten 15'e çıkarıldı. Yapay zeka tamamen otonom.
-    const MAX_RETRIES = 15;
-    const aiMode = course.program?.aiMode || "general"
-    const programSlug = course.program?.slug || "spl-duzey-3"
+    // Limit — kota israfını önlemek için düşürüldü (eski: 15)
+    const MAX_RETRIES = MAX_NOTES_GENERATION_RETRIES;
     const sourceMode = getExamConfig(programSlug)?.sourceMode ?? "strict"
     let hasCriticalError = false
 
     for (let sIdx = 0; sIdx < savedSections.length; sIdx++) {
-      if (globalAny.cancelSignals?.[course.name]) {
-        console.log(`[BG] 🛑 İPTAL SİNYALİ ALINDI: ${course.name} işleme süreci durduruluyor...`);
+      if (await shouldStop()) {
+        console.log(`[BG] 🛑 İPTAL/DURAKLATMA: ${course.name} işleme süreci durduruluyor...`);
         break;
       }
       const section = savedSections[sIdx]
@@ -385,11 +732,11 @@ async function processInBackground(slug: string, course: any) {
 
       let success = false
       let sectionRetries = 0
-      const maxSectionRetries = 15
+      const maxSectionRetries = MAX_SECTION_OUTER_RETRIES
 
       while (!success && sectionRetries < maxSectionRetries) {
-        if (globalAny.cancelSignals?.[course.name]) {
-          console.log(`[BG] 🛑 İPTAL SİNYALİ ALINDI: Alt döngü kırılıyor...`);
+        if (await shouldStop()) {
+          console.log(`[BG] 🛑 İPTAL/DURAKLATMA: Alt döngü kırılıyor...`);
           success = false;
           break;
         }
@@ -402,7 +749,13 @@ async function processInBackground(slug: string, course: any) {
         try {
           console.log(`[BG] [${sIdx + 1 + alreadyDone}/${totalSections}] ${section.title} - İŞLEME BAŞLADI (Deneme #${sectionRetries + 1}/${maxSectionRetries})`)
 
-          try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 1: Ham İçerik Okunuyor (Deneme #${sectionRetries + 1})` }) } }) } catch { }
+          const skipOcr = course.pdfPath && !shouldRunMarkdownOcr(section.rawContent)
+          const openingPhase = skipOcr
+            ? (isProfessional
+                ? "Çalışma notları yazılıyor — bu birkaç dakika sürebilir"
+                : "Ders notları yazılıyor — bu birkaç dakika sürebilir")
+            : `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 1: Ham İçerik Okunuyor (Deneme #${sectionRetries + 1})`
+          try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: openingPhase }) } }) } catch { }
 
           let notes = section.notes || ""
           let currentScore = section.verificationScore || 0
@@ -435,12 +788,13 @@ async function processInBackground(slug: string, course: any) {
             attemptHistory = sectionIssuesObj.attemptHistory
           }
           
-          let quotaFailures = 0 // FIX #4: Kota hatalarını ayrı say, gerçek deneme hakkını yemesin
-          const MAX_QUOTA_FAILURES = 5 // Toplam kota hatası limiti (sonsuz döngü koruması)
+          let quotaFailures = 0
+          const MAX_QUOTA_FAILURES = MAX_QUOTA_FAILURES_PER_SECTION
 
-          // ==================== MARKDOWN OCR (PDF Slicing) ====================
-          // Her bölüm: PDF sayfaları Google'a görsel olarak gönderilir (gömülü şema/resim kaçmasın).
-          if (course.pdfPath && !section.rawContent.includes("[MARKDOWN_OCR_SUCCESS]")) {
+          // ==================== MARKDOWN OCR (GÖRSEL OKUMA) ====================
+          // Tüm PDF'ler (aranabilir dahil): extractPerfectMarkdownOCR — şema/resim yakalamak için zorunlu.
+          // Devam Ettir: [MARKDOWN_OCR_SUCCESS] damgası varsa atlanır (yeniden OCR israfı yok).
+          if (course.pdfPath && shouldRunMarkdownOcr(section.rawContent)) {
             console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
             const ocrPhasePrefix = `${sIdx + 1 + alreadyDone}/${totalSections}.`;
             const touchHeartbeat = async (microPhase: string) => {
@@ -464,7 +818,7 @@ async function processInBackground(slug: string, course: any) {
 
             let ocrSuccess = false;
             let ocrAttempts = 0;
-            const MAX_OCR_ATTEMPTS = 5;
+            const MAX_OCR_ATTEMPTS = MAX_OCR_ROUTE_ATTEMPTS;
 
             while (!ocrSuccess && ocrAttempts < MAX_OCR_ATTEMPTS) {
               ocrAttempts++;
@@ -475,10 +829,11 @@ async function processInBackground(slug: string, course: any) {
                   section.pageEnd,
                   `${fullCourseName} > ${section.title} (OCR)`,
                   {
+                    logCourseSlug: slug,
                     onProgress: async (msg) => touchHeartbeat(msg),
                   },
                 );
-                if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]")) {
+                if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]") && pristineMarkdown.includes("[VISUAL_OCR_COMPLETE]")) {
                   section.rawContent = pristineMarkdown;
                   await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
                   console.log(`[BG] ✅ Markdown OCR Tamamlandı.`);
@@ -497,6 +852,28 @@ async function processInBackground(slug: string, course: any) {
                         verificationIssues: JSON.stringify({
                           currentMicroPhase: pauseMessage,
                           pauseReason: "quota_daily",
+                          pausedAt: new Date().toISOString(),
+                        }),
+                      },
+                    });
+                    await prisma.course.update({
+                      where: { slug },
+                      data: { status: "paused", updatedAt: new Date() },
+                    });
+                  } catch { /* ignore */ }
+                  hasCriticalError = true;
+                  break;
+                }
+                if (ocrErr instanceof OcrChunkRateLimitError) {
+                  console.error(`[BG] ⛔ OCR yoğunluk sınırı — ders duraklatılıyor: ${ocrErr.message}`);
+                  const pauseMessage = "Google yoğunluk sınırına takıldı. 5–10 dakika bekleyip tek sefer «Devam Ettir» ile yeniden deneyin.";
+                  try {
+                    await prisma.section.update({
+                      where: { id: section.id },
+                      data: {
+                        verificationIssues: JSON.stringify({
+                          currentMicroPhase: pauseMessage,
+                          pauseReason: "ocr_rate_limit",
                           pausedAt: new Date().toISOString(),
                         }),
                       },
@@ -564,7 +941,22 @@ async function processInBackground(slug: string, course: any) {
             for (let vAttempt = startingAttempt; vAttempt <= loopTarget; vAttempt++) {
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
-                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 2: Ders Notları Üretiliyor (Deneme #${vAttempt})`, currentAttempt: vAttempt, attemptHistory: attemptHistory }) } }) } catch { }
+                try {
+                  await prisma.section.update({
+                    where: { id: section.id },
+                    data: {
+                      verificationIssues: JSON.stringify({
+                        currentMicroPhase: getNotesGenerationPhaseLabel(
+                          isProfessional,
+                          `${sIdx + 1 + alreadyDone}/${totalSections}`,
+                          vAttempt,
+                        ),
+                        currentAttempt: vAttempt,
+                        attemptHistory: attemptHistory,
+                      }),
+                    },
+                  })
+                } catch { }
 
                 // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
                 let isSurgicalPatch = false;
@@ -643,6 +1035,8 @@ async function processInBackground(slug: string, course: any) {
                     enrichedContent, section.title, fullCourseName, course.userLevel,
                     aiMode, section.pageStart, section.pageEnd,
                     false, 0, 1, undefined, sourceMode,
+                    getDocumentNoteInstructions(documentProfile),
+                    documentProfile.documentType,
                   )
                 }
 
@@ -655,6 +1049,7 @@ async function processInBackground(slug: string, course: any) {
                 try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } }) } catch { }
                 const verification = await verifyNotesAgainstSource(
                   section.rawContent, notes, section.title, fullCourseName, sourceMode,
+                  documentProfile.documentType,
                 )
 
                 // score: -1 -> teknik hata, deneme hakkı yeme
@@ -779,6 +1174,50 @@ async function processInBackground(slug: string, course: any) {
 
                 // Eğer skor tam 100 ise Müfettiş Derin Denetimine geç
                 if (verification.score === 100) {
+                  // KOTA TASARRUFU: İlk turda Müfettiş denetimini atla — Kontrolör %100 yeterli.
+                  // 2. turdan itibaren Müfettiş devreye girer (kalite güvencesi korunur).
+                  if (vAttempt <= 1) {
+                    console.log(`[BG] ⏩ İlk tur: Müfettiş atlanıyor, Kontrolör %100 yeterli.`)
+                    notesAttemptSuccess = true
+
+                    if (historyEntry) {
+                      historyEntry.mufettis = false
+                      historyEntry.fullyApproved = true
+                    }
+
+                    try {
+                      await prisma.section.update({
+                        where: { id: section.id },
+                        data: {
+                          notes: notes,
+                          verificationScore: 100,
+                          verificationIssues: JSON.stringify({
+                            message: "Kontrolör onayı tamamlandı (ilk tur — Müfettiş atlandı).",
+                            currentAttempt: vAttempt,
+                            attemptHistory: attemptHistory,
+                            missingTopics: [],
+                            issues: [],
+                            stages: {
+                              notesGenerated: true,
+                              kontrolorGroundTruth: true,
+                              mufettis: false,
+                              cerrahiYama: false,
+                              flashcards: false,
+                              questions: false,
+                              published: false,
+                            },
+                            currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamamlandı`,
+                          })
+                        }
+                      })
+                      console.log(`[BG] 💾 İlk tur %100 not veritabanına kaydedildi.`)
+                    } catch (saveErr) {
+                      console.error(`[BG] ❌ Not kaydetme hatası:`, saveErr)
+                    }
+
+                    break
+                  }
+
                   console.log(`[BG] 🎉 KONTROLÖR ONAYI (%100) — 4. Katman: Müfettiş Derin Denetimi (Deep Audit) Başlıyor...`)
                   try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş (Deep Audit) Çapraz Denetimi Yapılıyor...` }) } }) } catch { }
 
@@ -787,10 +1226,10 @@ async function processInBackground(slug: string, course: any) {
                   const sectionTopics = analysisForAudit.topics || []
 
                   if (sectionTopics.length > 0) {
-                    // 2. 3'erli paketlere böl
+                    // 2. 6'lı paketlere böl (kota tasarrufu — eski: 3'lü)
                     const packages: string[][] = []
-                    for (let i = 0; i < sectionTopics.length; i += 3) {
-                      packages.push(sectionTopics.slice(i, i + 3))
+                    for (let i = 0; i < sectionTopics.length; i += 6) {
+                      packages.push(sectionTopics.slice(i, i + 6))
                     }
 
                     if (packages.length > 0) {
@@ -1033,7 +1472,23 @@ async function processInBackground(slug: string, course: any) {
                   console.log(`[BG] ⏳ Kota hatası (${quotaFailures}/${MAX_QUOTA_FAILURES})! Bu deneme sayılmıyor, 60sn bekleniyor...`)
                   await new Promise(r => setTimeout(r, 60000))
                 } else if (isQuotaErr) {
-                  console.log(`[BG] ⛔ Kota hatası limiti aşıldı (${MAX_QUOTA_FAILURES}). Mevcut en iyi skorla devam ediliyor.`)
+                  console.log(`[BG] ⛔ Kota hatası limiti aşıldı (${MAX_QUOTA_FAILURES}). İşlem duraklatılıyor.`)
+                  const pauseMessage = "Google limiti aşıldı. Bir süre bekleyip tek sefer «Devam Ettir» ile yeniden deneyin.";
+                  try {
+                    await prisma.section.update({
+                      where: { id: section.id },
+                      data: {
+                        verificationIssues: JSON.stringify({
+                          currentMicroPhase: pauseMessage,
+                          pauseReason: "quota_exhausted",
+                          pausedAt: new Date().toISOString(),
+                        }),
+                      },
+                    });
+                    await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } });
+                  } catch { /* ignore */ }
+                  hasCriticalError = true;
+                  break;
                 }
 
                 // KRİTİK: Kota hatası gibi geçici hatalarda önceki en yüksek skoru koru!
@@ -1407,6 +1862,12 @@ async function processInBackground(slug: string, course: any) {
       await new Promise(r => setTimeout(r, 2000))
     }
 
+    if (await shouldStop()) {
+      console.log(`[BG] 🛑 "${course.name}" kullanıcı/iptal nedeniyle duraklatıldı.`)
+      await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } })
+      return
+    }
+
     if (hasCriticalError) {
       const latest = await prisma.course.findUnique({ where: { slug }, select: { status: true } });
       if (latest?.status !== "paused") {
@@ -1437,6 +1898,7 @@ async function processInBackground(slug: string, course: any) {
     console.error(`[BG_FATAL] "${course.name}" işlenirken kritik hata:`, fatalError.message)
     try { await prisma.course.update({ where: { slug }, data: { status: "uploaded" } }) } catch { }
   } finally {
-    activeProcesses.delete(slug)
+    clearHeartbeat(slug)
+    releaseProcessing(slug)
   }
 }
