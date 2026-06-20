@@ -186,6 +186,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
   const [sectionSearch, setSectionSearch] = useState("")
   const [apiSearch, setApiSearch] = useState("")
   const [apiSortMethod, setApiSortMethod] = useState("default")
+  const [showAllApiKeys, setShowAllApiKeys] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const router = useRouter()
 
@@ -971,84 +972,102 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                       sorted.sort((a, b) => b[1].dailyLimitHit - a[1].dailyLimitHit)
                     }
 
-                    return sorted.map(([key, data]: [string, any]) => {
-                      const models: Array<{ modelId: string; rpmUsed: number; rpdUsed: number }> =
-                        data.models?.length > 0
-                          ? data.models
-                          : [
-                              { modelId: "gemini-3.5-flash", rpmUsed: data.minuteSuccess ?? 0, rpdUsed: data.dailySuccess ?? 0 },
-                            ]
+                    const displayLimit = 8
+                    const hasMore = sorted.length > displayLimit
+                    const displayList = showAllApiKeys ? sorted : sorted.slice(0, displayLimit)
 
-                      const primary = models.find((m) => m.modelId === "gemini-3.5-flash") ?? models[0]
-                      const dailyRemaining = Math.max(0, rpdLimit - (primary?.rpdUsed ?? 0))
-                      const minuteRemaining = Math.max(0, rpmLimit - (primary?.rpmUsed ?? 0))
-                      const isFull = data.suspended || dailyRemaining <= 0 || minuteRemaining <= 0
-                      const statusText = data.suspended ? "Askıda" : dailyRemaining <= 0 ? "Günlük Doldu" : minuteRemaining <= 0 ? "Dk. Doldu" : "Aktif"
+                    return (
+                      <>
+                        {displayList.map(([key, data]: [string, any]) => {
+                          const models: Array<{ modelId: string; rpmUsed: number; rpdUsed: number }> =
+                            data.models?.length > 0
+                              ? data.models
+                              : [
+                                  { modelId: "gemini-3.5-flash", rpmUsed: data.minuteSuccess ?? 0, rpdUsed: data.dailySuccess ?? 0 },
+                                ]
 
-                      return (
-                        <div
-                          key={key}
-                          className={`p-4 rounded-xl border transition-all flex flex-col gap-3 min-w-0 ${
-                            isFull ? "bg-rose-500/5 border-rose-500/20" : "bg-white/[0.02] border-white/[0.05] hover:border-white/[0.10]"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.06]">
-                            <div className="font-bold text-sm tracking-wide text-slate-200 truncate">{key}</div>
-                            <span
-                              className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isFull
-                                  ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
-                                  : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                          const primary = models.find((m) => m.modelId === "gemini-3.5-flash") ?? models[0]
+                          const dailyRemaining = Math.max(0, rpdLimit - (primary?.rpdUsed ?? 0))
+                          const minuteRemaining = Math.max(0, rpmLimit - (primary?.rpmUsed ?? 0))
+                          const isFull = data.suspended || dailyRemaining <= 0 || minuteRemaining <= 0
+                          const statusText = data.suspended ? "Askıda" : dailyRemaining <= 0 ? "Günlük Doldu" : minuteRemaining <= 0 ? "Dk. Doldu" : "Aktif"
+
+                          return (
+                            <div
+                              key={key}
+                              className={`p-4 rounded-xl border transition-all flex flex-col gap-3 min-w-0 ${
+                                isFull ? "bg-rose-500/5 border-rose-500/20" : "bg-white/[0.02] border-white/[0.05] hover:border-white/[0.10]"
                               }`}
                             >
-                              {statusText}
-                            </span>
-                          </div>
-
-                          <div className="space-y-3">
-                            {models.map((m) => {
-                              const modelName = MODEL_LABELS[m.modelId] ?? m.modelId
-                              const is35 = m.modelId === "gemini-3.5-flash"
-                              return (
-                                <div
-                                  key={m.modelId}
-                                  className={`rounded-lg px-3 py-2.5 space-y-2.5 ${
-                                    is35 ? "bg-blue-500/5 border border-blue-500/15" : "bg-violet-500/5 border border-violet-500/15"
+                              <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.06]">
+                                <div className="font-bold text-sm tracking-wide text-slate-200 truncate">{key}</div>
+                                <span
+                                  className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    isFull
+                                      ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                                      : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                                   }`}
                                 >
-                                  <div className={`text-xs font-semibold ${is35 ? "text-blue-300" : "text-violet-300"}`}>
-                                    {modelName}
-                                  </div>
-                                  <QuotaBar
-                                    label="Bu dakika"
-                                    used={m.rpmUsed}
-                                    limit={rpmLimit}
-                                    tooltip={`${modelName} — Bu dakikada ${m.rpmUsed} istek atıldı, ${Math.max(0, rpmLimit - m.rpmUsed)} hak kaldı (limit ${rpmLimit}/dk)`}
-                                  />
-                                  <QuotaBar
-                                    label="Bugün"
-                                    used={m.rpdUsed}
-                                    limit={m.modelId === "gemini-3.5-flash" ? (liveKeyStats?.rpdLimit35 ?? 18) : (liveKeyStats?.rpdLimit ?? 240)}
-                                    tooltip={`${modelName} — Bugün ${m.rpdUsed} istek atıldı, ${Math.max(0, rpdLimit - m.rpdUsed)} hak kaldı (limit ${rpdLimit}/gün, PT takvimi)`}
-                                  />
-                                </div>
-                              )
-                            })}
-                          </div>
+                                  {statusText}
+                                </span>
+                              </div>
 
-                          <div className="pt-2 border-t border-white/[0.06] flex justify-between items-center gap-2 text-[10px] text-slate-400">
-                            <span>
-                              Bugün 429: <strong className="text-rose-400">{data.dailyLimitHit}</strong>
-                            </span>
-                            {liveKeyStats?.serverTime && (
-                              <span className="text-[9px] text-slate-500 shrink-0">
-                                {new Date(liveKeyStats.serverTime).toLocaleTimeString("tr-TR")}
-                              </span>
-                            )}
+                              <div className="space-y-3">
+                                {models.map((m) => {
+                                  const modelName = MODEL_LABELS[m.modelId] ?? m.modelId
+                                  const is35 = m.modelId === "gemini-3.5-flash"
+                                  return (
+                                    <div
+                                      key={m.modelId}
+                                      className={`rounded-lg px-3 py-2.5 space-y-2.5 ${
+                                        is35 ? "bg-blue-500/5 border border-blue-500/15" : "bg-violet-500/5 border border-violet-500/15"
+                                      }`}
+                                    >
+                                      <div className={`text-xs font-semibold ${is35 ? "text-blue-300" : "text-violet-300"}`}>
+                                        {modelName}
+                                      </div>
+                                      <QuotaBar
+                                        label="Bu dakika"
+                                        used={m.rpmUsed}
+                                        limit={rpmLimit}
+                                        tooltip={`${modelName} — Bu dakikada ${m.rpmUsed} istek atıldı, ${Math.max(0, rpmLimit - m.rpmUsed)} hak kaldı (limit ${rpmLimit}/dk)`}
+                                      />
+                                      <QuotaBar
+                                        label="Bugün"
+                                        used={m.rpdUsed}
+                                        limit={m.modelId === "gemini-3.5-flash" ? (liveKeyStats?.rpdLimit35 ?? 18) : (liveKeyStats?.rpdLimit ?? 240)}
+                                        tooltip={`${modelName} — Bugün ${m.rpdUsed} istek atıldı, ${Math.max(0, rpdLimit - m.rpdUsed)} hak kaldı (limit ${rpdLimit}/gün, PT takvimi)`}
+                                      />
+                                    </div>
+                                  )
+                                })}
+                              </div>
+
+                              <div className="pt-2 border-t border-white/[0.06] flex justify-between items-center gap-2 text-[10px] text-slate-400">
+                                <span>
+                                  Bugün 429: <strong className="text-rose-400">{data.dailyLimitHit}</strong>
+                                </span>
+                                {liveKeyStats?.serverTime && (
+                                  <span className="text-[9px] text-slate-500 shrink-0">
+                                    {new Date(liveKeyStats.serverTime).toLocaleTimeString("tr-TR")}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {hasMore && (
+                          <div className="col-span-full flex justify-center mt-2">
+                            <button
+                              onClick={() => setShowAllApiKeys(!showAllApiKeys)}
+                              className="px-6 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-semibold transition-colors flex items-center gap-2 text-slate-300"
+                            >
+                              {showAllApiKeys ? "Daha Az Göster" : `Tüm Anahtarları Göster (${sorted.length})`}
+                            </button>
                           </div>
-                        </div>
-                      )
-                    })
+                        )}
+                      </>
+                    )
                   })()}
                 </div>
               </div>
