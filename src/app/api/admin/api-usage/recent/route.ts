@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { prisma } from "@/lib/prisma"
 import { resolveApiLogCourseFullName } from "@/lib/api-log-course-label"
+import { getApiUsageDaySummary } from "@/lib/api-usage-summary"
 
 export const dynamic = "force-dynamic"
 

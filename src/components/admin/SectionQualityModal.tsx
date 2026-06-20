@@ -54,8 +54,13 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
            lower === "none" || lower === "n/a" || lower === "bulunmuyor";
   };
 
-  const allMissingTopics = (issuesObj.missingTopics || issuesObj.missingDetails || []).filter((s: string) => !isGenericEmpty(s))
-  const allValidationIssues = (issuesObj.issues || issuesObj.contradictions || []).filter((s: string) => !isGenericEmpty(s))
+  const safeMissingTopics = Array.isArray(issuesObj.missingTopics) ? issuesObj.missingTopics : [];
+  const safeMissingDetails = Array.isArray(issuesObj.missingDetails) ? issuesObj.missingDetails : [];
+  const safeIssues = Array.isArray(issuesObj.issues) ? issuesObj.issues : [];
+  const safeContradictions = Array.isArray(issuesObj.contradictions) ? issuesObj.contradictions : [];
+
+  const allMissingTopics = [...safeMissingTopics, ...safeMissingDetails].filter((s: string) => !isGenericEmpty(s))
+  const allValidationIssues = [...safeIssues, ...safeContradictions].filter((s: string) => !isGenericEmpty(s))
   const suggestions = issuesObj.suggestions || []
   const attemptHistory = issuesObj.attemptHistory || []
   const actualAttempt = issuesObj.currentAttempt || (attemptHistory.length > 0 ? attemptHistory.length : 1)
@@ -71,7 +76,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const mufettisIssues = allValidationIssues.filter((t: string) => t.includes("[MÜFETTİŞ"))
 
   const hasKontrolorIssues = kontrolorMissing.length > 0 || kontrolorIssues.length > 0 || suggestions.length > 0
-  const hasMufettisIssues = (mufettisMissing.length > 0 || mufettisIssues.length > 0) || (issuesObj.auditResult?.missingDetails?.length > 0) || (issuesObj.auditResult?.contradictions?.length > 0)
+  const hasMufettisIssues = (mufettisMissing.length > 0 || mufettisIssues.length > 0) || ((issuesObj.auditResult?.missingDetails?.length || 0) > 0) || ((issuesObj.auditResult?.contradictions?.length || 0) > 0)
   const hasAnyIssues = hasKontrolorIssues || hasMufettisIssues
 
   // Live Sync Stepper Logic
