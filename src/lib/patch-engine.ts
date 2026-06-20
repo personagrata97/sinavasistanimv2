@@ -58,6 +58,7 @@ export async function generateAndInjectPatch(
   const finderPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
 Sen bir yer tespit ajanısın. Aşağıda bir ders notunun "Başlık İskeleti" ve nota eklenmesi unutulmuş "Eksik Bilgiler" listesi var.
 Görev: Her eksik bilginin mantıksal olarak hangi başlığın (ID) altına eklenmesi gerektiğini bul. Eğer hiçbir başlık uygun değilse, tamamen yeni bir alt konuysa ID olarak -1 ver (Evsiz Bilgi).
+Eğer bir bilgi [ÇELİŞKİ DÜZELTMESİ] etiketiyle başlıyorsa, bu notta yanlış yazılmış bir bilginin düzeltilmesi anlamına gelir. Bu bilginin de mantıksal olarak ait olduğu başlığı bul.
 
 İSKELET:
 ${outlineText}
@@ -130,8 +131,8 @@ SADECE şu JSON formatında cevap ver:
 ` : `gerekirse açıklayıcı bir tablo veya hikaye/analoji içeren profesyonel bir Markdown modülü üret.`;
 
       const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
-Aşağıdaki bilgiler notta tamamen unutulmuş ve eklenecek mevcut bir başlık yok.
-Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık) bir Markdown modülü üretmeni istiyorum.
+Aşağıdaki bilgiler notta tamamen unutulmuş veya yanlış yazılmış ([ÇELİŞKİ DÜZELTMESİ]) ancak eklenecek mevcut bir başlık yok.
+Senden bu bilgileri kapsayan, konunun formatına uygun (### Alt Başlık) bir Markdown modülü üretmeni istiyorum. Eğer çelişki düzeltmesi varsa, yanlış bilgiyi yazmadan sadece doğru olanı ekle.
 
 ${glossaryConstraints}
 
@@ -213,10 +214,11 @@ Sen bir cerrahi yama (surgical patch) uzmanısın. Ders notunun belli bir paragr
 MEVCUT KESİT:
 ${originalChunk}
 
-EKSİK BİLGİLER (Şu an kesitte yok, sen ekleyeceksin):
+EKSİK/HATALI BİLGİLER (Şu an kesitte yok veya yanlış, sen ekleyecek/düzelteceksin):
 ${facts.join('\n')}
 
 GÖREV: Mevcut kesiti al, eksik bilgileri içine kusursuzca (sanki ilk seferde yazılmış gibi) yedirerek KESİTİ YENİDEN YAZ.
+Eğer listede [ÇELİŞKİ DÜZELTMESİ] etiketiyle başlayan bir madde varsa, mevcut metindeki yanlış bilgiyi bul ve DOĞRUSUYLA DEĞİŞTİR. Yanlış olan eski bilgiyi sil.
 ${isGlossary ? `
 🚨 KISALTMALAR / SÖZLÜK BÖLÜMÜ KURALLARI:
 - Bu bölüm bir kısaltma/sözlük listesidir! KESİNLİKLE hikaye, analoji, derin analiz YAZMA!

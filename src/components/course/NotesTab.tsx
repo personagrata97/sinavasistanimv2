@@ -497,12 +497,12 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
   <title>${course.name} - Ders Notları</title>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script>
+    let mermaidInitialized = false;
     function initMermaid() {
+      if (mermaidInitialized) return;
       if (typeof mermaid !== 'undefined') {
-        mermaid.initialize({ startOnLoad: true, theme: 'default' });
-        
-        // Mermaid kendi içinde DOM elemanlarını ölçerek en kusursuz "max-width" değerini inline style olarak atar.
-        // Bizim yapmamız gereken tek şey aradan çekilip Mermaid'in bu doğal hesaplamasını bozmamaktır.
+        mermaidInitialized = true;
+        mermaid.initialize({ startOnLoad: false, theme: 'default' });
         
         // Markdown kod bloklarını mermaid div'lerine çevir
         document.querySelectorAll('code.language-mermaid').forEach(el => {
@@ -512,15 +512,23 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
           el.parentNode.replaceWith(div);
         });
 
+        // Hepsini tek seferde render et ve boyutları normalize et
+        mermaid.run({
+          nodes: document.querySelectorAll('.mermaid'),
+          suppressErrors: true
+        }).then(() => {
+          document.querySelectorAll('.mermaid svg').forEach(svg => {
+            svg.style.maxWidth = '100%';
+            svg.style.height = 'auto';
+            svg.removeAttribute('width');
+          });
+        });
       } else {
         setTimeout(initMermaid, 50);
       }
     }
     
-    // Doğrudan hemen çalıştır (Blob URL'ler ve anlık yüklenmeler için en güvenlisi)
     initMermaid();
-    
-    // Tarayıcı olayları için yedek tetikleyiciler
     document.addEventListener('DOMContentLoaded', initMermaid);
     window.addEventListener('load', initMermaid);
   </script>
@@ -609,7 +617,8 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
     .mermaid-wrap {
       display: block !important;
       width: 100% !important;
-      max-width: 520px !important;
+      min-width: 200px !important;
+      max-width: 650px !important;
       margin: 15px auto !important;
       page-break-inside: avoid !important;
       break-inside: avoid !important; /* Modern standard */

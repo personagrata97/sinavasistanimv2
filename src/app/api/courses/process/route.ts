@@ -66,6 +66,10 @@ import {
   sectionsLookValid,
   shouldApplyProcessTriggerDebounce,
 } from "@/lib/quota-guard"
+import {
+  mergeVerificationIssues,
+  stringifyMergedVerificationIssues,
+} from "@/lib/section-quality-gates"
 
 // Chapter/section detection patterns for Turkish academic PDFs
 const SECTION_PATTERNS = [
@@ -280,13 +284,13 @@ export async function POST(req: NextRequest) {
       const pendingSection = await prisma.section.findFirst({
         where: { courseId: course.id, processed: false },
         orderBy: { order: "asc" },
-        select: { id: true },
+        select: { id: true, verificationIssues: true },
       })
       if (pendingSection) {
         await prisma.section.update({
           where: { id: pendingSection.id },
           data: {
-            verificationIssues: JSON.stringify({
+            verificationIssues: stringifyMergedVerificationIssues(pendingSection.verificationIssues, {
               currentMicroPhase: pauseMessage,
               pauseReason: staleProcess ? "stale_worker" : "stale_age",
               pausedAt: new Date().toISOString(),
@@ -605,10 +609,7 @@ export async function POST(req: NextRequest) {
       await processInBackground(slug, course)
     } catch (err: any) {
       console.error("[BG] FATAL ERROR in background process:", err)
-      await prisma.course.update({
-        where: { id: course.id },
-        data: { status: "error" }
-      }).catch(() => { })
+      await finalizeCourseStatusIfStillProcessing(slug, "error").catch(() => { })
     }
   })().catch(error => {
     console.error("[PROCESS_FATAL]", error);
@@ -629,6 +630,21 @@ export async function POST(req: NextRequest) {
 // ==================== BACKGROUND PROCESSING ====================
 // HTTP response döndükten sonra Node.js event loop'unda çalışmaya devam eder.
 // Timeout problemi olmaz çünkü artık HTTP request'e bağlı değil.
+
+/** Eski işçi «Devam Ettir» sonrası yeni oturumun durumunu ezmesin diye yalnızca hâlâ processing iken yazar. */
+async function finalizeCourseStatusIfStillProcessing(
+  slug: string,
+  status: "ready" | "error" | "paused" | "uploaded",
+): Promise<boolean> {
+  const result = await prisma.course.updateMany({
+    where: { slug, status: "processing" },
+    data: { status, updatedAt: new Date() },
+  })
+  if (result.count === 0) {
+    console.log(`[BG] ⏭️ Durum güncellenmedi (${status}) — başka işlem devralmış: ${slug}`)
+  }
+  return result.count > 0
+}
 
 export async function processInBackground(slug: string, course: any) {
   try {
@@ -730,6 +746,19 @@ export async function processInBackground(slug: string, course: any) {
       try { sectionIssuesObj = JSON.parse(section.verificationIssues || "{}") } catch {}
       // Eskiden burada needsUserAction === true ise döngü atlanıyordu (Kaldırıldı)
 
+      const applySectionIssuesPatch = async (
+        patch: Record<string, unknown>,
+        extraData?: Record<string, unknown>,
+      ) => {
+        sectionIssuesObj = mergeVerificationIssues(sectionIssuesObj, patch)
+        try {
+          await prisma.section.update({
+            where: { id: section.id },
+            data: { ...extraData, verificationIssues: JSON.stringify(sectionIssuesObj) },
+          })
+        } catch { /* ignore */ }
+      }
+
       let success = false
       let sectionRetries = 0
       const maxSectionRetries = MAX_SECTION_OUTER_RETRIES
@@ -755,7 +784,7 @@ export async function processInBackground(slug: string, course: any) {
                 ? "Çalışma notları yazılıyor — bu birkaç dakika sürebilir"
                 : "Ders notları yazılıyor — bu birkaç dakika sürebilir")
             : `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 1: Ham İçerik Okunuyor (Deneme #${sectionRetries + 1})`
-          try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: openingPhase }) } }) } catch { }
+          try { await applySectionIssuesPatch({ currentMicroPhase: openingPhase }) } catch { }
 
           let notes = section.notes || ""
           let currentScore = section.verificationScore || 0
@@ -799,12 +828,9 @@ export async function processInBackground(slug: string, course: any) {
             const ocrPhasePrefix = `${sIdx + 1 + alreadyDone}/${totalSections}.`;
             const touchHeartbeat = async (microPhase: string) => {
               try {
-                await prisma.section.update({
-                  where: { id: section.id },
-                  data: {
-                    verificationIssues: JSON.stringify({ currentMicroPhase: `${ocrPhasePrefix} ${microPhase}` }),
-                  },
-                });
+                await applySectionIssuesPatch({
+                  currentMicroPhase: `${ocrPhasePrefix} ${microPhase}`,
+                })
                 await prisma.course.update({
                   where: { id: course.id },
                   data: { updatedAt: new Date() },
@@ -846,16 +872,11 @@ export async function processInBackground(slug: string, course: any) {
                   console.error(`[BG] ⛔ OCR duraklatıldı — günlük API kotası: ${ocrErr.message}`);
                   const pauseMessage = "Google günlük limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın «Devam Ettir» ile yeniden başlatın.";
                   try {
-                    await prisma.section.update({
-                      where: { id: section.id },
-                      data: {
-                        verificationIssues: JSON.stringify({
-                          currentMicroPhase: pauseMessage,
-                          pauseReason: "quota_daily",
-                          pausedAt: new Date().toISOString(),
-                        }),
-                      },
-                    });
+                    await applySectionIssuesPatch({
+                      currentMicroPhase: pauseMessage,
+                      pauseReason: "quota_daily",
+                      pausedAt: new Date().toISOString(),
+                    })
                     await prisma.course.update({
                       where: { slug },
                       data: { status: "paused", updatedAt: new Date() },
@@ -868,16 +889,11 @@ export async function processInBackground(slug: string, course: any) {
                   console.error(`[BG] ⛔ OCR yoğunluk sınırı — ders duraklatılıyor: ${ocrErr.message}`);
                   const pauseMessage = "Google yoğunluk sınırına takıldı. 5–10 dakika bekleyip tek sefer «Devam Ettir» ile yeniden deneyin.";
                   try {
-                    await prisma.section.update({
-                      where: { id: section.id },
-                      data: {
-                        verificationIssues: JSON.stringify({
-                          currentMicroPhase: pauseMessage,
-                          pauseReason: "ocr_rate_limit",
-                          pausedAt: new Date().toISOString(),
-                        }),
-                      },
-                    });
+                    await applySectionIssuesPatch({
+                      currentMicroPhase: pauseMessage,
+                      pauseReason: "ocr_rate_limit",
+                      pausedAt: new Date().toISOString(),
+                    })
                     await prisma.course.update({
                       where: { slug },
                       data: { status: "paused", updatedAt: new Date() },
@@ -900,16 +916,11 @@ export async function processInBackground(slug: string, course: any) {
               console.error(`[BG] 🛑 Markdown OCR ${MAX_OCR_ATTEMPTS} denemede başarısız.`);
               const failMessage = "PDF metne çevrilemedi (API reddi veya bağlantı hatası). «Devam Ettir» ile tekrar deneyin.";
               try {
-                await prisma.section.update({
-                  where: { id: section.id },
-                  data: {
-                    verificationIssues: JSON.stringify({
-                      currentMicroPhase: failMessage,
-                      pauseReason: "ocr_failed",
-                      pausedAt: new Date().toISOString(),
-                    }),
-                  },
-                });
+                await applySectionIssuesPatch({
+                  currentMicroPhase: failMessage,
+                  pauseReason: "ocr_failed",
+                  pausedAt: new Date().toISOString(),
+                })
                 await prisma.course.update({
                   where: { slug },
                   data: { status: "paused", updatedAt: new Date() },
@@ -927,9 +938,8 @@ export async function processInBackground(slug: string, course: any) {
             
             // Zombi dedektörünün haksız yere tetiklenmemesi için veritabanını boş bir veriyle güncelleyip updatedAt süresini sıfırlıyoruz.
             try {
-              await prisma.section.update({
-                where: { id: section.id },
-                data: { verificationIssues: JSON.stringify({ currentMicroPhase: "Hazırlık: Flashcard üretimine geçiliyor..." }) }
+              await applySectionIssuesPatch({
+                currentMicroPhase: "Hazırlık: Flashcard üretimine geçiliyor...",
               })
             } catch (e) { }
           }
@@ -942,19 +952,14 @@ export async function processInBackground(slug: string, course: any) {
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
                 try {
-                  await prisma.section.update({
-                    where: { id: section.id },
-                    data: {
-                      verificationIssues: JSON.stringify({
-                        currentMicroPhase: getNotesGenerationPhaseLabel(
-                          isProfessional,
-                          `${sIdx + 1 + alreadyDone}/${totalSections}`,
-                          vAttempt,
-                        ),
-                        currentAttempt: vAttempt,
-                        attemptHistory: attemptHistory,
-                      }),
-                    },
+                  await applySectionIssuesPatch({
+                    currentMicroPhase: getNotesGenerationPhaseLabel(
+                      isProfessional,
+                      `${sIdx + 1 + alreadyDone}/${totalSections}`,
+                      vAttempt,
+                    ),
+                    currentAttempt: vAttempt,
+                    attemptHistory: attemptHistory,
                   })
                 } catch { }
 
@@ -985,8 +990,9 @@ export async function processInBackground(slug: string, course: any) {
                     // Esnek Eşik: Yapısal puan ne kadar yüksekse o kadar çok eksiği yamalayabilir (Oransal hesaplama).
                     // Örn: Puan 85 ise 7 eksiğe kadar, 90 ise 10 eksiğe kadar, 100 ise 15 eksiğe kadar yama yapar.
                     const maxPatchLimit = Math.floor((kontrolorStructuralScore - 70) * 0.5); 
-                    if (contradictionCount === 0 && missingCount <= Math.max(4, maxPatchLimit) && missingCount > 0 && kontrolorStructuralScore >= 80) {
-                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: 0 Çelişki, ${missingCount} Eksik, %${kontrolorStructuralScore} Puan. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
+                    const totalDefects = missingCount + contradictionCount;
+                    if (contradictionCount <= 3 && totalDefects <= Math.max(4, maxPatchLimit) && totalDefects > 0 && kontrolorStructuralScore >= 80) {
+                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${contradictionCount} Çelişki, ${missingCount} Eksik, %${kontrolorStructuralScore} Puan. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
                       isSurgicalPatch = true;
                     } else {
                       console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Cerrahi Yama iptal, sıfırdan yazıma dönülüyor.`);
@@ -996,15 +1002,21 @@ export async function processInBackground(slug: string, course: any) {
                     if (isSurgicalPatch) {
                       const { generateAndInjectPatch } = await import("@/lib/patch-engine");
                       
-                      // Müfettiş veya GT prefixlerini temizle
+                      // Müfettiş veya GT prefixlerini temizle ve çelişkileri de yama motoruna gönder
                       const cleanMissingFacts = lastVerification.missingTopics.map((t: string) => 
                         t.replace("[MÜFETTİŞ EKSİĞİ]", "").replace("Eksik Detay (Ground Truth Testi Başarısız):", "").trim()
                       );
 
-                      try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama (AST) Uygulanıyor...` }) } }) } catch { }
+                      const cleanContradictions = lastVerification.issues.map((c: string) =>
+                        `[ÇELİŞKİ DÜZELTMESİ] ${c.replace("[MÜFETTİŞ HATASI]", "").replace("Bilgi Hatası/Çelişki:", "").trim()}`
+                      );
+
+                      const allFactsToPatch = [...cleanMissingFacts, ...cleanContradictions];
+
+                      try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama (AST) Uygulanıyor...` }) } catch { }
 
                       const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
-                      const patchResult = await generateAndInjectPatch(notes, cleanMissingFacts, fullCourseName, section.rawContent, section.title);
+                      const patchResult = await generateAndInjectPatch(notes, allFactsToPatch, fullCourseName, section.rawContent, section.title);
 
                       if (patchResult.success) {
                         notes = patchResult.newMarkdown;
@@ -1023,7 +1035,7 @@ export async function processInBackground(slug: string, course: any) {
                     
                     if (!isSurgicalPatch) {
                       console.log(`[BG] 📋 Geri bildirimler dikkate alınarak baştan yazım (Rewrite)...`);
-                      try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Yama İptal, Konu Yeniden Üretiliyor...` }) } }) } catch { }
+                      try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Yama İptal, Konu Yeniden Üretiliyor...` }) } catch { }
                       enrichedContent = `⚠️⚠️⚠️ ÖNCEKİ DENEMEDE TESPİT EDİLEN EKSİKLER VE HATALAR:\nLütfen aşağıdaki geri bildirimleri dikkate alarak ders notunu baştan, organik bir akışla tekrar yaz:\n\n${feedbackItems.join("\n\n")}\n\n---\n\n${section.rawContent}`;
                     }
                   }
@@ -1046,7 +1058,7 @@ export async function processInBackground(slug: string, course: any) {
                 // Doğrulama yap - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
                 // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
                 console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
-                try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } }) } catch { }
+                try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
                 const verification = await verifyNotesAgainstSource(
                   section.rawContent, notes, section.title, fullCourseName, sourceMode,
                   documentProfile.documentType,
@@ -1141,25 +1153,24 @@ export async function processInBackground(slug: string, course: any) {
 
                 // CANLI RAPOR GÜNCELLEMESİ
                 try {
-                  await prisma.section.update({
-                    where: { id: section.id },
-                    data: {
+                  await applySectionIssuesPatch(
+                    {
+                      missingTopics: lastVerification.missingTopics || [],
+                      issues: lastVerification.issues || [],
+                      suggestions: lastVerification.suggestions || [],
+                      currentAttempt: vAttempt,
+                      isCheckingAgain: currentScore < 95 && vAttempt < 5,
+                      attemptHistory: attemptHistory,
+                      stages: kontrolorStages,
+                      currentMicroPhase: verification.score === 100
+                        ? `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamam — Müfettiş denetimi sırada`
+                        : `${sIdx + 1 + alreadyDone}/${totalSections}. Kalite Kontrolörü incelemesi tamamlandı (Tur #${vAttempt})`,
+                    },
+                    {
                       verificationScore: currentScore,
                       ...(verification.score === 100 ? { notes: notes || null } : {}),
-                      verificationIssues: JSON.stringify({
-                        missingTopics: lastVerification.missingTopics || [],
-                        issues: lastVerification.issues || [],
-                        suggestions: lastVerification.suggestions || [],
-                        currentAttempt: vAttempt,
-                        isCheckingAgain: currentScore < 95 && vAttempt < 5,
-                        attemptHistory: attemptHistory,
-                        stages: kontrolorStages,
-                        currentMicroPhase: verification.score === 100
-                          ? `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamam — Müfettiş denetimi sırada`
-                          : `${sIdx + 1 + alreadyDone}/${totalSections}. Kalite Kontrolörü incelemesi tamamlandı (Tur #${vAttempt})`,
-                      })
-                    }
-                  })
+                    },
+                  )
                 } catch (dbErr) {
                   console.error("[BG_DB_ERROR] Canlı skor DB kaydı başarısız:", dbErr)
                 }
@@ -1186,30 +1197,26 @@ export async function processInBackground(slug: string, course: any) {
                     }
 
                     try {
-                      await prisma.section.update({
-                        where: { id: section.id },
-                        data: {
-                          notes: notes,
-                          verificationScore: 100,
-                          verificationIssues: JSON.stringify({
-                            message: "Kontrolör onayı tamamlandı (ilk tur — Müfettiş atlandı).",
-                            currentAttempt: vAttempt,
-                            attemptHistory: attemptHistory,
-                            missingTopics: [],
-                            issues: [],
-                            stages: {
-                              notesGenerated: true,
-                              kontrolorGroundTruth: true,
-                              mufettis: false,
-                              cerrahiYama: false,
-                              flashcards: false,
-                              questions: false,
-                              published: false,
-                            },
-                            currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamamlandı`,
-                          })
-                        }
-                      })
+                      await applySectionIssuesPatch(
+                        {
+                          message: "Kontrolör onayı tamamlandı (ilk tur — Müfettiş atlandı).",
+                          currentAttempt: vAttempt,
+                          attemptHistory: attemptHistory,
+                          missingTopics: [],
+                          issues: [],
+                          stages: {
+                            notesGenerated: true,
+                            kontrolorGroundTruth: true,
+                            mufettis: false,
+                            cerrahiYama: false,
+                            flashcards: false,
+                            questions: false,
+                            published: false,
+                          },
+                          currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamamlandı`,
+                        },
+                        { notes: notes, verificationScore: 100 },
+                      )
                       console.log(`[BG] 💾 İlk tur %100 not veritabanına kaydedildi.`)
                     } catch (saveErr) {
                       console.error(`[BG] ❌ Not kaydetme hatası:`, saveErr)
@@ -1219,7 +1226,7 @@ export async function processInBackground(slug: string, course: any) {
                   }
 
                   console.log(`[BG] 🎉 KONTROLÖR ONAYI (%100) — 4. Katman: Müfettiş Derin Denetimi (Deep Audit) Başlıyor...`)
-                  try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş (Deep Audit) Çapraz Denetimi Yapılıyor...` }) } }) } catch { }
+                  try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş (Deep Audit) Çapraz Denetimi Yapılıyor...` }) } catch { }
 
                   // 1. Tüm konuları çıkar
                   const analysisForAudit = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
@@ -1243,7 +1250,7 @@ export async function processInBackground(slug: string, course: any) {
                       let packIdx = 1
                       for (const pack of packages) {
                         console.log(`[BG] 👉 [Paket ${packIdx}/${packages.length}] Müfettiş inceliyor...`)
-                        try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş Çapraz Denetimi (Paket ${packIdx}/${packages.length})...` }) } }) } catch { }
+                        try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş Çapraz Denetimi (Paket ${packIdx}/${packages.length})...` }) } catch { }
                         await new Promise(r => setTimeout(r, 4000))
 
                         try {
@@ -1330,32 +1337,29 @@ export async function processInBackground(slug: string, course: any) {
 
                         // DB Live Update for Inspector Failure — DÜRÜST SKOR ile
                         try {
-                          await prisma.section.update({
-                            where: { id: section.id },
-                            data: {
-                              verificationScore: trueScore,
-                              verificationIssues: JSON.stringify({
-                                missingTopics: lastVerification.missingTopics,
-                                issues: lastVerification.issues,
-                                suggestions: lastVerification.suggestions,
-                                currentAttempt: vAttempt,
-                                isCheckingAgain: true,
-                                attemptHistory: attemptHistory,
-                                inspectorFailed: true,
-                                inspectorFindings: allFindings,
-                                stages: {
-                                  notesGenerated: true,
-                                  kontrolorGroundTruth: true,
-                                  mufettis: false,
-                                  cerrahiYama: false,
-                                  flashcards: false,
-                                  questions: false,
-                                  published: false,
-                                },
-                                currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Müfettiş denetimi — eksikler tespit edildi`,
-                              })
-                            }
-                          })
+                          await applySectionIssuesPatch(
+                            {
+                              missingTopics: lastVerification.missingTopics,
+                              issues: lastVerification.issues,
+                              suggestions: lastVerification.suggestions,
+                              currentAttempt: vAttempt,
+                              isCheckingAgain: true,
+                              attemptHistory: attemptHistory,
+                              inspectorFailed: true,
+                              inspectorFindings: allFindings,
+                              stages: {
+                                notesGenerated: true,
+                                kontrolorGroundTruth: true,
+                                mufettis: false,
+                                cerrahiYama: false,
+                                flashcards: false,
+                                questions: false,
+                                published: false,
+                              },
+                              currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Müfettiş denetimi — eksikler tespit edildi`,
+                            },
+                            { verificationScore: trueScore },
+                          )
                         } catch (e) { }
 
                         // "Kaliteden taviz yok" - Akıllı Çıkış stratejisi tamamen iptal edildi.
@@ -1383,31 +1387,27 @@ export async function processInBackground(slug: string, course: any) {
                     }
 
                     try {
-                      await prisma.section.update({
-                        where: { id: section.id },
-                        data: {
-                          notes: notes,
-                          verificationScore: 100,
-                          verificationIssues: JSON.stringify({
-                            message: "Kontrolör ve Müfettiş onayı tamamlandı.",
-                            currentAttempt: vAttempt,
-                            attemptHistory: attemptHistory,
-                            missingTopics: [],
-                            issues: [],
-                            auditResult: { passed: true },
-                            stages: {
-                              notesGenerated: true,
-                              kontrolorGroundTruth: true,
-                              mufettis: true,
-                              cerrahiYama: false,
-                              flashcards: false,
-                              questions: false,
-                              published: false,
-                            },
-                            currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör ve Müfettiş onayı tamamlandı`,
-                          })
-                        }
-                      })
+                      await applySectionIssuesPatch(
+                        {
+                          message: "Kontrolör ve Müfettiş onayı tamamlandı.",
+                          currentAttempt: vAttempt,
+                          attemptHistory: attemptHistory,
+                          missingTopics: [],
+                          issues: [],
+                          auditResult: { passed: true },
+                          stages: {
+                            notesGenerated: true,
+                            kontrolorGroundTruth: true,
+                            mufettis: true,
+                            cerrahiYama: false,
+                            flashcards: false,
+                            questions: false,
+                            published: false,
+                          },
+                          currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör ve Müfettiş onayı tamamlandı`,
+                        },
+                        { notes: notes, verificationScore: 100 },
+                      )
                       console.log(`[BG] 💾 %100 Kusursuz Not Anında Veritabanına Kazındı!`)
                     } catch (saveErr) {
                       console.error(`[BG] ❌ Not anlık kaydetme hatası:`, saveErr)
@@ -1442,16 +1442,11 @@ export async function processInBackground(slug: string, course: any) {
                   console.error(`[BG] ⛔ Günlük kota — işlem duraklatılıyor: ${notesErr.message}`);
                   const pauseMessage = "Google günlük limiti doldu. Pasifik saatiyle gece yarısı sıfırlanır; yarın «Devam Ettir» ile yeniden başlatın.";
                   try {
-                    await prisma.section.update({
-                      where: { id: section.id },
-                      data: {
-                        verificationIssues: JSON.stringify({
-                          currentMicroPhase: pauseMessage,
-                          pauseReason: "quota_daily",
-                          pausedAt: new Date().toISOString(),
-                        }),
-                      },
-                    });
+                    await applySectionIssuesPatch({
+                      currentMicroPhase: pauseMessage,
+                      pauseReason: "quota_daily",
+                      pausedAt: new Date().toISOString(),
+                    })
                     await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } });
                   } catch { /* ignore */ }
                   hasCriticalError = true;
@@ -1475,16 +1470,11 @@ export async function processInBackground(slug: string, course: any) {
                   console.log(`[BG] ⛔ Kota hatası limiti aşıldı (${MAX_QUOTA_FAILURES}). İşlem duraklatılıyor.`)
                   const pauseMessage = "Google limiti aşıldı. Bir süre bekleyip tek sefer «Devam Ettir» ile yeniden deneyin.";
                   try {
-                    await prisma.section.update({
-                      where: { id: section.id },
-                      data: {
-                        verificationIssues: JSON.stringify({
-                          currentMicroPhase: pauseMessage,
-                          pauseReason: "quota_exhausted",
-                          pausedAt: new Date().toISOString(),
-                        }),
-                      },
-                    });
+                    await applySectionIssuesPatch({
+                      currentMicroPhase: pauseMessage,
+                      pauseReason: "quota_exhausted",
+                      pausedAt: new Date().toISOString(),
+                    })
                     await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } });
                   } catch { /* ignore */ }
                   hasCriticalError = true;
@@ -1539,7 +1529,7 @@ export async function processInBackground(slug: string, course: any) {
             console.log(`[BG] Onaylanmış not (%100) üzerinden Flashcard ve Sorular üretiliyor...`)
             // SADECE ONAYLANMIŞ NOTLARI KULLAN Kİ DIŞARIDAN BİLGİ GELMESİN
             const finalContent = notes || section.rawContent;
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Flashcard Kartları (Bilgi Kartları) Oluşturuluyor...` }) } }) } catch { }
+            try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Flashcard Kartları (Bilgi Kartları) Oluşturuluyor...` }) } catch { }
 
             // Flashcard'ları üret (tek deneme, tasarruf)
             for (let fAttempt = 1; fAttempt <= 3; fAttempt++) {
@@ -1572,7 +1562,7 @@ export async function processInBackground(slug: string, course: any) {
             await new Promise(r => setTimeout(r, 15000))
 
             // Bölüm analizi yap
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Üretimi İçin Bilişsel Rotalama Yapılıyor...` }) } }) } catch { }
+            try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Üretimi İçin Bilişsel Rotalama Yapılıyor...` }) } catch { }
             analysis = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
             await new Promise(r => setTimeout(r, 15000))
 
@@ -1581,7 +1571,7 @@ export async function processInBackground(slug: string, course: any) {
             if (!requiresQuestions) {
               console.log(`[BG] 🧠 COGNITIVE ROUTING: Bu bölüm için soru üretimi atlanıyor (requiresQuestions: false).`);
             } else {
-              try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Havuzu Oluşturuluyor...` }) } }) } catch { }
+              try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Havuzu Oluşturuluyor...` }) } catch { }
               for (let qAttempt = 1; qAttempt <= 3; qAttempt++) {
                 try {
                   questions = await generateQuestions(
@@ -1682,7 +1672,7 @@ export async function processInBackground(slug: string, course: any) {
           // Notlar yalnızca Türkçe kalır; notes_en üretilmez.
           if (needsBilingualStudyItems(aiMode) && notesAttemptSuccess) {
             console.log(`[BG] 🌐 Uluslararası sınav modu: Soru ve flashcard için TR+EN çeviri...`)
-            try { await prisma.section.update({ where: { id: section.id }, data: { verificationIssues: JSON.stringify({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru/kart İngilizce çevirisi...` }) } }) } catch { }
+            try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru/kart İngilizce çevirisi...` }) } catch { }
 
             if (flashcards.length > 0) {
               const enCards = await translateFlashcardsToEnglish(flashcards, finalTitle, fullCourseName)
@@ -1730,28 +1720,32 @@ export async function processInBackground(slug: string, course: any) {
               module: detectedModule,
               processed: isSectionApproved,
               verificationScore: currentScore,
-              verificationIssues: lastVerification ? JSON.stringify({
-                missingTopics: lastVerification.missingTopics,
-                issues: lastVerification.issues,
-                suggestions: lastVerification.suggestions,
-                attemptHistory: attemptHistory,
-                ...(notesAttemptSuccess ? { auditResult: { passed: true } } : {}),
-                stages: {
-                  notesGenerated: true,
-                  kontrolorGroundTruth: notesAttemptSuccess || currentScore === 100,
-                  mufettis: notesAttemptSuccess,
-                  cerrahiYama: attemptHistory.some((h: { isSmartInject?: boolean }) => h.isSmartInject === true),
-                  flashcards: flashcards.length > 0,
-                  questions: questions.length > 0,
-                  published: isSectionApproved,
-                },
-                message: isSectionApproved
-                  ? "Kontrolör ve Müfettiş onayı tamamlandı — bölüm yayında."
-                  : notesAttemptSuccess
-                    ? "Kontrolör ve Müfettiş onayı tamam; soru/kart üretimi eksik."
-                    : undefined,
-                ...(missingContent.length > 0 ? { missingContent } : {})
-              }) : null
+              verificationIssues: lastVerification
+                ? JSON.stringify(
+                    mergeVerificationIssues(sectionIssuesObj, {
+                      missingTopics: lastVerification.missingTopics,
+                      issues: lastVerification.issues,
+                      suggestions: lastVerification.suggestions,
+                      attemptHistory: attemptHistory,
+                      ...(notesAttemptSuccess ? { auditResult: { passed: true } } : {}),
+                      stages: {
+                        notesGenerated: true,
+                        kontrolorGroundTruth: notesAttemptSuccess || currentScore === 100,
+                        mufettis: notesAttemptSuccess,
+                        cerrahiYama: attemptHistory.some((h: { isSmartInject?: boolean }) => h.isSmartInject === true),
+                        flashcards: flashcards.length > 0,
+                        questions: questions.length > 0,
+                        published: isSectionApproved,
+                      },
+                      message: isSectionApproved
+                        ? "Kontrolör ve Müfettiş onayı tamamlandı — bölüm yayında."
+                        : notesAttemptSuccess
+                          ? "Kontrolör ve Müfettiş onayı tamam; soru/kart üretimi eksik."
+                          : undefined,
+                      ...(missingContent.length > 0 ? { missingContent } : {}),
+                    }),
+                  )
+                : null
             }
           })
 
@@ -1864,15 +1858,12 @@ export async function processInBackground(slug: string, course: any) {
 
     if (await shouldStop()) {
       console.log(`[BG] 🛑 "${course.name}" kullanıcı/iptal nedeniyle duraklatıldı.`)
-      await prisma.course.update({ where: { slug }, data: { status: "paused", updatedAt: new Date() } })
+      await finalizeCourseStatusIfStillProcessing(slug, "paused")
       return
     }
 
     if (hasCriticalError) {
-      const latest = await prisma.course.findUnique({ where: { slug }, select: { status: true } });
-      if (latest?.status !== "paused") {
-        await prisma.course.update({ where: { slug }, data: { status: "error" } });
-      }
+      await finalizeCourseStatusIfStillProcessing(slug, "error")
       console.error(`[BG] ❌ "${course.name}" işlemi durduruldu.`)
       return
     }
@@ -1887,7 +1878,7 @@ export async function processInBackground(slug: string, course: any) {
     const allSectionsPerfect = totalSectionCount > 0 && processedSectionCount === totalSectionCount
     const finalStatus = allSectionsPerfect ? "ready" : "error"
 
-    await prisma.course.update({ where: { slug }, data: { status: finalStatus } })
+    await finalizeCourseStatusIfStillProcessing(slug, finalStatus)
     const stats = { flashcards: await prisma.flashcard.count({ where: { courseId: course.id } }), questions: await prisma.question.count({ where: { courseId: course.id } }) }
     if (allSectionsPerfect) {
       console.log(`[BG] ✅ "${course.name}" tamamlandı (TÜM ${totalSectionCount} bölüm %100)! ${stats.flashcards} flashcard, ${stats.questions} soru`)
@@ -1896,7 +1887,7 @@ export async function processInBackground(slug: string, course: any) {
     }
   } catch (fatalError: any) {
     console.error(`[BG_FATAL] "${course.name}" işlenirken kritik hata:`, fatalError.message)
-    try { await prisma.course.update({ where: { slug }, data: { status: "uploaded" } }) } catch { }
+    try { await finalizeCourseStatusIfStillProcessing(slug, "uploaded") } catch { }
   } finally {
     clearHeartbeat(slug)
     releaseProcessing(slug)

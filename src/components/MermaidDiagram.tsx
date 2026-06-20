@@ -5,12 +5,14 @@ import { useEffect, useRef, useState } from "react"
 export default function MermaidDiagram({ chart }: { chart: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState(false)
+  const [svgContent, setSvgContent] = useState<string>("")
+  const idRef = useRef(`mermaid-${Math.random().toString(36).substring(2, 9)}`)
 
   useEffect(() => {
     let isMounted = true;
 
     async function renderDiagram() {
-      if (!chart || !containerRef.current) return;
+      if (!chart) return;
       
       try {
         const mermaid = (await import("mermaid")).default
@@ -35,21 +37,16 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
         let cleanChart = chart;
         
         // Remove stray 'end' if there is no 'subgraph'
+        // Akıllı temizlik: sadece tek başına duran satır sonlarındaki 'end' ifadelerini temizle
         if (!cleanChart.toLowerCase().includes('subgraph')) {
-          cleanChart = cleanChart.replace(/\bend\b/gi, '');
+          cleanChart = cleanChart.replace(/^\s*end\s*$/gim, '');
         }
         
-        // Reset container content and state before running mermaid
-        if (containerRef.current) {
-          containerRef.current.removeAttribute("data-processed");
-          containerRef.current.innerHTML = cleanChart;
-          
-          await mermaid.run({
-            nodes: [containerRef.current],
-            suppressErrors: false,
-          });
-          
-          if (isMounted) setError(false);
+        const { svg } = await mermaid.render(idRef.current, cleanChart);
+        
+        if (isMounted) {
+          setSvgContent(svg);
+          setError(false);
         }
       } catch (err) {
         console.error("Mermaid error:", err);
@@ -90,9 +87,7 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
       </div>
       
       <div className="w-full flex justify-center py-2 overflow-auto mermaid-container">
-        <div ref={containerRef} className="mermaid transition-opacity duration-300">
-          {chart}
-        </div>
+        <div ref={containerRef} className="mermaid transition-opacity duration-300" dangerouslySetInnerHTML={{ __html: svgContent }} />
       </div>
     </div>
   )
