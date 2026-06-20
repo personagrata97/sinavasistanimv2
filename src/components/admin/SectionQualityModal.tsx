@@ -191,7 +191,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
             <div className="flex flex-col items-center gap-2 z-10 w-16">
               <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${
                 isSkipped ? "bg-slate-500/10 border-slate-500/50 text-slate-400" :
-                hasMufettisPassed && !isProcessing ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
+                hasMufettisPassed ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]" :
                 isMufettisCompleted ? "bg-red-500/10 border-red-500/50 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.15)]" :
                 isMufettisPulsing ? "bg-blue-500/10 border-blue-500/50 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)] animate-pulse" :
                 "bg-white/[0.02] border-white/[0.05] text-slate-600"
@@ -200,7 +200,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               </div>
               <span className={`text-[9px] font-black tracking-widest uppercase text-center ${
                 isSkipped ? "text-slate-500" :
-                hasMufettisPassed && !isProcessing ? "text-emerald-500" :
+                hasMufettisPassed ? "text-emerald-500" :
                 isMufettisCompleted ? "text-red-500" :
                 isMufettisPulsing ? "text-blue-500" :
                 "text-slate-600"
