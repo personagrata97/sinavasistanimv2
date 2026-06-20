@@ -9,19 +9,17 @@ import {
   getProgramCardUnit,
   getCourseCardBadge,
   getCourseCardCta,
+  getProcessButtonLabel,
+  getProcessBannerHint,
+  getNotesGenerationPhaseLabel,
+  adaptProcessingPhaseLabel,
+  isProfessionalProgram,
 } from "@/lib/program-catalog"
 
 describe("program-catalog", () => {
-  it("6 hazır program tanımlı olmalı", () => {
-    expect(getReadyPrograms()).toHaveLength(6)
-    expect(READY_PROGRAM_SLUGS).toEqual([
-      "spl-duzey-3",
-      "masak",
-      "spl-bagimsiz-denetim",
-      "cisa",
-      "cia",
-      "smmm",
-    ])
+  it("7 hazır program tanımlı olmalı (Zeliha dahil)", () => {
+    expect(getReadyPrograms()).toHaveLength(7)
+    expect(READY_PROGRAM_SLUGS).toContain("zeliha-mevzuat")
   })
 
   it("tüm kartlar aynı isim kalıbını kullanmalı (Başlık — Alt bilgi)", () => {
@@ -47,6 +45,7 @@ describe("program-catalog", () => {
     expect(getProgramGridLabel("spl-bagimsiz-denetim")).toBe("5 Ders")
     expect(getProgramGridLabel("smmm")).toBe("8 Ders")
     expect(getProgramGridLabel("masak")).toBe("1 Ders")
+    expect(getProgramGridLabel("zeliha-mevzuat")).toBe("7 Mevzuat Modülü")
   })
 
   it("kart rozetleri program birimine göre yeknesak olmalı", () => {
@@ -76,5 +75,32 @@ describe("program-catalog", () => {
   it("slug benzersiz olmalı", () => {
     const slugs = PROGRAM_CATALOG.map(p => p.slug)
     expect(new Set(slugs).size).toBe(slugs.length)
+  })
+
+  it("işlem butonu metinleri duruma göre tutarlı olmalı", () => {
+    expect(getProcessButtonLabel({ status: "uploaded" }, false)).toBe("İşleme Başlat")
+    expect(getProcessButtonLabel({ status: "uploaded" }, true)).toBe("Çalışıyor...")
+    expect(getProcessButtonLabel({ status: "error", sections: [{ id: 1 }] }, false)).toBe("Devam Ettir")
+    expect(getProcessButtonLabel({ status: "ready" }, false)).toBe("Yeniden Tara")
+    expect(getProcessBannerHint({ status: "uploaded" })).toContain("İşleme Başlat")
+    expect(getProcessBannerHint({ status: "paused", sections: [{ id: 1 }] })).toContain("Devam Ettir")
+  })
+
+  it("Zeliha işleme aşamasında Çalışma Notları kullanmalı", () => {
+    expect(isProfessionalProgram("zeliha-mevzuat")).toBe(true)
+    expect(getNotesGenerationPhaseLabel(true, "1/1", 1)).toBe(
+      "1/1. Aşama 2: Çalışma Notları üretiliyor (Deneme #1)",
+    )
+    expect(getNotesGenerationPhaseLabel(false, "2/5", 3)).toBe(
+      "2/5. Aşama 2: Ders Notları Üretiliyor (Deneme #3)",
+    )
+  })
+
+  it("adaptProcessingPhaseLabel eski Ders metinlerini Zeliha için düzeltmeli", () => {
+    const legacy = "1/1. Aşama 2: Ders Notları Üretiliyor (Deneme #1)"
+    expect(adaptProcessingPhaseLabel(legacy, "zeliha-mevzuat")).toBe(
+      "1/1. Aşama 2: Çalışma Notları üretiliyor (Deneme #1)",
+    )
+    expect(adaptProcessingPhaseLabel(legacy, "spl-duzey-3")).toBe(legacy)
   })
 })

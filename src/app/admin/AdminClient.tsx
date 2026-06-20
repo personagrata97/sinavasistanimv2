@@ -11,6 +11,13 @@ import { Modal } from "@/components/course/shared"
 import { Tooltip } from "@/components/ui/shared"
 import { SectionQualityModal } from "@/components/admin/SectionQualityModal"
 import { parseQualityIssues, deriveQualityStages } from "@/lib/section-quality-gates"
+import {
+  getApiOperationLabel,
+  getApiStatusLabel,
+  getApiStatusTone,
+  API_STATUS_BADGE_CLASS,
+} from "@/lib/api-operation-labels"
+import type { ApiUsageDaySummary } from "@/lib/api-usage-summary"
 
 interface AdminClientProps {
   users: Array<{
@@ -60,6 +67,7 @@ interface AdminClientProps {
     durationMs: number | null
     createdAt: Date
   }>
+  apiSummary?: ApiUsageDaySummary
   systemKeys?: string[]
 }
 
@@ -68,6 +76,72 @@ type TabType = "users" | "reported" | "quality" | "api_usage"
 const MODEL_LABELS: Record<string, string> = {
   "gemini-3.5-flash": "Gemini 3.5 Flash",
   "gemini-2.5-flash": "Gemini 2.5 Flash",
+}
+
+function formatApiLogTime(createdAt: string | Date): string {
+  const d = new Date(createdAt)
+  if (Number.isNaN(d.getTime())) return "—"
+
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const logStart = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const dayDiff = Math.round((todayStart.getTime() - logStart.getTime()) / 86400000)
+
+  const time = d.toLocaleTimeString("tr-TR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
+
+  let dayLabel: string
+  if (dayDiff === 0) dayLabel = "Bugün"
+  else if (dayDiff === 1) dayLabel = "Dün"
+  else {
+    dayLabel = d.toLocaleDateString("tr-TR", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    })
+  }
+
+  return `${dayLabel} · ${time}`
+}
+
+function translateApiErrorDetail(detail: string): string {
+  const lower = detail.toLowerCase()
+
+  if (/timeout.*exceeded|econnaborted|etimedout/.test(lower)) {
+    const msMatch = detail.match(/(\d+)\s*ms/)
+    const sec = msMatch ? Math.round(Number(msMatch[1]) / 1000) : 120
+    return `Yanıt ${sec} saniye içinde gelmedi (zaman aşımı).`
+  }
+
+  if (/high demand|try again later|overloaded|503/.test(lower)) {
+    return "Model şu an çok yoğun. Talep artışı genelde geçicidir; kısa süre sonra tekrar deneyin."
+  }
+
+  if (/api key not valid|forbidden|403/.test(lower)) {
+    return "API anahtarı geçersiz veya bu işlem için yetkili değil."
+  }
+
+  if (/quota exceeded|rate limit|429/.test(lower)) {
+    const retryMatch = detail.match(/retry in ([\d.]+)s/i)
+    if (retryMatch) {
+      const sec = Math.ceil(parseFloat(retryMatch[1]))
+      return `Kota veya hız limiti aşıldı — yaklaşık ${sec} saniye sonra tekrar denenebilir.`
+    }
+    return "Kota veya hız limiti aşıldı."
+  }
+
+  if (/invalid argument|no pages|bad request/.test(lower)) {
+    return "Gönderilen dosya veya istek biçimi geçersiz."
+  }
+
+  if (/sn bekleniyor|anahtar dinleniyor/.test(lower) || /[ığüşöçİĞÜŞÖÇ]/.test(detail)) {
+    return detail
+  }
+
+  return "Beklenmeyen bir hata oluştu. Kayıt zamanına bakarak tekrar deneyin."
 }
 
 function QuotaBar({
@@ -103,8 +177,9 @@ function QuotaBar({
   )
 }
 
-export default function AdminClient({ users, reportedQuestions, sectionsQuality, stats, apiLogs, systemKeys }: AdminClientProps) {
+export default function AdminClient({ users, reportedQuestions, sectionsQuality, stats, apiLogs, apiSummary: initialApiSummary, systemKeys }: AdminClientProps) {
   const [recentApiLogs, setRecentApiLogs] = useState(apiLogs || [])
+  const [apiSummary, setApiSummary] = useState<ApiUsageDaySummary | null>(initialApiSummary ?? null)
   const [activeTab, setActiveTab] = useState<TabType>("users")
   const [userSearch, setUserSearch] = useState("")
   const [questionSearch, setQuestionSearch] = useState("")
@@ -156,6 +231,9 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
           const data = await res.json()
           if (Array.isArray(data.logs)) {
             setRecentApiLogs(data.logs)
+          }
+          if (data.summary) {
+            setApiSummary(data.summary)
           }
         }
       } catch { /* sessiz */ }
@@ -307,28 +385,14 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
         {activeTab === "api_usage" && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {(() => {
-              const apiLogsList = recentApiLogs || []
-              const totalReqs = apiLogsList.length
-              const total429 = apiLogsList.filter(l => l.status === "RATE_LIMIT_429").length
-              
-              const keyUsage = apiLogsList.filter(l => l.status === "SUCCESS").reduce((acc: Record<string, number>, log) => {
-                if (!acc[log.apiKey]) acc[log.apiKey] = 0
-                acc[log.apiKey]++
-                return acc
-              }, {})
-              
               const activeSystemKeys = systemKeys || []
-              const keysOverQuota = activeSystemKeys.filter((key, idx) => {
+              const totalReqs = apiSummary?.todayTotal ?? 0
+              const total429 = apiSummary?.today429 ?? 0
+              const deadKeysCount = apiSummary?.deadKeysCount ?? activeSystemKeys.filter((_, idx) => {
                 const masked = `Key #${idx + 1}`
-                return (keyUsage[masked] || 0) >= 1500
+                return recentApiLogs.some((l: any) => l.apiKey === masked && l.status === "FORBIDDEN_403")
               }).length
-              
-              const deadKeysCount = activeSystemKeys.filter((key, idx) => {
-                const masked = `Key #${idx + 1}`
-                return apiLogsList.some((l: any) => l.apiKey === masked && l.status === "FORBIDDEN_403")
-              }).length
-              
-              const healthyKeysCount = Math.max(0, activeSystemKeys.length - keysOverQuota - deadKeysCount)
+              const healthyKeysCount = apiSummary?.healthyKeysCount ?? Math.max(0, activeSystemKeys.length - deadKeysCount)
 
               return (
                 <>
@@ -844,7 +908,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                       <h2 className="text-xl font-bold">Gerçek Zamanlı API Anahtar Durumları</h2>
                       <p className="text-[11px] text-slate-400 mt-1">
                         Ücretsiz tier: <span className="font-bold text-slate-300">{liveKeyStats?.rpmLimit ?? 9} RPM</span> / dk / anahtar · 3.5-flash <span className="font-bold text-blue-300">~18/gün</span> · 2.5-flash <span className="font-bold text-violet-300">~240/gün</span> (PT günü: {liveKeyStats?.pacificDay ?? "—"}).<br/>
-                        Sayaçlar motorun gerçek bellek sayaçlarından okunur. Kota Aşımı (429) dakikalık/günlük limit dolduğunu gösterir.
+                        Sayaçlar canlı motor belleğinden okunur; sunucu yeniden başlayınca günlük sayaç kayıt tablosundan yüklenir. Canlı akış tablosu 5 saniyede bir yenilenir.
                       </p>
                     </div>
                   </div>
@@ -1032,8 +1096,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                               <td colSpan={5} className="py-8 text-center text-slate-500 text-sm space-y-1">
                                 <div>Henüz kayıt yok veya arama sonucu boş.</div>
                                 <div className="text-[11px] text-slate-600 max-w-md mx-auto leading-relaxed">
-                                  PDF okuma (OCR), not, soru ve kart istekleri burada görünür. Bekleme satırları (WAITING) limit/rotasyon sırasında yazılır.
-                                  Üstteki anahtar kartları anlık sayaçtır — sunucu yeniden başlayınca sıfırlanabilir.
+                                  PDF okuma, not, soru ve kart istekleri burada görünür. Yoğunluk beklemeleri gri renkle gösterilir; kırmızı yalnızca gerçek hatalar içindir.
                                 </div>
                               </td>
                             </tr>
@@ -1042,10 +1105,14 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
 
                         return (
                           <>
-                            {paginated.map((log: any) => (
+                            {paginated.map((log: any) => {
+                              const logTime = formatApiLogTime(log.createdAt)
+                              const [logDay, logClock] = logTime.includes(" · ") ? logTime.split(" · ") : [logTime, ""]
+                              return (
                               <tr key={log.id} className="border-b border-white/5 hover:bg-white/[0.01] transition-colors">
-                                <td className="py-3 px-4 text-xs text-slate-400">
-                                  {new Date(log.createdAt).toLocaleTimeString("tr-TR")}
+                                <td className="py-3 px-4 text-xs text-slate-400 whitespace-nowrap">
+                                  <div className="font-medium text-slate-300">{logDay}</div>
+                                  {logClock && <div className="text-slate-500">{logClock}</div>}
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="font-bold text-sm text-slate-200">{log.apiKey}</div>
@@ -1056,19 +1123,8 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="flex flex-col gap-1.5 min-w-[220px]">
-                                    <div className="inline-flex items-center gap-1.5 w-fit px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 border border-white/10 text-slate-300">
-                                      {log.operation === 'verification' ? <><CheckCircle2 className="w-3 h-3 text-emerald-400" /> DOĞRULAMA (ESKİ)</> : 
-                                       log.operation === 'kontrolor' ? <><CheckCircle2 className="w-3 h-3 text-orange-400" /> KALİTE KONTROL (KONTROLÖR)</> :
-                                       log.operation === 'ground_truth' ? <><Target className="w-3 h-3 text-purple-400" /> ÇAPRAZ TEST (GROUND TRUTH)</> :
-                                      log.operation === 'cerrahi_yama' ? <><Sparkles className="w-3 h-3 text-emerald-400" /> CERRAHİ YAMA (AST)</> :
-                                       log.operation === 'mufettis' ? <><AlertTriangle className="w-3 h-3 text-red-500" /> DERİN DENETİM (MÜFETTİŞ)</> :
-                                       log.operation === 'generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> : 
-                                       log.operation === 'notes_generation' ? <><BookOpen className="w-3 h-3 text-blue-400" /> DERS NOTU ÜRETİMİ</> :
-                                       log.operation === 'question_generation' ? <><Target className="w-3 h-3 text-purple-400" /> SORU HAVUZU ÜRETİMİ</> :
-                                       log.operation === 'flashcard' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
-                                       log.operation === 'flashcard_generation' ? <><Zap className="w-3 h-3 text-amber-400" /> BİLGİ KARTI ÜRETİMİ</> : 
-                                       log.operation === 'ocr_extraction' || log.operation === 'ocr_extraction_chunk' ? <><Search className="w-3 h-3 text-indigo-400" /> PDF OKUMA (OCR)</> :
-                                       log.operation.toUpperCase()}
+                                    <div className="inline-flex items-center gap-1.5 w-fit px-2.5 py-1 rounded text-xs font-semibold bg-indigo-500/10 border border-indigo-500/20 text-indigo-200">
+                                      {getApiOperationLabel(log.operation)}
                                     </div>
                                     <div className="flex flex-col gap-0.5 pl-2 border-l-2 border-indigo-500/30">
                                       {(() => {
@@ -1112,31 +1168,35 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="flex flex-col gap-1 items-start">
-                                    <span className={`px-2 py-1 rounded text-[10px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : log.status === 'RATE_LIMIT_429' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
-                                      {log.status === 'SUCCESS' ? 'BAŞARILI' : log.status === 'RATE_LIMIT_429' ? 'KOTA AŞIMI (429)' : log.status === 'FORBIDDEN_403' ? 'YETKİSİZ ERİŞİM (403)' : log.status === 'SERVER_ERROR_503' ? 'SUNUCU HATASI (503)' : log.status}
+                                    {(() => {
+                                      const statusTone = getApiStatusTone(log.status)
+                                      return (
+                                        <>
+                                    <span className={`px-2 py-1 rounded text-[10px] font-bold ${API_STATUS_BADGE_CLASS[statusTone]}`}>
+                                      {getApiStatusLabel(log.status)}
                                     </span>
                                     {log.status === 'RATE_LIMIT_429' && (
                                       <div className="max-w-[200px] text-[9px] text-amber-400/90 leading-snug bg-amber-500/5 px-2 py-1.5 rounded border border-amber-500/10 mt-1">
-                                        <span className="font-bold block mb-0.5">⚠️ Neden 429 Aldı?</span>
-                                        Şu 3 limitten biri doldu:<br/>
-                                        <span className="text-amber-200">- Dakikada 15 İstek (RPM)</span><br/>
-                                        <span className="text-amber-200">- Dakikada 1M Token (TPM)</span><br/>
-                                        <span className="text-amber-200">- Günde 1500 İstek (RPD)</span>
+                                        <span className="font-bold block mb-0.5">Kota doldu (429)</span>
+                                        Dakikalık, token veya günlük limitlerden biri dolmuş olabilir.
                                       </div>
                                     )}
                                     {log.errorDetail && log.status !== 'SUCCESS' && log.status !== 'RATE_LIMIT_429' && (
-                                      <div className="max-w-[200px] text-[9px] text-rose-400/80 leading-snug bg-rose-500/5 px-2 py-1 rounded border border-rose-500/10 mt-1">
-                                        <span className="font-semibold block mb-0.5 opacity-80">Hata Detayı:</span>
-                                        {log.errorDetail}
+                                      <div className={`max-w-[200px] text-[9px] leading-snug px-2 py-1 rounded border mt-1 ${statusTone === 'pending' ? 'text-slate-400/90 bg-slate-500/5 border-slate-500/10' : 'text-rose-400/80 bg-rose-500/5 border-rose-500/10'}`}>
+                                        <span className="font-semibold block mb-0.5 opacity-80">{statusTone === 'pending' ? 'Bekleme notu:' : 'Hata detayı:'}</span>
+                                        {translateApiErrorDetail(log.errorDetail)}
                                       </div>
                                     )}
+                                        </>
+                                      )
+                                    })()}
                                   </div>
                                 </td>
                                 <td className="py-3 px-4 text-right text-xs font-mono text-slate-400">
                                   {log.durationMs ? `${log.durationMs}ms` : "-"}
                                 </td>
                               </tr>
-                            ))}
+                            )})}
                             {totalPages > 1 && (
                               <tr>
                                 <td colSpan={5} className="py-3 px-4 border-t border-white/5">

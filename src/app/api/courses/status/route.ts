@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
+import { adaptProcessingPhaseLabel, getStudyNotFoundMessage, isProfessionalProgram } from "@/lib/program-catalog"
+import {
+  computeProcessingProgress,
+  hasRecentExplicitProcessStart,
+  pauseGhostProcessingInDb,
+  resolveLiveProcessingState,
+  resolveTriggerDebounceState,
+  sanitizePhaseLabel,
+  sectionRawContentReady,
+} from "@/lib/course-processing-status"
+import { cancelCourseProcessing, clearHeartbeat } from "@/lib/process-registry"
 
 // Polling endpoint - frontend her 3 saniyede bu endpoint'i çağırarak
 // PDF işleme durumunu takip eder
@@ -21,6 +32,7 @@ export async function GET(req: NextRequest) {
     const course = await prisma.course.findUnique({
       where: { slug },
       include: {
+        program: { select: { slug: true } },
         _count: {
           select: {
             sections: true,
@@ -32,7 +44,27 @@ export async function GET(req: NextRequest) {
     })
 
     if (!course) {
-      return NextResponse.json({ error: "Ders bulunamadı" }, { status: 404 })
+      return NextResponse.json(
+        { error: getStudyNotFoundMessage(slug.startsWith("zeliha-") ? "zeliha-mevzuat" : "") },
+        { status: 404 },
+      )
+    }
+
+    const inProcessStartGrace = await hasRecentExplicitProcessStart(slug)
+
+    // 🛡️ Hayalet işlem: DB processing ama işçi/heartbeat yok → duraklat (yeni başlangıçta bekle)
+    if (
+      !inProcessStartGrace &&
+      (course.status === "processing" || course.status === "uploading")
+    ) {
+      const live = resolveLiveProcessingState(course.status, slug)
+      if (live.needsPause && live.pauseMessage && live.pauseReason) {
+        cancelCourseProcessing(slug, course.name)
+        clearHeartbeat(slug)
+        await pauseGhostProcessingInDb(course.id, slug, live.pauseMessage, live.pauseReason)
+        course.status = "paused"
+        console.log(`[STATUS] 💔 Hayalet işlem duraklatıldı: ${slug} (${live.pauseReason})`)
+      }
     }
 
     // 🛡️ İşleme kurtarma: 300 dakikadan fazla processing'te kalan dersleri kurtarma
@@ -60,16 +92,40 @@ export async function GET(req: NextRequest) {
     const remainingSections = totalSections - processedSections
     const estimatedMinRemaining = Math.ceil(remainingSections * estimatedMinPerSection)
 
+    const isProfessional = isProfessionalProgram(course.program?.slug ?? "")
+    let currentMicroPhase: string | null = null
+    let currentSectionRawContent: string | null = null
+
+    const liveState = resolveLiveProcessingState(course.status, slug)
+    const effectiveStatus = liveState.status
+    const workerLive = liveState.workerLive
+
     // Mevcut aşamayı belirle
     let phase = "idle"
     let phaseLabel = "Beklemede"
-    if (course.status === "uploading") {
+    if (effectiveStatus === "uploading") {
       phase = "uploading"
       phaseLabel = "Sistem İşlemi: Yükleniyor..."
-    } else if (course.status === "processing") {
+    } else if (effectiveStatus === "processing") {
       if (totalSections === 0) {
-        phase = "extracting"
-        phaseLabel = `Analiz Ediliyor: Sayfa ${course.processedPages}/${course.totalPages}`
+        const pagesDone =
+          course.totalPages > 0 && course.processedPages >= course.totalPages
+        if (pagesDone) {
+          phase = "structuring"
+          phaseLabel = "Metin hazır — belge yapısı belirleniyor..."
+          const structuringStaleMs = 25 * 60 * 1000
+          if (course.updatedAt.getTime() < Date.now() - structuringStaleMs) {
+            await prisma.course.update({ where: { slug }, data: { status: "error" } })
+            course.status = "error"
+            phase = "error"
+            phaseLabel =
+              "Belge bölümleri otomatik ayrılamadı. «Zorla» veya «İşleme Başlat» ile tekrar deneyin."
+            console.log(`[STATUS] ⚠️ ${slug} bölüm aşamasında ${structuringStaleMs / 60000} dk takıldı — error`)
+          }
+        } else {
+          phase = "extracting"
+          phaseLabel = `Analiz Ediliyor: Sayfa ${course.processedPages}/${course.totalPages}`
+        }
       } else if (processedSections < totalSections) {
         phase = "analyzing"
         phaseLabel = `Modüller Hazırlanıyor: Kısım ${processedSections + 1}/${totalSections}`
@@ -78,7 +134,7 @@ export async function GET(req: NextRequest) {
         const unprocessedSections = await prisma.section.findMany({
           where: { courseId: course.id, processed: false },
           orderBy: { order: "asc" },
-          select: { id: true, verificationIssues: true }
+          select: { id: true, verificationIssues: true, rawContent: true }
         });
         
         let currentSection = null;
@@ -102,8 +158,8 @@ export async function GET(req: NextRequest) {
             }
             const lastUpdate = new Date(dateStr).getTime();
           
-            // Timeout: 5 dakika hareketsizlik → zombi (OCR beklerken heartbeat API logu üretmeyebilir)
-            if (now - lastUpdate > 5 * 60 * 1000) {
+            // Timeout: 5 dakika hareketsizlik → zombi (yeni başlangıç / zorla devamda bekle)
+            if (!inProcessStartGrace && now - lastUpdate > 5 * 60 * 1000) {
               console.log(`[STATUS] 🧟‍♂️ Zombi süreç tespit edildi! (${course.name}) 15 dakikadır hareket yok. Otomatik duraklatılıyor.`);
               const pauseMessage = "İşlem yanıt vermiyor (5 dk hareketsiz). «Zorla» veya «Devam Ettir» ile yeniden başlatın.";
               await prisma.section.update({
@@ -121,13 +177,19 @@ export async function GET(req: NextRequest) {
             }
           }
 
+          currentSectionRawContent = currentSection.rawContent ?? null
+
           if (currentSection.verificationIssues) {
           try {
             const issues = typeof currentSection.verificationIssues === "string" 
               ? JSON.parse(currentSection.verificationIssues) 
               : currentSection.verificationIssues;
             if (issues?.currentMicroPhase) {
-              phaseLabel = issues.currentMicroPhase;
+              currentMicroPhase = issues.currentMicroPhase
+              phaseLabel = sanitizePhaseLabel(issues.currentMicroPhase, {
+                isProfessional,
+                rawContentReady: sectionRawContentReady(currentSectionRawContent),
+              })
             }
           } catch (e) { }
         }
@@ -136,26 +198,31 @@ export async function GET(req: NextRequest) {
         phase = "finalizing"
         phaseLabel = "Sistem İşlemi: Tamamlanıyor..."
       }
-    } else if (course.status === "ready") {
+    } else if (effectiveStatus === "ready") {
       phase = "ready"
       phaseLabel = "İşlem Tamamlandı"
-    } else if (course.status === "paused") {
+    } else if (effectiveStatus === "paused") {
       phase = "paused"
       phaseLabel = "Duraklatıldı — Devam Ettir ile yeniden başlatın"
       const pausedSection = await prisma.section.findFirst({
         where: { courseId: course.id, processed: false },
         orderBy: { order: "asc" },
-        select: { verificationIssues: true },
+        select: { verificationIssues: true, rawContent: true },
       })
       if (pausedSection?.verificationIssues) {
         try {
           const issues = JSON.parse(pausedSection.verificationIssues)
-          if (issues?.currentMicroPhase) phaseLabel = issues.currentMicroPhase
+          if (issues?.currentMicroPhase) {
+            phaseLabel = sanitizePhaseLabel(issues.currentMicroPhase, {
+              isProfessional,
+              rawContentReady: sectionRawContentReady(pausedSection.rawContent),
+            })
+          }
         } catch { /* ignore */ }
       }
-    } else if (course.status === "error") {
+    } else if (effectiveStatus === "error") {
       phase = "error"
-      phaseLabel = "Hata Oluştu (Limit Doldu)"
+      phaseLabel = "İşlem tamamlanamadı — tekrar deneyin"
     }
 
     // Fetch all sections to send their real-time quality scores directly via HTTP API (caching immune)
@@ -169,8 +236,14 @@ export async function GET(req: NextRequest) {
       }
     })
 
+    const programSlug = course.program?.slug ?? ""
+    phaseLabel = adaptProcessingPhaseLabel(phaseLabel, programSlug)
+
+    const triggerDebounce = await resolveTriggerDebounceState(slug, effectiveStatus)
+
     return NextResponse.json({
-      status: course.status,
+      status: effectiveStatus,
+      workerLive,
       phase,
       phaseLabel,
       totalPages: course.totalPages,
@@ -182,17 +255,17 @@ export async function GET(req: NextRequest) {
       questionCount: course._count.questions,
       sectionCount: course._count.sections,
       sections: sectionsData,
-      progress: course.totalPages > 0
-        ? Math.round(
-            // Metin çıkarma %40, AI analiz %50, program %10
-            (course.status === "processing" && totalSections === 0
-              ? (course.processedPages / course.totalPages) * 40
-              : totalSections > 0
-                ? 40 + (processedSections / totalSections) * 50
-                : 0
-            ) + (course.status === "ready" ? 100 : 0)
-          )
-        : 0,
+      progress: computeProcessingProgress({
+        courseStatus: effectiveStatus,
+        totalPages: course.totalPages,
+        processedPages: course.processedPages,
+        totalSections,
+        processedSections,
+        currentMicroPhase,
+      }),
+      triggerDebounceRemainingMs: triggerDebounce.remainingMs,
+      triggerDebounceRetryAfterSeconds: triggerDebounce.retryAfterSeconds,
+      triggerDebounceUntil: triggerDebounce.debounceUntil,
     })
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })

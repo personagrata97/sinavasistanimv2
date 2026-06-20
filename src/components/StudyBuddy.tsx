@@ -5,7 +5,9 @@ import { motion, AnimatePresence } from "framer-motion"
 import { MessageSquare, X, Send, Loader2, Bot, Lightbulb, Target, ClipboardList } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 
-export default function StudyBuddy({ courseId }: { courseId: string }) {
+import { getStudyBuddyIntro } from "@/lib/program-catalog"
+
+export default function StudyBuddy({ courseId, isProfessional }: { courseId: string, isProfessional?: boolean }) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<{role: "user"|"model", content: string}[]>([])
   const [input, setInput] = useState("")
@@ -131,7 +133,7 @@ export default function StudyBuddy({ courseId }: { courseId: string }) {
                     <Bot className="w-8 h-8 text-indigo-400" />
                   </div>
                   <p className="font-bold text-white mb-2 text-lg">Nasıl Yardımcı Olabilirim?</p>
-                  <p className="text-xs mb-6 text-slate-400">Bu dersin tüm modüllerini okudum ve hafızama aldım. Bana şunları sorabilirsin:</p>
+                  <p className="text-xs mb-6 text-slate-400">{getStudyBuddyIntro(!!isProfessional)}</p>
                   <div className="text-left space-y-3 bg-white/[0.02] border border-white/5 p-4 rounded-xl">
                     <div className="flex gap-3 text-xs items-start">
                       <Lightbulb className="w-4 h-4 text-amber-400 mt-0.5" />

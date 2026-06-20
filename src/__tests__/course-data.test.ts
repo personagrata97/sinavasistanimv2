@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getCourseBySlug, getCourseByOrder, getExamConfig, getExamPartCourseSlugs, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES } from '@/lib/course-data'
+import { getCourseBySlug, getCourseByOrder, getExamConfig, getExamPartCourseSlugs, getZelihaKvkkChildCourses, getZelihaProgramGridSlugs, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, ZELIHA_COURSES } from '@/lib/course-data'
 
 describe('course-data', () => {
   describe('SPL_LEVEL_3_COURSES', () => {
@@ -159,6 +159,23 @@ describe('course-data', () => {
       expect(getExamPartCourseSlugs('spl-bagimsiz-denetim')).toHaveLength(5)
       expect(getExamPartCourseSlugs('masak')).toHaveLength(1)
       expect(getExamPartCourseSlugs('smmm')).toHaveLength(8)
+      expect(getExamPartCourseSlugs('zeliha-mevzuat')).toHaveLength(7)
+      expect(getExamPartCourseSlugs('zeliha-mevzuat')).toContain('zeliha-kvkk')
+      expect(getExamPartCourseSlugs('zeliha-mevzuat')).not.toContain('zeliha-kvkk-kanun')
+    })
+  })
+
+  describe('Zeliha KVKK gruplama', () => {
+    it('veritabanında 14 modül, ana gridde 7 kart olmalı', () => {
+      expect(ZELIHA_COURSES).toHaveLength(14)
+      expect(getZelihaProgramGridSlugs()).toHaveLength(7)
+      expect(getZelihaKvkkChildCourses()).toHaveLength(8)
+    })
+
+    it('KVKK alt modülleri ana gridden gizli olmalı', () => {
+      const hidden = ZELIHA_COURSES.filter(c => c.hiddenFromProgramGrid)
+      expect(hidden).toHaveLength(8)
+      expect(hidden.every(c => c.parentSlug === 'zeliha-kvkk')).toBe(true)
     })
   })
 
@@ -192,7 +209,7 @@ describe('course-data', () => {
     it('tüm kursları birleştirmeli', () => {
       expect(ALL_COURSES.length).toBe(
         SPL_LEVEL_3_COURSES.length + MASAK_COURSES.length + SPL_BD_COURSES.length +
-        CIA_COURSES.length + CISA_COURSES.length + SMMM_COURSES.length
+        CIA_COURSES.length + CISA_COURSES.length + SMMM_COURSES.length + ZELIHA_COURSES.length
       )
     })
 

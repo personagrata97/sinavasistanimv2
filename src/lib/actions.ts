@@ -1,12 +1,18 @@
 "use server"
 
+import { unstable_noStore as noStore } from "next/cache"
 import { prisma } from "./prisma"
-import { SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, getExamConfig } from "./course-data"
+import { SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, ZELIHA_COURSES, ALL_COURSES, getExamConfig } from "./course-data"
 import { ensureProgramsSeeded } from "./course-seed"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { answerSchema, reviewSchema } from "@/lib/validations"
 import { recalibrateStudyPlan, checkAndInjectMockExams } from "./dynamic-engine"
+import { filterProgramsForUser, parseAllowedProgramSlugs, type ProgramAccessContext } from "./program-access"
+import { courseHasUploadedPdf } from "./course-upload-meta"
+import { getStudyNotFoundMessage, getApprovedNotesNotFoundMessage } from "./program-catalog"
+import { cancelCourseProcessing, clearCancelSignal, clearHeartbeat } from "./process-registry"
+import { clearProcessTriggerDebounce } from "./course-processing-status"
 
 async function getSession() {
   return await getServerSession(authOptions)
@@ -87,13 +93,33 @@ export async function getUserStats() {
   return user
 }
 
+export async function getUserProgramAccess(): Promise<ProgramAccessContext> {
+  const session = await getServerSession(authOptions)
+  if (!session?.user?.id) {
+    return { role: "student", allowedProgramSlugs: null }
+  }
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { role: true, allowedProgramSlugs: true },
+  })
+  return {
+    role: user?.role ?? (session.user as { role?: string }).role ?? "student",
+    allowedProgramSlugs: parseAllowedProgramSlugs(user?.allowedProgramSlugs),
+  }
+}
+
+export async function getAccessibleProgramSlugs(): Promise<string[]> {
+  const ctx = await getUserProgramAccess()
+  return filterProgramsForUser(ctx).map(p => p.slug)
+}
+
 export async function getPrograms() {
   try {
-    // Yeni program/dersler mevcut DB'ye de eklensin (sadece boş DB'de değil)
     await initializeCourses()
-    return await prisma.program.findMany({
-      orderBy: { createdAt: "asc" }
-    })
+    const ctx = await getUserProgramAccess()
+    const allowedSlugs = new Set(filterProgramsForUser(ctx).map(p => p.slug))
+    const all = await prisma.program.findMany({ orderBy: { createdAt: "asc" } })
+    return all.filter(p => allowedSlugs.has(p.slug))
   } catch (error) {
     console.error("Failed to fetch programs:", error)
     return []
@@ -121,7 +147,7 @@ export async function getAllCourses() {
     })
 
     return courses.map(c => {
-      const staticInfo = SPL_LEVEL_3_COURSES.find(s => s.slug === c.slug)
+      const staticInfo = ALL_COURSES.find(s => s.slug === c.slug)
       return {
         id: c.id,
         name: c.name,
@@ -148,6 +174,7 @@ export async function getAllCourses() {
 }
 
 export async function getCourseBySlug(slug: string) {
+  noStore()
   try {
     await initializeCourses()
 
@@ -167,20 +194,29 @@ export async function getCourseBySlug(slug: string) {
 
     if (!course) return null
 
-    const staticInfo = SPL_LEVEL_3_COURSES.find(s => s.slug === slug)
+    const staticInfo = ALL_COURSES.find(s => s.slug === slug)
 
     let correctedStatus = course.status
-    if (course.status === "ready" && course._count.questions === 0 && course._count.flashcards === 0 && course.totalPages > 0) {
-      correctedStatus = "not_started"
-      await prisma.course.update({
-        where: { slug },
-        data: { status: "not_started" }
-      })
+    const hasPdf = courseHasUploadedPdf(course)
+    if (
+      course.status === "ready" &&
+      course._count.questions === 0 &&
+      course._count.flashcards === 0
+    ) {
+      correctedStatus = hasPdf ? "uploaded" : "not_started"
+      if (correctedStatus !== course.status) {
+        await prisma.course.update({
+          where: { slug },
+          data: { status: correctedStatus },
+        })
+      }
     }
 
     return {
       ...course,
       status: correctedStatus,
+      totalPages: course.totalPages,
+      pdfPath: course.pdfPath,
       icon: staticInfo?.icon || "📚",
       color: staticInfo?.color || "from-blue-600 to-indigo-700",
       estimatedPages: staticInfo?.estimatedPages || "150-300",
@@ -211,8 +247,13 @@ export async function reprocessCourse(slug: string) {
     const auth = await requireAdmin()
     if (!auth.authorized) return { error: auth.error }
 
-    const course = await prisma.course.findUnique({ where: { slug } })
-    if (!course) return { error: "Ders bulunamadı" }
+    const course = await prisma.course.findUnique({
+      where: { slug },
+      include: { program: { select: { slug: true } } },
+    })
+    if (!course) {
+      return { error: getStudyNotFoundMessage(slug.startsWith("zeliha-") ? "zeliha-mevzuat" : "") }
+    }
     if (!course.pdfPath) return { error: "PDF yüklenmemiş" }
 
     await prisma.flashcard.deleteMany({ where: { courseId: course.id } })
@@ -221,23 +262,18 @@ export async function reprocessCourse(slug: string) {
 
     await prisma.course.update({
       where: { slug },
-      data: { 
-        status: "not_started",
+      data: {
+        status: "uploaded",
         processedPages: 0,
-      }
+        updatedAt: new Date(),
+      },
     })
 
-    // Sinyal Gönder: Çalışan bir arka plan işçisi varsa hemen dursun (Kill Switch)
-    const globalAny = global as any;
-    if (!globalAny.cancelSignals) {
-      globalAny.cancelSignals = {};
-    }
-    globalAny.cancelSignals[course.name] = true;
-
-    // Bekleyen aktif process kilidini kaldır
-    if (globalAny.activeProcessing) {
-      globalAny.activeProcessing = globalAny.activeProcessing.filter((name: string) => name !== course.name);
-    }
+    // Eski işçiyi durdur; debounce/heartbeat temizle — sıfırdan tetikleme engellenmesin
+    cancelCourseProcessing(slug, course.name)
+    clearCancelSignal(slug, course.name)
+    clearHeartbeat(slug)
+    await clearProcessTriggerDebounce(slug)
 
     return { success: true }
   } catch (error: any) {
@@ -381,16 +417,33 @@ export async function refineSectionNotesAction(sectionId: string) {
 
     // Generate refined notes
     const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`
+    const staticMeta = ALL_COURSES.find((c) => c.slug === course.slug)
+    const { getDocumentNoteInstructions, getDocumentProcessingProfile } = await import(
+      "./document-processing-profile"
+    )
+    const documentProfile = getDocumentProcessingProfile({
+      slug: course.slug,
+      name: course.name,
+      sourceKind: staticMeta?.sourceKind,
+      sourceKindLabel: staticMeta?.sourceKindLabel,
+      gridGroup: staticMeta?.gridGroup,
+      programSlug,
+      aiMode,
+      totalPages: course.totalPages ?? 0,
+    })
     const notes = await generateCourseNotes(
       enrichedContent, section.title, fullCourseName, course.userLevel,
       aiMode, section.pageStart, section.pageEnd,
       false, 0, 1, undefined, sourceMode,
+      getDocumentNoteInstructions(documentProfile),
+      documentProfile.documentType,
     )
 
     // Verify notes - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
     // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
     const verification = await verifyNotesAgainstSource(
       section.rawContent, notes, section.title, fullCourseName, sourceMode,
+      documentProfile.documentType,
     )
 
     // Save back to DB
@@ -1395,7 +1448,7 @@ export async function generateMoreContentAction(courseSlug: string, contentType:
       where: { slug: courseSlug },
       include: { program: true, sections: true }
     })
-    if (!course) throw new Error("Ders bulunamadı")
+    if (!course) throw new Error(getStudyNotFoundMessage(courseSlug.startsWith("zeliha-") ? "zeliha-mevzuat" : ""))
     
     const { generateQuestions, generateFlashcards, validateQuestionsWithSolver, validateFlashcardsWithSolver } = await import("./ai-service")
     
@@ -1407,7 +1460,7 @@ export async function generateMoreContentAction(courseSlug: string, contentType:
     ).filter(s => s.notes && s.notes.length > 500 && (s.verificationScore ?? 0) >= 98)
 
     if (approvedSections.length === 0) {
-      return { success: false, message: "Onaylı ders notu bulunamadı. Önce bölüm notları %98+ skorla üretilmeli." }
+      return { success: false, message: getApprovedNotesNotFoundMessage(course.program?.slug ?? "") }
     }
     
     let totalGenerated = 0

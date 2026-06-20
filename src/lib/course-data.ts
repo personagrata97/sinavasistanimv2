@@ -8,6 +8,24 @@ export interface CourseInfo {
   icon: string // emoji
   color: string // tailwind gradient
   estimatedPages: string
+  /** PDF yükleme rehberi — önerilen dosya adı */
+  uploadFileName?: string
+  /** PDF içeriğinde olması gerecek mevzuat listesi */
+  uploadGuide?: string
+  /** Program gridinde grup başlığı (ör. KVKK alt bölümü) */
+  gridGroup?: string
+  /** Kart rozeti: dış / iç mevzuat ayrımı */
+  sourceKindLabel?: string
+  /** İşleme profili: prosedür, politika, dış mevzuat vb. */
+  sourceKind?: "internal-procedure" | "internal-policy" | "external-law" | "external-regulation"
+  /** Ana program gridinde gizlenir; grup alt sayfasında gösterilir */
+  hiddenFromProgramGrid?: boolean
+  /** Üst grup kartı slug'ı (ör. zeliha-kvkk) */
+  parentSlug?: string
+  /** Sanal grup kartı — veritabanında ders kaydı yok */
+  isGroupLanding?: boolean
+  /** Grup alt sayfası yolu (ör. kvkk) */
+  groupPath?: string
 }
 
 export const SPL_LEVEL_3_COURSES: CourseInfo[] = [
@@ -419,6 +437,233 @@ export const SMMM_COURSES: CourseInfo[] = [
   },
 ]
 
+/** Zeliha KVKK grup kartı — ana gridde tek kart, alt sayfada 8 modül */
+export const ZELIHA_KVKK_GROUP_SLUG = "zeliha-kvkk"
+
+export const ZELIHA_KVKK_UMBRELLA: CourseInfo = {
+  name: "Kişisel Verilerin Korunması (KVKK)",
+  slug: ZELIHA_KVKK_GROUP_SLUG,
+  order: 7,
+  description:
+    "6698 sayılı Kanun, yönetmelik ve tebliğler (dış mevzuat) ile kurum prosedürü ve politikası (iç mevzuat). Toplam 8 alt modül.",
+  icon: "ShieldCheck",
+  color: "from-fuchsia-600 to-rose-700",
+  estimatedPages: "150-250",
+  isGroupLanding: true,
+  groupPath: "kvkk",
+}
+
+/** Zeliha — kurumsal mevzuat gelişim alanı (Haziran 2026 güncel kaynak rehberi) */
+export const ZELIHA_COURSES: CourseInfo[] = [
+  {
+    name: "Bankacılık Kanunu ve Temel Düzenlemeler",
+    slug: "zeliha-bankacilik-kanunu",
+    order: 1,
+    description: "5411 sayılı Kanun, usul-esas yönetmeliği ve bankacılık düzenlemeleri.",
+    icon: "Landmark",
+    color: "from-rose-600 to-pink-700",
+    estimatedPages: "150-250",
+    uploadFileName: "01-Bankacilik-Kanunu-5411.pdf",
+    uploadGuide:
+      "5411 sayılı Bankacılık Kanunu (güncel RG metni), Bankacılık Kanununa İlişkin Usul ve Esaslar Hakkında Yönetmelik (RG 1/11/2006-26333 ve güncellemeleri), Zorunlu Karşılıklar Hakkında 2013/15 Sayılı Tebliğ, Zorunlu Karşılıklar Uygulama Talimatı (TCMB — güncel metinler, mevzuat.gov.tr).",
+  },
+  {
+    name: "Kambiyo Mevzuatı",
+    slug: "zeliha-kambiyo",
+    order: 2,
+    description: "1567 sayılı Kambiyo Kanunu, 32 sayılı Karar ve kambiyo tebliğleri.",
+    icon: "Scale",
+    color: "from-amber-600 to-orange-700",
+    estimatedPages: "100-180",
+    uploadFileName: "02-Kambiyo-1567-Karar32.pdf",
+    uploadGuide:
+      "1567 sayılı Kambiyo Kanunu, 32 sayılı Karar (Kambiyo Kararı), TCMB ve Hazine ve Maliye Bakanlığı kambiyo tebliğleri (2026 güncel metinler — mevzuat.gov.tr).",
+  },
+  {
+    name: "İthalat Rejimi",
+    slug: "zeliha-ithalat-rejimi",
+    order: 3,
+    description: "2026 yılı İthalat Rejimi Kararı ve ithalat usul-esasları.",
+    icon: "Globe",
+    color: "from-sky-600 to-blue-700",
+    estimatedPages: "80-150",
+    uploadFileName: "03-Ithalat-Rejimi-Karari-2026.pdf",
+    uploadGuide:
+      "2026 yılı İthalat Rejimi Kararı (Ticaret Bakanlığı — yürürlükteki yıl kararı), İthalat Usul ve Esasları Hakkında Yönetmelik, ilgili ek listeler ve istisna tebliğleri.",
+  },
+  {
+    name: "İhracat Rejimi",
+    slug: "zeliha-ihracat-rejimi",
+    order: 4,
+    description: "2026 yılı İhracat Rejimi Kararı ve ihracat yönetmelikleri.",
+    icon: "TrendingUp",
+    color: "from-emerald-600 to-teal-700",
+    estimatedPages: "80-150",
+    uploadFileName: "04-Ihracat-Rejimi-Karari-2026.pdf",
+    uploadGuide:
+      "2026 yılı İhracat Rejimi Kararı, İhracat Yönetmeliği, ihracat/alıcı kredisi ve ihracat destekleri mevzuatıyla kesişen hükümler (varsa aynı PDF'e ekleyin).",
+  },
+  {
+    name: "Gümrük Kanunu ve Dış Ticaret Temeli",
+    slug: "zeliha-gumruk",
+    order: 5,
+    description: "4458 sayılı Gümrük Kanunu ve dış ticaret kanuni çerçevesi.",
+    icon: "ScrollText",
+    color: "from-violet-600 to-purple-700",
+    estimatedPages: "120-200",
+    uploadFileName: "05-Gumruk-Kanunu-4458.pdf",
+    uploadGuide:
+      "4458 sayılı Gümrük Kanunu (güncel), Gümrük Yönetmeliği'nden sık kullanılan bölümler, 1567/Dış Ticaret Kanunu referans hükümleri.",
+  },
+  {
+    name: "Dış Ticaret İzleme (DİR, Birim Kıymet, Transfer Fiyatı)",
+    slug: "zeliha-dis-ticaret-izleme",
+    order: 6,
+    description: "DİR, birim kıymet, transfer fiyatlandırması ve idari yaptırımlar.",
+    icon: "BarChart3",
+    color: "from-cyan-600 to-indigo-700",
+    estimatedPages: "100-180",
+    uploadFileName: "06-Dis-Ticaret-Izleme-DIR-Transfer-Fiyat.pdf",
+    uploadGuide:
+      "Dış Ticarette İzleme Rejimi (DİR) mevzuatı, birim kıymet/IBKB tebliğleri, transfer fiyatlandırması (GVK md. 13, BKK ve tebliğler), kambiyo ihlali idari yaptırımları.",
+  },
+  {
+    name: "Kişisel Verilerin Korunması Kanunu",
+    slug: "zeliha-kvkk-kanun",
+    order: 7,
+    description: "Kişisel Verilerin Korunması Kanunu (6698 sayılı) — dış mevzuat (Resmi Gazete / mevzuat.gov.tr).",
+    icon: "ShieldCheck",
+    color: "from-fuchsia-600 to-rose-700",
+    estimatedPages: "40-80",
+    uploadFileName: "07-KVKK-Kanun-6698.pdf",
+    uploadGuide:
+      "6698 sayılı Kişisel Verilerin Korunması Kanunu (güncel metin). Kaynak: kvkk.gov.tr / mevzuat.gov.tr. İndirilenler: kvkk kanun.pdf",
+    gridGroup: "KVKK — Dış mevzuat",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Kişisel Verilerin Silinmesi, Yok Edilmesi veya Anonim Hale Getirilmesi Hakkında Yönetmelik",
+    slug: "zeliha-kvkk-silinme-yonetmelik",
+    order: 8,
+    description: "Veri saklama süresi dolunca silme, yok etme ve anonimleştirme kuralları (28.10.2017).",
+    icon: "ScrollText",
+    color: "from-fuchsia-600 to-rose-700",
+    estimatedPages: "15-30",
+    uploadFileName: "08-KVKK-Silinme-Yonetmelik.pdf",
+    uploadGuide:
+      "Kişisel Verilerin Silinmesi, Yok Edilmesi veya Anonim Hale Getirilmesi Hakkında Yönetmelik (RG 28.10.2017). Kaynak: kvkk.gov.tr / mevzuat.gov.tr.",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Veri Sorumluları Sicili Hakkında Yönetmelik",
+    slug: "zeliha-kvkk-verbis-yonetmelik",
+    order: 9,
+    description: "Veri sorumluları siciline (VERBİS) kayıt yükümlülüğü, beyan ve güncelleme usulleri (28.04.2019).",
+    icon: "ClipboardList",
+    color: "from-pink-600 to-fuchsia-700",
+    estimatedPages: "20-40",
+    uploadFileName: "09-KVKK-VERBIS-Yonetmelik.pdf",
+    uploadGuide:
+      "Veri Sorumluları Sicili Hakkında Yönetmelik (RG 28.04.2019). Veri sorumluları sicili (VERBİS) kayıt ve beyan yükümlülükleri bu yönetmelikte düzenlenir. Kaynak: kvkk.gov.tr / mevzuat.gov.tr.",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Kişisel Verilerin Yurt Dışına Aktarılmasına İlişkin Usul ve Esaslar Hakkında Yönetmelik",
+    slug: "zeliha-kvkk-yurt-disi-aktarim-yonetmelik",
+    order: 10,
+    description: "Yurt dışına veri aktarımı, yeterlilik kararı ve taahhütname usulleri (10.07.2024).",
+    icon: "Globe",
+    color: "from-rose-600 to-pink-700",
+    estimatedPages: "25-45",
+    uploadFileName: "10-KVKK-Yurt-Disi-Aktarim-Yonetmelik.pdf",
+    uploadGuide:
+      "Kişisel Verilerin Yurt Dışına Aktarılmasına İlişkin Usul ve Esaslar Hakkında Yönetmelik (RG 10.07.2024). Kaynak: kvkk.gov.tr / mevzuat.gov.tr.",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Aydınlatma Yükümlülüğünün Yerine Getirilmesinde Uyulacak Usul ve Esaslar Hakkında Tebliğ",
+    slug: "zeliha-kvkk-aydinlatma-teblig",
+    order: 11,
+    description: "Veri sahibine bilgilendirme metni, içerik ve iletim kuralları (10.03.2018).",
+    icon: "ScrollText",
+    color: "from-fuchsia-600 to-rose-700",
+    estimatedPages: "10-20",
+    uploadFileName: "11-KVKK-Aydinlatma-Teblig.pdf",
+    uploadGuide:
+      "Aydınlatma Yükümlülüğünün Yerine Getirilmesinde Uyulacak Usul ve Esaslar Hakkında Tebliğ (RG 10.03.2018). Kaynak: kvkk.gov.tr / mevzuat.gov.tr.",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Veri Sorumlusuna Başvuru Usul ve Esasları Hakkında Tebliğ",
+    slug: "zeliha-kvkk-basvuru-teblig",
+    order: 12,
+    description: "Veri sahibi başvuru yolları, süreler ve cevaplama kuralları (10.03.2018).",
+    icon: "ScrollText",
+    color: "from-pink-600 to-fuchsia-700",
+    estimatedPages: "10-20",
+    uploadFileName: "12-KVKK-Basvuru-Teblig.pdf",
+    uploadGuide:
+      "Veri Sorumlusuna Başvuru Usul ve Esasları Hakkında Tebliğ (RG 10.03.2018). Kaynak: kvkk.gov.tr / mevzuat.gov.tr.",
+    sourceKindLabel: "Dış mevzuat",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Kişisel Verilerin Korunması Prosedürü",
+    slug: "zeliha-kvkk-prosedur",
+    order: 13,
+    description: "Kurum içi prosedür — veri işleme, saklama ve başvuru süreçleri.",
+    icon: "ClipboardList",
+    color: "from-pink-600 to-fuchsia-700",
+    estimatedPages: "30-60",
+    uploadFileName: "13-KVKK-Prosedur.pdf",
+    uploadGuide:
+      "Şirket Kişisel Verilerin Korunması Prosedürü (güncel onaylı metin). İndirilenler: kişisel verilerin korunması prosedürü.pdf",
+    gridGroup: "KVKK — İç mevzuat",
+    sourceKindLabel: "İç mevzuat",
+    sourceKind: "internal-procedure",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+  {
+    name: "Kişisel Verilerin Korunması Politikası",
+    slug: "zeliha-kvkk-politika",
+    order: 14,
+    description: "Kurum içi politika — veri sorumlusu taahhütleri ve ilkeler.",
+    icon: "ScrollText",
+    color: "from-rose-600 to-pink-700",
+    estimatedPages: "20-40",
+    uploadFileName: "14-KVKK-Politika.pdf",
+    uploadGuide:
+      "Şirket Kişisel Verilerin Korunması Politikası (güncel onaylı metin). İndirilenler: kişisel verilerin korunması politikası.pdf",
+    sourceKindLabel: "İç mevzuat",
+    sourceKind: "internal-policy",
+    parentSlug: ZELIHA_KVKK_GROUP_SLUG,
+    hiddenFromProgramGrid: true,
+  },
+]
+
+/** Zeliha ana program gridinde görünen modüller (6 mevzuat + 1 KVKK grup kartı) */
+export function getZelihaProgramGridSlugs(): string[] {
+  const visible = ZELIHA_COURSES.filter(c => !c.hiddenFromProgramGrid).map(c => c.slug)
+  return [...visible, ZELIHA_KVKK_GROUP_SLUG]
+}
+
+/** KVKK alt sayfasındaki 8 modül */
+export function getZelihaKvkkChildCourses(): CourseInfo[] {
+  return ZELIHA_COURSES.filter(c => c.parentSlug === ZELIHA_KVKK_GROUP_SLUG)
+}
+
 export const ALL_COURSES = [
   ...SPL_LEVEL_3_COURSES,
   ...MASAK_COURSES,
@@ -426,6 +671,7 @@ export const ALL_COURSES = [
   ...CIA_COURSES,
   ...CISA_COURSES,
   ...SMMM_COURSES,
+  ...ZELIHA_COURSES,
 ]
 
 export function getCourseBySlug(slug: string): CourseInfo | undefined {
@@ -462,6 +708,8 @@ export function getExamPartCourseSlugs(programSlug: string): string[] {
       return CISA_COURSES.map(c => c.slug)
     case "smmm":
       return SMMM_COURSES.map(c => c.slug)
+    case "zeliha-mevzuat":
+      return getZelihaProgramGridSlugs()
     default:
       return []
   }

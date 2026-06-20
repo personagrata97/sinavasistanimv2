@@ -8,7 +8,11 @@
 
 import { getExamPartCourseSlugs } from "./course-data"
 
-export type ProgramAiMode = "finance" | "law" | "international_audit" | "language" | "general"
+export type ProgramAiMode = "finance" | "law" | "international_audit" | "language" | "general" | "mevzuat"
+
+export type ProgramKind = "exam" | "professional"
+
+export type ProgramAudience = "public" | "restricted"
 
 export type ProgramIconName =
   | "Shield"
@@ -17,6 +21,7 @@ export type ProgramIconName =
   | "Award"
   | "ShieldCheck"
   | "ClipboardList"
+  | "Heart"
 
 export interface ProgramTheme {
   text: string
@@ -41,6 +46,10 @@ export interface ProgramCatalogEntry {
   theme: ProgramTheme
   ready: boolean
   order: number
+  /** exam = sınav hazırlığı, professional = kişisel gelişim (sınav tarihi yok) */
+  kind?: ProgramKind
+  /** restricted = yalnızca allowedProgramSlugs veya admin */
+  audience?: ProgramAudience
 }
 
 export const PROGRAM_CATALOG: ProgramCatalogEntry[] = [
@@ -153,6 +162,27 @@ export const PROGRAM_CATALOG: ProgramCatalogEntry[] = [
     order: 6,
   },
   {
+    slug: "zeliha-mevzuat",
+    displayName: "Zeliha — Mevzuat Gelişim Alanı",
+    subtitle: "İhracat kredileri · Bankacılık · Dış ticaret · KVKK · Kişisel gelişim",
+    dbName: "Zeliha — Mevzuat Gelişim Alanı",
+    dbDescription:
+      "İhracat, dış ticaret ve bankacılık mevzuatı uzmanlığı için kanun, rejim, kambiyo, KVKK ve ilgili düzenlemeler. Sınav tarihi yok; not, kart, soru ve konu testi.",
+    aiMode: "mevzuat",
+    icon: "Heart",
+    theme: {
+      text: "text-rose-400",
+      border: "hover:border-rose-500/30",
+      cta: "text-rose-400",
+      gradient: "from-rose-900/40 to-slate-900/40",
+      bgAccent: "bg-rose-500/10",
+    },
+    ready: true,
+    order: 7,
+    kind: "professional",
+    audience: "restricted",
+  },
+  {
     slug: "yds",
     displayName: "YDS — Yabancı Dil Bilgisi Seviye Tespit Sınavı",
     subtitle: "ÖSYM · YDS / YÖKDİL",
@@ -222,6 +252,10 @@ export function getProgramCardUnit(programSlug: string): ProgramCardUnit {
 
 /** Program sayfası üst sayacı — kart birimine göre */
 export function getProgramGridLabel(programSlug: string): string {
+  if (programSlug === "zeliha-mevzuat") {
+    const count = getExamPartCourseSlugs(programSlug).length
+    return `${count} Mevzuat Modülü`
+  }
   const partSlugs = getExamPartCourseSlugs(programSlug)
   const count = partSlugs.length
   const unit = getProgramCardUnit(programSlug)
@@ -233,6 +267,7 @@ export function getProgramGridLabel(programSlug: string): string {
 
 /** Tek bir sınav kartının sol üst rozeti */
 export function getCourseCardBadge(programSlug: string | undefined, order: number): string {
+  if (programSlug === "zeliha-mevzuat") return `Modül ${order}`
   switch (programSlug) {
     case "cia":
       return `Parça ${order}`
@@ -247,6 +282,7 @@ export function getCourseCardBadge(programSlug: string | undefined, order: numbe
 
 /** Kart altındaki gezinme metni */
 export function getCourseCardCta(programSlug: string | undefined): string {
+  if (programSlug === "zeliha-mevzuat") return "Modüle Git"
   switch (programSlug) {
     case "cia":
       return "Parçaya Git"
@@ -255,4 +291,120 @@ export function getCourseCardCta(programSlug: string | undefined): string {
     default:
       return "Derse Git"
   }
+}
+
+export function isProfessionalProgram(programSlug: string): boolean {
+  return getProgramBySlug(programSlug)?.kind === "professional"
+}
+
+/** Sınav hazırlığı vs mevzuat gelişim alanı — kullanıcıya görünen metinler */
+export function getStudyNotFoundMessage(programSlug: string): string {
+  return isProfessionalProgram(programSlug) ? "Çalışma bulunamadı" : "Ders bulunamadı"
+}
+
+export function getStudyListBackLabel(programSlug: string): string {
+  return isProfessionalProgram(programSlug) ? "Modül listesine dön" : "Ders listesine dön"
+}
+
+export function getUploadModalDescription(programSlug: string): string {
+  return isProfessionalProgram(programSlug)
+    ? "Bu çalışma için kaynak PDF dosyasını buradan yükleyebilir veya değiştirebilirsiniz."
+    : "Ders için kaynak PDF dosyasını buradan yükleyebilir veya değiştirebilirsiniz."
+}
+
+export function getPdfPendingLabel(programSlug: string): string {
+  return isProfessionalProgram(programSlug) ? "Kaynak PDF yüklenecek" : "Ders notu yüklenecek"
+}
+
+export function getCancelProcessMessage(programSlug: string): string {
+  return isProfessionalProgram(programSlug)
+    ? "Dikkat! Süreci iptal ederseniz, şimdiye kadar başarıyla üretilmiş olan tüm çalışma notları, sorular ve flashcardlar kalıcı olarak silinecektir.\n\nBu işlem geri alınamaz!"
+    : "Dikkat! Süreci iptal ederseniz, şimdiye kadar başarıyla üretilmiş olan tüm ders notları, sorular ve flashcardlar kalıcı olarak silinecektir.\n\nBu işlem geri alınamaz!"
+}
+
+export function getResetProcessMessage(programSlug: string): string {
+  return isProfessionalProgram(programSlug)
+    ? "Eski çalışma notları, sorular ve flashcardlar tamamen silinerek işleme sıfırdan başlatılacaktır. Bu işlem geri alınamaz!"
+    : "Eski ders notları, sorular ve flashcardlar tamamen silinerek işleme sıfırdan başlatılacaktır. Bu işlem geri alınamaz!"
+}
+
+export function getPdfUploadHint(programSlug: string): string {
+  return isProfessionalProgram(programSlug)
+    ? "Henüz PDF yüklenmedi. Yukarıdaki PDF kartından kaynak belgeyi yükle."
+    : "Henüz PDF yüklenmedi. Yukarıdaki PDF kartından ders notunu yükle."
+}
+
+export function getMaterialsPreparingDescription(isProfessional: boolean): string {
+  return isProfessional
+    ? "Bu çalışmanın materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+    : "Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+}
+
+export function getDefaultNoteTitle(isProfessional?: boolean): string {
+  return isProfessional ? "Çalışma Notu" : "Ders Notu"
+}
+
+export function getNoNotesToast(isProfessional: boolean): string {
+  return isProfessional ? "Henüz çalışma notu yok!" : "Henüz ders notu yok!"
+}
+
+export function getStudyBuddyIntro(isProfessional: boolean): string {
+  return isProfessional
+    ? "Bu çalışmanın tüm bölümlerini okudum ve hafızama aldım. Bana şunları sorabilirsin:"
+    : "Bu dersin tüm modüllerini okudum ve hafızama aldım. Bana şunları sorabilirsin:"
+}
+
+export function getChatNotReadyReply(isProfessional: boolean): string {
+  return isProfessional
+    ? "Bu çalışmanın içerikleri henüz hazır değil. Önce PDF yükleyip işlenmesini beklemeniz gerekiyor. İçerikler hazır olduğunda benimle sohbet edebilirsiniz!"
+    : "Bu dersin içerikleri henüz hazır değil. Önce PDF yükleyip işlenmesini beklemeniz gerekiyor. İçerikler hazır olduğunda benimle sohbet edebilirsiniz!"
+}
+
+export function getApprovedNotesNotFoundMessage(programSlug: string): string {
+  return isProfessionalProgram(programSlug)
+    ? "Onaylı çalışma notu bulunamadı. Önce bölüm notları %98+ skorla üretilmeli."
+    : "Onaylı ders notu bulunamadı. Önce bölüm notları %98+ skorla üretilmeli."
+}
+
+/** İşleme durumu — Aşama 2 not üretimi (SPL: Ders / Zeliha: Çalışma) */
+export function getNotesGenerationPhaseLabel(
+  isProfessional: boolean,
+  sectionPrefix: string,
+  attempt: number,
+): string {
+  const phaseText = isProfessional ? "Çalışma Notları üretiliyor" : "Ders Notları Üretiliyor"
+  return `${sectionPrefix}. Aşama 2: ${phaseText} (Deneme #${attempt})`
+}
+
+/** Veritabanındaki eski SPL metinlerini profesyonel programda kullanıcıya gösterirken düzeltir */
+export function adaptProcessingPhaseLabel(phaseLabel: string, programSlug: string): string {
+  if (!phaseLabel || !isProfessionalProgram(programSlug)) return phaseLabel
+  return phaseLabel
+    .replace(/Ders Notları Üretiliyor/g, "Çalışma Notları üretiliyor")
+    .replace(/Ders Notları/g, "Çalışma Notları")
+    .replace(/Ders notu üretimi/gi, "Çalışma notu üretimi")
+    .replace(/ders notu üretiliyor/gi, "çalışma notu üretiliyor")
+}
+
+type ProcessLabelCourse = {
+  status?: string
+  _count?: { questions?: number; flashcards?: number }
+  sections?: unknown[]
+}
+
+/** PDF kartı ve banner — tutarlı işlem butonu metni */
+export function getProcessButtonLabel(course: ProcessLabelCourse, processLock: boolean): string {
+  if (processLock) return "Çalışıyor..."
+  if (course.status === "ready" || course.status === "completed") return "Yeniden Tara"
+  const hasContent =
+    (course._count?.questions ?? 0) > 0 ||
+    (course._count?.flashcards ?? 0) > 0 ||
+    (course.sections?.length ?? 0) > 0
+  if (!hasContent && course.status === "uploaded") return "İşleme Başlat"
+  return "Devam Ettir"
+}
+
+export function getProcessBannerHint(course: ProcessLabelCourse = {}): string {
+  const label = getProcessButtonLabel(course, false)
+  return `İçerik oluşturmak için PDF kartındaki "${label}" butonuna bas.`
 }

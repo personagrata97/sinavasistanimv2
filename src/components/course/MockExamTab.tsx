@@ -11,6 +11,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import dynamic from "next/dynamic"
 import { EmptyState, LoadingSkeleton, cleanExplanationText, formatMockExamQuestionText } from "./shared"
+import { getMaterialsPreparingDescription } from "@/lib/program-catalog"
 import { Tooltip } from "@/components/ui/shared"
 import { toast } from "sonner"
 import {
@@ -24,7 +25,7 @@ const ProgressChart = dynamic(() => import("@/components/ProgressChart"), { ssr:
 
 type ExamState = "setup" | "running" | "results"
 
-export default function MockExamTab({ slug, programSlug, courseName, pastExamResults, onReloadCourse, processingStatus }: { slug: string, programSlug: string, courseName?: string, pastExamResults?: any[], onReloadCourse?: () => void, processingStatus?: any }) {
+export default function MockExamTab({ slug, programSlug, courseName, pastExamResults, onReloadCourse, processingStatus, isProfessional }: { slug: string, programSlug: string, courseName?: string, pastExamResults?: any[], onReloadCourse?: () => void, processingStatus?: any, isProfessional?: boolean }) {
   const [examState, setExamState] = useState<ExamState>("setup")
   const [questions, setQuestions] = useState<any[]>([])
   const [allQuestions, setAllQuestions] = useState<any[]>([])
@@ -331,7 +332,7 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
           <EmptyState
             tabId="mock_exam"
             title="İçerik Hazırlanıyor"
-            description="Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+            description={getMaterialsPreparingDescription(!!isProfessional)}
           />
         ) : (
           programSlug === "masak" ? (

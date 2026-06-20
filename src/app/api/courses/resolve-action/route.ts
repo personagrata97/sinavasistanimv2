@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
     fetch(`${baseUrl}/api/courses/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: section.course.slug })
+        body: JSON.stringify({ slug: section.course.slug, userInitiated: true, source: "admin_resolve" })
     }).catch(e => console.error("Auto trigger failed", e));
 
     return NextResponse.json({ success: true });

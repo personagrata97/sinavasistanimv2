@@ -12,8 +12,18 @@ export const COURSE_TABS = [
   { id: "coverage", label: "Kapsam", icon: BarChart3 },
   { id: "mock_exam", label: "Deneme", icon: Clock },
   { id: "achievements", label: "Rozet", icon: Trophy },
-  { id: "goals", label: "Program", icon: CalendarDays }
+  { id: "goals", label: "Program", icon: CalendarDays },
 ]
+
+/** Sınav hazırlığı vs kişisel gelişim (Zeliha) sekmeleri */
+export function getCourseTabs(isProfessional: boolean) {
+  if (!isProfessional) return COURSE_TABS
+  return COURSE_TABS.filter(t => t.id !== "goals").map(t => {
+    if (t.id === "mock_exam") return { ...t, label: "Konu Testi" }
+    if (t.id === "notes") return { ...t, label: "Çalışma Notları" }
+    return t
+  })
+}
 
 // ==================== EMPTY STATE ====================
 export function EmptyState({ tabId, icon: IconFallback, title, description, action }: { tabId?: string, icon?: any, title: string, description: string, action?: React.ReactNode }) {
@@ -155,7 +165,8 @@ export function Modal({
 }
 
 // ==================== FORMAT TITLE ====================
-export const formatTitle = (title: string, index?: number, notes?: string, moduleName?: string) => {
+export const formatTitle = (title: string, index?: number, notes?: string, moduleName?: string, isProfessional?: boolean) => {
+  const defaultNoteTitle = isProfessional ? "Çalışma Notu" : "Ders Notu"
   const isGeneric = (str: string) => {
     if (!str) return true;
     const lower = str.toLocaleLowerCase('tr-TR');
@@ -208,12 +219,12 @@ export const formatTitle = (title: string, index?: number, notes?: string, modul
       }
     }
     if (!found) {
-      formatted = index !== undefined ? `Ünite ${index + 1}` : "Ders Notu";
+      formatted = index !== undefined ? `Ünite ${index + 1}` : defaultNoteTitle;
     }
   }
   // 4. Fallback to index or default
   else {
-    formatted = index !== undefined ? `Ünite ${index + 1}` : "Ders Notu";
+    formatted = index !== undefined ? `Ünite ${index + 1}` : defaultNoteTitle;
   }
 
   // Sadece MASAK gibi gerçek Modül sistemlerinde parantez içi ekini göster (Bilgi Sistemleri Güvenliği gibi derslerde çirkin mükerrerliği önler)

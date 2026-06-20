@@ -1,5 +1,6 @@
 import PDFParser from "pdf2json"
 import axios from "axios"
+import { logDirectGeminiApiCall } from "@/lib/ai-service"
 
 // pdf2json ile metin çıkarma - pdfjs-dist'ten çok daha güvenilir
 // PDF'teki her sayfanın metnini ayrı ayrı çıkarır
@@ -119,8 +120,134 @@ export async function extractAllText(buffer: Buffer): Promise<string[]> {
 /** Taranmış PDF bölümlerinde OCR tamamlanana kadar kullanılan geçici işaret */
 export const SCANNED_PDF_PENDING_OCR = "[SCANNED_PDF_PENDING_OCR]"
 
+export const MARKDOWN_OCR_SUCCESS_PREFIX = "[MARKDOWN_OCR_SUCCESS]"
+
+/** Görsel OCR gerçekten tamamlandı — yalnızca extractPerfectMarkdownOCR sonunda damgalanır */
+export const VISUAL_OCR_COMPLETE_PREFIX = "[VISUAL_OCR_COMPLETE]"
+
+/** Devam Ettir'de yeniden OCR başlatılmaması için minimum anlamlı metin eşiği */
+export const MIN_VALID_RAW_CONTENT_FOR_REOCR_SKIP = 500
+
+/** Aranabilir PDF: toplam metin eşiği (pdf2json yerel çıkarma) */
+export const SEARCHABLE_PDF_MIN_TOTAL_CHARS = 500
+
+/** Aranabilir PDF: sayfa başına ortalama metin eşiği */
+export const SEARCHABLE_PDF_MIN_CHARS_PER_PAGE = 50
+
+/** Günlükte görünen net mesaj — yerel metin katmanı var; görsel okuma ayrıca yapılır */
+export const NATIVE_TEXT_LOG_MESSAGE =
+  "PDF aranabilir — yerel metin katmanı mevcut, görsel okuma arka planda yapılacak"
+
+export interface PdfSearchabilityResult {
+  isSearchable: boolean
+  isNonSearchable: boolean
+  isPartiallySearchable: boolean
+  totalChars: number
+  avgCharsPerPage: number
+  nonEmptyPages: number
+  message: string | null
+}
+
+/**
+ * PDF aranabilir mi? Yerel metin katmanından yeterli karakter çıkıyorsa evet —
+ * yükleme kapısı geçer; görsel okuma (extractPerfectMarkdownOCR) yine de çalışır (şema/resim için).
+ */
+export function assessPdfSearchability(pageTexts: string[]): PdfSearchabilityResult {
+  const totalPages = pageTexts.length
+  const totalChars = pageTexts.reduce((sum, t) => sum + t.length, 0)
+  const nonEmptyPages = pageTexts.filter((t) => t.length > 20).length
+  const avgCharsPerPage = totalPages > 0 ? totalChars / totalPages : 0
+
+  if (totalPages > 0 && totalChars < SEARCHABLE_PDF_MIN_TOTAL_CHARS) {
+    return {
+      isSearchable: false,
+      isNonSearchable: true,
+      isPartiallySearchable: false,
+      totalChars,
+      avgCharsPerPage,
+      nonEmptyPages,
+      message: `Bu PDF'den metin çıkarılamadı (${totalChars} karakter). Taranmış/görüntü PDF olabilir. Lütfen metin tabanlı (searchable) bir PDF yükleyin veya OCR işlemi uygulayın.`,
+    }
+  }
+
+  if (totalPages > 5 && nonEmptyPages < totalPages * 0.3) {
+    return {
+      isSearchable: false,
+      isNonSearchable: false,
+      isPartiallySearchable: true,
+      totalChars,
+      avgCharsPerPage,
+      nonEmptyPages,
+      message: `PDF'in ${totalPages} sayfasından sadece ${nonEmptyPages} tanesinde metin bulundu. Bazı sayfalar taranmış görüntü olabilir.`,
+    }
+  }
+
+  const meetsPerPage =
+    totalPages <= 1 || avgCharsPerPage >= SEARCHABLE_PDF_MIN_CHARS_PER_PAGE
+  const isSearchable =
+    totalChars >= SEARCHABLE_PDF_MIN_TOTAL_CHARS && meetsPerPage
+
+  return {
+    isSearchable,
+    isNonSearchable: false,
+    isPartiallySearchable: !isSearchable,
+    totalChars,
+    avgCharsPerPage,
+    nonEmptyPages,
+    message: null,
+  }
+}
+
+/** Bölüm sayfa aralığındaki yerel metni birleştirir (Gemini OCR yerine) */
+export function joinPageTextsForRange(
+  pageTexts: string[],
+  pageStart: number,
+  pageEnd: number,
+): string {
+  const start = Math.max(0, pageStart - 1)
+  const end = Math.min(pageTexts.length, pageEnd)
+  return pageTexts.slice(start, end).join("\n\n")
+}
+
 export function isPendingOcrContent(content: string): boolean {
   return content.includes(SCANNED_PDF_PENDING_OCR)
+}
+
+export function hasOcrSuccessFlag(content: string): boolean {
+  return content.includes(MARKDOWN_OCR_SUCCESS_PREFIX)
+}
+
+export function hasVisualOcrComplete(content: string): boolean {
+  return content.includes(VISUAL_OCR_COMPLETE_PREFIX)
+}
+
+/**
+ * Görsel OCR gerekli mi? Yalnızca hem MARKDOWN_OCR_SUCCESS hem VISUAL_OCR_COMPLETE varsa hayır.
+ * Eski sahte damgalar (yalnızca yerel metin) yeniden OCR tetikler — API israfı önlenir.
+ */
+export function shouldRunMarkdownOcr(rawContent: string): boolean {
+  if (hasOcrSuccessFlag(rawContent) && hasVisualOcrComplete(rawContent)) return false
+  return true
+}
+
+/** @deprecated shouldRunMarkdownOcr ters mantığı — course-processing-status uyumluluğu */
+export function shouldSkipReOcr(rawContent: string): boolean {
+  return !shouldRunMarkdownOcr(rawContent)
+}
+
+/** @deprecated Sahte OCR damgası basmaz — yalnızca metni döndürür */
+export function stampNativeTextAsReady(rawContent: string): string {
+  return rawContent.trim()
+}
+
+/**
+ * Aranabilir PDF'ten çıkan yerel metin — bölüm ham içeriğine yazılır.
+ * Görsel okumayı atlamaz; [MARKDOWN_OCR_SUCCESS] yalnızca extractPerfectMarkdownOCR sonrası gelir.
+ */
+export function prepareSearchablePdfSectionContent(rawContent: string): string {
+  if (isPendingOcrContent(rawContent)) return rawContent
+  if (hasOcrSuccessFlag(rawContent)) return rawContent
+  return rawContent.trim()
 }
 
 // Non-searchable PDF durumunu kontrol et (upload route'dan çağrılır)
@@ -129,26 +256,13 @@ export function checkPdfQuality(pageTexts: string[], totalPages: number): {
   isPartiallySearchable: boolean;
   message: string | null
 } {
-  const totalChars = pageTexts.reduce((sum, t) => sum + t.length, 0)
-  const nonEmpty = pageTexts.filter(t => t.length > 20).length
-
-  if (totalPages > 0 && totalChars < 500) {
-    return {
-      isNonSearchable: true,
-      isPartiallySearchable: false,
-      message: `Bu PDF'den metin çıkarılamadı (${totalChars} karakter). Taranmış/görüntü PDF olabilir. Lütfen metin tabanlı (searchable) bir PDF yükleyin veya OCR işlemi uygulayın.`
-    }
+  void totalPages
+  const assessment = assessPdfSearchability(pageTexts)
+  return {
+    isNonSearchable: assessment.isNonSearchable,
+    isPartiallySearchable: assessment.isPartiallySearchable,
+    message: assessment.message,
   }
-
-  if (totalPages > 5 && nonEmpty < totalPages * 0.3) {
-    return {
-      isNonSearchable: false,
-      isPartiallySearchable: true,
-      message: `PDF'in ${totalPages} sayfasından sadece ${nonEmpty} tanesinde metin bulundu. Bazı sayfalar taranmış görüntü olabilir.`
-    }
-  }
-
-  return { isNonSearchable: false, isPartiallySearchable: false, message: null }
 }
 
 // 🚀 TEK SEFERDE TÜM PDF'İ MARKDOWN'A ÇEVİRİCİ (PARALEL VE ÇOKLU ANAHTAR)
@@ -483,8 +597,10 @@ Sadece JSON string array döndür:
 /** AI yalnızca başlık listesi döndürür — sayfa numarası güvenilmez, kullanılmaz */
 export async function detectSectionTitlesOnlyTextAI(
   tocSnippet: string,
-  apiKey: string
+  apiKey: string,
+  logContext?: { courseSlug?: string | null }
 ): Promise<string[]> {
+  const model = "gemini-2.5-flash"
   const headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey }
   const body = {
     contents: [
@@ -499,20 +615,48 @@ export async function detectSectionTitlesOnlyTextAI(
     generationConfig: { temperature: 0.1 },
   }
 
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
-    body,
-    { headers, timeout: 180000 }
-  )
-  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-  return parseTitleArrayFromAi(raw)
+  const started = Date.now()
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      body,
+      { headers, timeout: 180000 }
+    )
+    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+    await logDirectGeminiApiCall({
+      apiKey,
+      model,
+      operation: "section_titles_text",
+      stage: "section_detect",
+      courseSlug: logContext?.courseSlug ?? null,
+      status: "SUCCESS",
+      durationMs: Date.now() - started,
+    })
+    return parseTitleArrayFromAi(raw)
+  } catch (e: unknown) {
+    const err = e as { response?: { status?: number; data?: unknown }; message?: string }
+    const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+    await logDirectGeminiApiCall({
+      apiKey,
+      model,
+      operation: "section_titles_text",
+      stage: "section_detect",
+      courseSlug: logContext?.courseSlug ?? null,
+      status,
+      errorDetail: (err.message || "section_titles_text failed").substring(0, 500),
+      durationMs: Date.now() - started,
+    })
+    throw e
+  }
 }
 
 /** Multimodal: PDF'ten yalnızca başlık listesi */
 export async function detectSectionTitlesOnlyMultimodal(
   fileUri: string,
-  apiKey: string
+  apiKey: string,
+  logContext?: { courseSlug?: string | null }
 ): Promise<string[]> {
+  const model = "gemini-2.5-flash"
   const headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey }
   const body = {
     contents: [
@@ -526,11 +670,37 @@ export async function detectSectionTitlesOnlyMultimodal(
     generationConfig: { temperature: 0.1 },
   }
 
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
-    body,
-    { headers, timeout: 300000 }
-  )
-  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-  return parseTitleArrayFromAi(raw)
+  const started = Date.now()
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      body,
+      { headers, timeout: 300000 }
+    )
+    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+    await logDirectGeminiApiCall({
+      apiKey,
+      model,
+      operation: "section_titles_multimodal",
+      stage: "section_detect",
+      courseSlug: logContext?.courseSlug ?? null,
+      status: "SUCCESS",
+      durationMs: Date.now() - started,
+    })
+    return parseTitleArrayFromAi(raw)
+  } catch (e: unknown) {
+    const err = e as { response?: { status?: number }; message?: string }
+    const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+    await logDirectGeminiApiCall({
+      apiKey,
+      model,
+      operation: "section_titles_multimodal",
+      stage: "section_detect",
+      courseSlug: logContext?.courseSlug ?? null,
+      status,
+      errorDetail: (err.message || "section_titles_multimodal failed").substring(0, 500),
+      durationMs: Date.now() - started,
+    })
+    throw e
+  }
 }

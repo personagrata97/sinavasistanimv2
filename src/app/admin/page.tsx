@@ -3,6 +3,8 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { prisma } from "@/lib/prisma"
 import { redirect } from "next/navigation"
 import AdminClient from "./AdminClient"
+import { getApiUsageDaySummary } from "@/lib/api-usage-summary"
+import { resolveApiLogCourseFullName } from "@/lib/api-log-course-label"
 
 export default async function AdminDashboard() {
   const session = await getServerSession(authOptions)
@@ -69,19 +71,19 @@ export default async function AdminDashboard() {
     ]
   })
 
-  // Fetch today's API usage logs
+  // Fetch today's API usage logs (UTC günü — yerel saat kayması olmasın)
   const startOfDay = new Date()
-  startOfDay.setHours(0, 0, 0, 0)
+  startOfDay.setUTCHours(0, 0, 0, 0)
   const rawApiLogs = await prisma.apiUsageLog.findMany({
     where: { createdAt: { gte: startOfDay } },
-    orderBy: { createdAt: "desc" }
+    orderBy: { createdAt: "desc" },
+    take: 200,
   })
 
-  // Ders ve program isimlerini getirmek için benzersiz courseSlug'ları al
+  // Ders isimlerini getirmek için slugObjectId veya slug / tam yol eşlemesi
   const courseSlugs = Array.from(new Set(rawApiLogs.map(l => l.courseSlug).filter(Boolean))) as string[]
   
   const coursesForLogs = await prisma.course.findMany({
-    where: { slug: { in: courseSlugs } },
     select: {
       slug: true,
       name: true,
@@ -89,14 +91,9 @@ export default async function AdminDashboard() {
     }
   })
 
-  const courseMap = new Map()
-  coursesForLogs.forEach(c => {
-    courseMap.set(c.slug, c.program?.name ? `${c.program.name} > ${c.name}` : c.name)
-  })
-
   const apiLogs = rawApiLogs.map(log => ({
     ...log,
-    courseFullName: log.courseSlug ? (courseMap.get(log.courseSlug) || log.courseSlug) : null
+    courseFullName: resolveApiLogCourseFullName(log.courseSlug, coursesForLogs),
   }))
 
   const totalUsers = users.length
@@ -110,6 +107,7 @@ export default async function AdminDashboard() {
   }
 
   const systemKeys = (process.env.GEMINI_API_KEYS || "").split(",").map(k => k.trim()).filter(k => k.length > 0)
+  const apiSummary = await getApiUsageDaySummary(systemKeys.length)
 
   return (
     <AdminClient 
@@ -118,6 +116,7 @@ export default async function AdminDashboard() {
       sectionsQuality={sectionsQuality} 
       stats={stats} 
       apiLogs={apiLogs}
+      apiSummary={apiSummary}
       systemKeys={systemKeys}
     />
   )

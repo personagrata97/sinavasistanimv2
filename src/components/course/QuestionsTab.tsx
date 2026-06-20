@@ -8,10 +8,11 @@ import remarkGfm from "remark-gfm"
 import rehypeRaw from "rehype-raw"
 import { toast } from "sonner"
 import { EmptyState, LoadingSkeleton, Badge, ConfettiEffect, formatTitle, Modal, cleanExplanationText, formatQuestionText, SplitNotesLayout, CustomSelect } from "./shared"
+import { getMaterialsPreparingDescription, getDefaultNoteTitle } from "@/lib/program-catalog"
 import { Tooltip } from "@/components/ui/shared"
 
 export default
-function QuestionsTab({ slug, courseName }: { slug: string, courseName: string }) {
+function QuestionsTab({ slug, courseName, isProfessional }: { slug: string, courseName: string, isProfessional?: boolean }) {
   const [questions, setQuestions] = useState<any[]>([])
   const [currentQ, setCurrentQ] = useState(0)
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null)
@@ -280,7 +281,7 @@ function QuestionsTab({ slug, courseName }: { slug: string, courseName: string }
       <EmptyState
         tabId="questions"
         title="İçerik Hazırlanıyor"
-        description="Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+        description={getMaterialsPreparingDescription(!!isProfessional)}
       />
     )
   }
@@ -338,7 +339,7 @@ function QuestionsTab({ slug, courseName }: { slug: string, courseName: string }
     <SplitNotesLayout
       isOpen={showNotesModal}
       onClose={() => { setShowNotesModal(false); setAutoScrollKeyword(""); }}
-      title={q?.section?.title ? formatTitle(q.section.title, undefined, q.section.notes, q.section.module) : "Ders Notu"}
+      title={q?.section?.title ? formatTitle(q.section.title, undefined, q.section.notes, q.section.module, isProfessional) : getDefaultNoteTitle(isProfessional)}
       notes={q?.section?.notes || ""}
       autoScrollKeyword={autoScrollKeyword}
     >

@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import { EmptyState, LoadingSkeleton, ConfettiEffect, formatTitle, SplitNotesLayout, CustomSelect } from "./shared"
+import { getMaterialsPreparingDescription, getDefaultNoteTitle } from "@/lib/program-catalog"
 import rehypeRaw from "rehype-raw"
 
 // Flashcard cevaplarındaki iç içe (nested) madde işaretlerini düzleştirip okunabilir kılar.
@@ -30,7 +31,7 @@ function flattenNestedMarkdown(text: string): string {
 
 
 export default
-function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string }) {
+function FlashcardsTab({ slug, courseName, isProfessional }: { slug: string, courseName: string, isProfessional?: boolean }) {
   const [cards, setCards] = useState<any[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
@@ -170,7 +171,7 @@ function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string 
       <EmptyState
         tabId="flashcards"
         title="İçerik Hazırlanıyor"
-        description="Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+        description={getMaterialsPreparingDescription(!!isProfessional)}
       />
     )
   }
@@ -223,7 +224,7 @@ function FlashcardsTab({ slug, courseName }: { slug: string, courseName: string 
     <SplitNotesLayout
       isOpen={showNotesModal}
       onClose={() => { setShowNotesModal(false); setAutoScrollKeyword(""); }}
-      title={card?.section?.title ? formatTitle(card.section.title, undefined, card.section.notes, card.section.module) : "Ders Notu"}
+      title={card?.section?.title ? formatTitle(card.section.title, undefined, card.section.notes, card.section.module, isProfessional) : getDefaultNoteTitle(isProfessional)}
       notes={card?.section?.notes || ""}
       autoScrollKeyword={autoScrollKeyword}
     >

@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { writeFile, mkdir } from "fs/promises"
 import path from "path"
+import { getStudyNotFoundMessage } from "@/lib/program-catalog"
 // import { GoogleAIFileManager } from "@google/generative-ai/server" // Removed static import
 
 export async function POST(req: NextRequest) {
@@ -50,9 +51,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Dersi bul
-    const course = await prisma.course.findUnique({ where: { slug } })
+    const course = await prisma.course.findUnique({
+      where: { slug },
+      include: { program: { select: { slug: true } } },
+    })
     if (!course) {
-      return NextResponse.json({ error: "Ders bulunamadı." }, { status: 404 })
+      return NextResponse.json(
+        { error: `${getStudyNotFoundMessage(slug.startsWith("zeliha-") ? "zeliha-mevzuat" : "")}.` },
+        { status: 404 },
+      )
     }
 
     // PDF'i kaydet

@@ -11,7 +11,13 @@ import {
   CIA_COURSES,
   CISA_COURSES,
   SMMM_COURSES,
+  ZELIHA_COURSES,
+  ZELIHA_KVKK_GROUP_SLUG,
+  ZELIHA_KVKK_UMBRELLA,
 } from "./course-data"
+import bcrypt from "bcryptjs"
+
+const ZELIHA_PROGRAM_SLUG = "zeliha-mevzuat"
 
 export async function ensureProgramsSeeded(): Promise<void> {
   for (const p of getProgramSeedRows()) {
@@ -72,6 +78,74 @@ export async function ensureProgramsSeeded(): Promise<void> {
       await upsertCourse(course, smmmProgram.id)
     }
   }
+
+  const zelihaProgram = await prisma.program.findUnique({ where: { slug: ZELIHA_PROGRAM_SLUG } })
+  if (zelihaProgram) {
+    for (const course of ZELIHA_COURSES) {
+      await upsertCourse(course, zelihaProgram.id)
+    }
+    await syncLegacyKvkkUmbrellaRecord(zelihaProgram.id)
+  }
+
+  await ensureZelihaUser()
+}
+
+async function ensureZelihaUser(): Promise<void> {
+  const email = process.env.ZELIHA_USER_EMAIL ?? "zeliha@mevzuat.local"
+  const plainPassword = process.env.ZELIHA_USER_PASSWORD ?? "Zeliha2026!"
+  const allowedJson = JSON.stringify([ZELIHA_PROGRAM_SLUG])
+
+  const existing = await prisma.user.findUnique({ where: { email } })
+  if (existing) {
+    await prisma.user.update({
+      where: { email },
+      data: {
+        name: "Zeliha",
+        allowedProgramSlugs: allowedJson,
+        onboardingCompleted: true,
+      },
+    })
+    return
+  }
+
+  const hashedPassword = await bcrypt.hash(plainPassword, 10)
+  await prisma.user.create({
+    data: {
+      email,
+      password: hashedPassword,
+      name: "Zeliha",
+      role: "student",
+      allowedProgramSlugs: allowedJson,
+      onboardingCompleted: true,
+    },
+  })
+  console.log(`[SEED] Zeliha kullanıcısı oluşturuldu: ${email}`)
+}
+
+async function syncLegacyKvkkUmbrellaRecord(programId: string): Promise<void> {
+  const existing = await prisma.course.findUnique({ where: { slug: ZELIHA_KVKK_GROUP_SLUG } })
+  if (!existing) {
+    await prisma.course.create({
+      data: {
+        name: ZELIHA_KVKK_UMBRELLA.name,
+        slug: ZELIHA_KVKK_GROUP_SLUG,
+        order: ZELIHA_KVKK_UMBRELLA.order,
+        description: ZELIHA_KVKK_UMBRELLA.description,
+        programId,
+        status: "not_started",
+      },
+    })
+    return
+  }
+  await prisma.course.update({
+    where: { id: existing.id },
+    data: {
+      name: ZELIHA_KVKK_UMBRELLA.name,
+      description: ZELIHA_KVKK_UMBRELLA.description,
+      order: ZELIHA_KVKK_UMBRELLA.order,
+      ...(existing.programId !== programId ? { programId } : {}),
+    },
+  })
 }
 
 async function upsertCourse(

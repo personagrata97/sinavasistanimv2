@@ -22,6 +22,8 @@ model User {
   password      String?
   image         String?
   role          String    @default("student") // student, admin
+  /** JSON dizi: ["zeliha-mevzuat"] — boş/null = varsayılan erişim kuralları */
+  allowedProgramSlugs String?
   currentStreak Int       @default(0)
   longestStreak Int       @default(0)
   totalXP       Int       @default(0)
@@ -374,6 +376,21 @@ model ApiUsageLog {
   @@index([apiKey])
   @@index([createdAt])
   @@index([status])
+}
+
+// ================= PROCESS TRIGGER AUDIT =================
+
+model ProcessTriggerLog {
+  id         String   @id @default(cuid())
+  courseSlug String
+  userId     String?
+  userEmail  String?
+  forceRetry Boolean  @default(false)
+  source     String   // user_button | upload | force_retry | admin_resolve | cron
+  createdAt  DateTime @default(now())
+
+  @@index([courseSlug])
+  @@index([createdAt])
 }
 
 // ================= GENERATION LOGGING =================

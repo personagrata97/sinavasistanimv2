@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getCourseBySlug, getCourseByOrder, getExamConfig, getCourseMockExamParams, estimateScaledScore, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, MASAK_EXAM_CONFIG, SPL_EXAM_CONFIG, CISA_EXAM_CONFIG } from '@/lib/course-data'
+import { getCourseBySlug, getCourseByOrder, getExamConfig, getCourseMockExamParams, estimateScaledScore, ALL_COURSES, SPL_LEVEL_3_COURSES, MASAK_COURSES, SPL_BD_COURSES, CIA_COURSES, CISA_COURSES, SMMM_COURSES, ZELIHA_COURSES, MASAK_EXAM_CONFIG, SPL_EXAM_CONFIG, CISA_EXAM_CONFIG } from '@/lib/course-data'
 
 describe('course-data gelişmiş testler', () => {
   describe('veri bütünlüğü', () => {
@@ -39,7 +39,7 @@ describe('course-data gelişmiş testler', () => {
     it('ALL_COURSES tüm program kurslarının toplamı olmalı', () => {
       expect(ALL_COURSES.length).toBe(
         SPL_LEVEL_3_COURSES.length + MASAK_COURSES.length + SPL_BD_COURSES.length +
-        CIA_COURSES.length + CISA_COURSES.length + SMMM_COURSES.length
+        CIA_COURSES.length + CISA_COURSES.length + SMMM_COURSES.length + ZELIHA_COURSES.length
       )
     })
 

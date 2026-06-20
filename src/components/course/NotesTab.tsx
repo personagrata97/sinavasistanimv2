@@ -13,6 +13,7 @@ import "katex/dist/katex.min.css"
 import dynamic from "next/dynamic"
 import { toast } from "sonner"
 import { EmptyState, LoadingSkeleton, formatTitle, cleanMarkdown, Modal } from "./shared"
+import { getMaterialsPreparingDescription, getNoNotesToast } from "@/lib/program-catalog"
 import { Tooltip } from "@/components/ui/shared"
 import { getBookmarkForCourse, setBookmark, removeBookmark, getHighlightsForSection, getHighlightsForCourse, addHighlight, removeHighlight, getColorClass, type Highlight } from "@/lib/study-marks"
 import { PremiumMarkdownRenderer } from "./PremiumMarkdownRenderer"
@@ -114,7 +115,7 @@ export function renderTextWithTooltips(children: React.ReactNode, dict: Record<s
   })
 }
 
-export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initialSectionId, initialScrollKeyword, processingStatus }: { course: any; slug: string; isAdmin?: boolean; onReloadCourse?: () => void; initialSectionId?: string; initialScrollKeyword?: string; processingStatus?: any }) {
+export default function NotesTab({ course, slug, isAdmin, isProfessional, onReloadCourse, initialSectionId, initialScrollKeyword, processingStatus }: { course: any; slug: string; isAdmin?: boolean; isProfessional?: boolean; onReloadCourse?: () => void; initialSectionId?: string; initialScrollKeyword?: string; processingStatus?: any }) {
   const [sections, setSections] = useState<any[]>(course.sections || [])
 
   const dynamicDict = useMemo(() => {
@@ -325,7 +326,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
         .sort((a: any, b: any) => a.pageStart - b.pageStart)
 
       if (noteSections.length === 0) {
-        toast.error("Henüz ders notu yok!")
+        toast.error(getNoNotesToast(!!isProfessional))
         setExporting(false)
         return
       }
@@ -813,7 +814,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
       <EmptyState
         tabId="notes"
         title="İçerik Hazırlanıyor"
-        description="Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+        description={getMaterialsPreparingDescription(!!isProfessional)}
       />
     )
   }
@@ -1138,7 +1139,7 @@ export default function NotesTab({ course, slug, isAdmin, onReloadCourse, initia
                     <EmptyState
                       icon={BookOpen}
                       title="İçerik Hazırlanıyor"
-                      description="Bu dersin materyalleri yapay zeka asistanımız tarafından arka planda sizin için hazırlanıyor. Lütfen daha sonra tekrar kontrol edin."
+                      description={getMaterialsPreparingDescription(!!isProfessional)}
                     />
                   )}
                 </div>

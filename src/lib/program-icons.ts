@@ -6,6 +6,7 @@ import {
   ShieldCheck,
   ClipboardList,
   BookOpen,
+  Heart,
   type LucideIcon,
 } from "lucide-react"
 import type { ProgramIconName } from "./program-catalog"
@@ -17,6 +18,7 @@ export const PROGRAM_ICON_MAP: Record<ProgramIconName, LucideIcon> = {
   Award,
   ShieldCheck,
   ClipboardList,
+  Heart,
 }
 
 export function resolveProgramIcon(name: ProgramIconName | string | undefined): LucideIcon {

@@ -11,5 +11,5 @@ export async function GET() {
     return NextResponse.json({ error: "Yetkisiz" }, { status: 403 })
   }
 
-  return NextResponse.json(getLiveApiKeyStats())
+  return NextResponse.json(await getLiveApiKeyStats())
 }

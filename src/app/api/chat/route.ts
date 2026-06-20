@@ -6,6 +6,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit"
 import { chatRequestSchema } from "@/lib/validations"
 import { logger } from "@/lib/logger"
+import { getStudyNotFoundMessage, getChatNotReadyReply, isProfessionalProgram } from "@/lib/program-catalog"
 
 const MAX_MESSAGE_LENGTH = 10000
 const MAX_MESSAGES = 50
@@ -43,6 +44,12 @@ export async function POST(req: NextRequest) {
 
     const { courseId, messages } = validation.data
     logger.info("Chat isteği", "chat", { courseId, messageCount: messages.length, user: session.user.email })
+
+    const course = await prisma.course.findUnique({
+      where: { id: courseId },
+      include: { program: { select: { slug: true } } },
+    })
+    const isProfessional = isProfessionalProgram(course?.program?.slug ?? "")
     
     // Check for API keys
     const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
@@ -59,7 +66,7 @@ export async function POST(req: NextRequest) {
 
     if (allSections.length === 0) {
       return NextResponse.json({ 
-        reply: "Bu dersin içerikleri henüz hazır değil. Önce PDF yükleyip işlenmesini beklemeniz gerekiyor. İçerikler hazır olduğunda benimle sohbet edebilirsiniz!" 
+        reply: getChatNotReadyReply(isProfessional)
       })
     }
 
