@@ -132,6 +132,8 @@ ${action === 'insert_after'
   ? "Bu hedef bloğu YENİDEN YAZMA. Sadece bu bilgileri anlatan, bu bloğun altına GİRİNTİ OLARAK EKLENECEK yeni bir paragraf, tablo veya liste üret. Sadece YENİ EKLENECEK markdown metnini ver." 
   : "Bu hedef blokta çelişkili veya yanlış bir bilgi var. Bu bloğu DÜZELTEREK baştan yaz. Sadece düzeltilmiş bloğu (markdown) ver. Ekstra bir şey yazma."}
 
+🚨 GİZLİLİK KURALI (STEALTH MODE): Eklediğin veya değiştirdiğin metnin başına ASLA "Ayrıca", "Ek olarak", "Bunun yanı sıra", "Belirtmek gerekir ki", "Özetle" gibi yapay geçiş kelimeleri KOYMA. Cümleye doğrudan, akademik ve soğukkanlı bir dille gir. Önceki metnin organik bir devamı gibi davran, sonradan yama yapıldığını ASLA belli etme.
+
 ⚠️ GEÇİCİ TEST KURALI: Eklediğin veya değiştirdiğin tüm metinleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap.
 
 SADECE MARKDOWN KODUNU DÖNDÜR. (Başına ve sonuna json vs yazma).`;
