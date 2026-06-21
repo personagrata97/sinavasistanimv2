@@ -26,7 +26,8 @@ import CoverageTab from "@/components/course/CoverageTab"
 import DailyGoalsTab from "@/components/course/DailyGoalsTab"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { Modal, EmptyState, LoadingSkeleton, getCourseTabs, formatTitle } from "@/components/course/shared"
-import { Tabs } from "@/components/ui/shared"
+import { GenerationOptionsModal } from "@/components/admin/GenerationOptionsModal"
+import { Tabs, Tooltip } from "@/components/ui/shared"
 import { DatePicker } from "@/components/ui/DatePicker"
 import { toast } from "sonner"
 import ReactMarkdown from "react-markdown"
@@ -35,6 +36,18 @@ import dynamic from "next/dynamic"
 
 const MermaidDiagram = dynamic(() => import("@/components/MermaidDiagram"), { ssr: false })
 const ProgressChart = dynamic(() => import("@/components/ProgressChart"), { ssr: false })
+
+const getPhaseDescription = (phase: string) => {
+  const lower = phase.toLowerCase();
+  if (lower.includes("yükleniyor")) return "Belgeniz sisteme yükleniyor.";
+  if (lower.includes("sayfa")) return "Belgeniz okunuyor ve metinler çıkarılıyor.";
+  if (lower.includes("belge yapısı")) return "Okunan metinler inceleniyor ve mantıklı bölüm başlıklarına göre ayrılıyor.";
+  if (lower.includes("ocr")) return "Belgedeki tablo ve karmaşık yapılar okunabilir dijital formata çevriliyor.";
+  if (lower.includes("modüller hazırlanıyor")) return "Belirlenen başlıklar altındaki içerikler modüller halinde işleniyor.";
+  if (lower.includes("solver") || lower.includes("müfettiş")) return "Üretilen içerikler, PDF kaynağı ile karşılaştırılarak doğruluğu denetleniyor.";
+  if (lower.includes("not")) return "İlgili bölüm için ders notları hazırlanıyor.";
+  return "Sistem arka planda işlemlere devam ediyor.";
+}
 
 const PDF_SHARED_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
@@ -195,6 +208,9 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
   const isKvkkGroupLanding =
     programSlug === "zeliha-mevzuat" && courseSlug === ZELIHA_KVKK_GROUP_SLUG
 
+  const [isGenerationOptionsOpen, setIsGenerationOptionsOpen] = useState(false)
+  const [pendingProcessTrigger, setPendingProcessTrigger] = useState<{ forceRetry: boolean, userInitiated: boolean, source?: string } | null>(null)
+
   const [course, setCourse] = useState<any>(null)
   const [dbFlashcards, setDbFlashcards] = useState<any[]>([])
   const [userStats, setUserStats] = useState<any>(null)
@@ -274,75 +290,21 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
     setProcessingStatus((prev: any) => ({
       ...(prev || {}),
       status: "processing",
-      workerLive: true,
-      progress: prev?.progress ?? 5,
-      phaseLabel: prev?.phaseLabel || "Başlatılıyor...",
     }))
-  }
-
-  async function pollStatusOnce() {
-    try {
-      const res = await fetch(`/api/courses/status?slug=${slug}`)
-      const data = await res.json()
-      if (!res.ok) return
-
-      setProcessingStatus(data)
-      applyDebounceFromStatus(data)
-      setCourse((prev: any) =>
-        prev && data.status && prev.status !== data.status ? { ...prev, status: data.status } : prev,
-      )
-
-      const inGrace = Date.now() - processStartGraceRef.current < 20_000
-
-      if (data.workerLive) {
-        processLockRef.current = true
-        setProcessLock(true)
-        loadCourse()
-      } else if (
-        (data.status === "paused" || data.status === "ready" || data.status === "error") &&
-        !inGrace
-      ) {
-        processLockRef.current = false
-        setProcessLock(false)
-      }
-
-      if (data.status === "ready" || data.status === "error") {
-        if (pollRef.current) clearInterval(pollRef.current)
-        pollRef.current = null
-        if (pollSlowdownRef.current) clearTimeout(pollSlowdownRef.current)
-        pollSlowdownRef.current = null
-        processLockRef.current = false
-        setProcessLock(false)
-        loadCourse()
-        if (data.status === "ready") {
-          toast.success("İşleme tamamlandı! Materyaller hazır.")
-        } else {
-          toast.error("İşlem başarısız oldu. Lütfen tekrar deneyin.")
-        }
-      }
-    } catch { /* polling failure, ignore */ }
-  }
-
-  function startPolling(fastStart = false) {
-    if (pollRef.current) clearInterval(pollRef.current)
-    if (pollSlowdownRef.current) clearTimeout(pollSlowdownRef.current)
-
-    void pollStatusOnce()
-
-    const intervalMs = fastStart ? 2000 : 3000
-    pollRef.current = setInterval(() => { void pollStatusOnce() }, intervalMs)
-
-    if (fastStart) {
-      pollSlowdownRef.current = setTimeout(() => {
-        if (!pollRef.current) return
-        clearInterval(pollRef.current)
-        pollRef.current = setInterval(() => { void pollStatusOnce() }, 3000)
-      }, 60_000)
-    }
   }
 
   // 🔒 MERKEZİ PROCESS FONKSİYONU — Tüm process çağrıları BURADAN geçer
   async function triggerProcess(forceRetry: boolean = false, userInitiated: boolean = false, source?: string) {
+    if (programSlug === ZELIHA_KVKK_GROUP_SLUG && !forceRetry && source !== "reset_from_scratch") {
+      setPendingProcessTrigger({ forceRetry, userInitiated, source })
+      setIsGenerationOptionsOpen(true)
+      return false
+    }
+
+    return executeTriggerProcess(forceRetry, userInitiated, source)
+  }
+
+  async function executeTriggerProcess(forceRetry: boolean = false, userInitiated: boolean = false, source?: string) {
     const explicitUserStart = userInitiated || forceRetry
 
     if (processLockRef.current && !forceRetry) {
@@ -383,13 +345,13 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
           setProcessLock(true)
           applyOptimisticProcessing()
           loadCourse()
-          startPolling(true)
           return false
         }
         applyOptimisticProcessing()
         toast.success(forceRetry ? "Sistem kilidi kırıldı, işlem zorla başlatıldı!" : "İşlem başlatıldı!")
-        startPolling(true)
-        setTimeout(loadCourse, 1500)
+        toast.success("İşleme devam ediyor.")
+        setProcessLock(true)
+        loadCourse()
         return true
       } else {
         const data = await res.json()
@@ -403,7 +365,9 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
             processLockRef.current = true
             setProcessLock(true)
             applyOptimisticProcessing()
-            startPolling(true)
+            toast.success("İşleme devam ediyor.")
+            setProcessLock(true)
+            loadCourse()
           } else {
             processLockRef.current = false
             setProcessLock(false)
@@ -438,10 +402,6 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
       return
     }
     loadCourse()
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-      if (pollSlowdownRef.current) clearTimeout(pollSlowdownRef.current)
-    }
   }, [slug, programSlug, isKvkkGroupLanding, router])
 
   // Keyboard shortcuts (1-8 tab geçiş, ← → önceki/sonraki)
@@ -474,98 +434,71 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [activeTab])
 
-  // Processing status polling — aktif işlem veya kilit varken
+  // Canlılık Sinyali ve Sayfadan Ayrılınca İptal etme mantığı TAMAMEN KALDIRILDI!
+  // Çünkü artık görevler veritabanı kuyruğuna atılıyor ve sayfayı kapatmak işlemi durdurmuyor.
+  // İşlem arka planda devam edecek.
+  
+  // SSE (Server-Sent Events) ile Canlı Bağlantı
   useEffect(() => {
     if (!course) return
-    const shouldPoll =
+    
+    // Eğer işlem sürüyorsa veya beklemedeyse SSE bağlantısı aç
+    const shouldStream =
       course.status === "processing" ||
       course.status === "uploading" ||
       course.status === "paused" ||
-      processLock ||
-      isDebounceWaiting
-    if (shouldPoll) {
-      startPolling(processLock)
-    }
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-      if (pollSlowdownRef.current) clearTimeout(pollSlowdownRef.current)
-    }
-  }, [course?.status, processLock, slug, isDebounceWaiting])
-
-  // Canlılık sinyali — yalnızca bu dersin not üretim sayfasındayken; ayrılınca anında dur
-  useEffect(() => {
-    const isActive =
-      course?.status === "processing" ||
-      course?.status === "uploading" ||
       processLock
 
-    if (!isActive) return
+    if (!shouldStream) return
 
-    const cancelViaBeacon = (reason: string) => {
-      const payload = JSON.stringify({ slug, reason })
-      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-        navigator.sendBeacon(
-          "/api/courses/cancel",
-          new Blob([payload], { type: "application/json" }),
-        )
-      } else {
-        fetch("/api/courses/cancel", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payload,
-          keepalive: true,
-        }).catch(() => {})
+    let isSubscribed = true
+    const eventSource = new EventSource(`/api/courses/stream?slug=${slug}`)
+
+    eventSource.onmessage = (event) => {
+      if (!isSubscribed) return
+      try {
+        const data = JSON.parse(event.data)
+        if (data.error) {
+          console.error("SSE Error:", data.error)
+          return
+        }
+
+        if (data.status) {
+          setCourse((prev: any) => prev ? { ...prev, status: data.status } : null)
+        }
+        
+        if (data.progress !== undefined) {
+          setProcessingStatus((prev: any) => ({
+            ...(prev || {}),
+            progress: data.progress,
+            totalSections: data.totalSections,
+            completedSections: data.completedSections,
+            processingSection: data.processingSection,
+            workerLive: data.workerLive
+          }))
+        }
+
+        // Eğer bittiyse (ready veya error) SSE bağlantısını kapat ve verileri tazele
+        if (data.status === "ready" || data.status === "error") {
+          eventSource.close()
+          setProcessLock(false)
+          loadCourse() // Tüm verileri son bir kez güncelle
+        }
+      } catch (err) {
+        console.error("Error parsing SSE data:", err)
       }
     }
 
-    const sendHeartbeat = () => {
-      fetch("/api/courses/heartbeat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, visible: document.visibilityState === "visible" }),
-      }).catch(() => {})
+    eventSource.onerror = (error) => {
+      console.error("SSE Connection Error:", error)
+      // Bağlantı koparsa veya hata verirse kapanır, tarayıcı otomatik yeniden dener (veya biz refreshleyebiliriz).
     }
-
-    sendHeartbeat()
-    heartbeatRef.current = setInterval(sendHeartbeat, 30_000)
-
-    const onVisibilityChange = () => {
-      // Sekme değişimi iptal etmez — admin vb. başka sekmeye bakılabilir; yalnızca sinyal yenilenir.
-      sendHeartbeat()
-    }
-
-    const onPageLeave = () => {
-      cancelViaBeacon("Not üretim sayfasından ayrıldınız — işlem durduruldu.")
-    }
-
-    document.addEventListener("visibilitychange", onVisibilityChange)
-    window.addEventListener("beforeunload", onPageLeave)
-    window.addEventListener("pagehide", onPageLeave)
 
     return () => {
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current)
-      document.removeEventListener("visibilitychange", onVisibilityChange)
-      window.removeEventListener("beforeunload", onPageLeave)
-      window.removeEventListener("pagehide", onPageLeave)
+      isSubscribed = false
+      eventSource.close()
     }
-  }, [slug, course?.status, processLock])
-
-  // Sayfadan ayrılırken iptal — yalnızca gerçek unmount; Sıfırdan İşle/remount sırasında değil
-  useEffect(() => {
-    return () => {
-      if (!processLockRef.current || suppressLeaveCancelRef.current) return
-      const payload = JSON.stringify({
-        slug,
-        reason: "Not üretim sayfasından ayrıldınız — işlem durduruldu.",
-      })
-      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-        navigator.sendBeacon(
-          "/api/courses/cancel",
-          new Blob([payload], { type: "application/json" }),
-        )
-      }
-    }
-  }, [slug])
+  }, [course?.status, processLock, slug, loadCourse])
 
   useEffect(() => {
     getUserProgramAccess().then(ctx => {
@@ -915,7 +848,13 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                       });
                       
                       if (isActionNeeded) return "Bir bölüm 5 denemede de %100 alamadı, müdahale bekleniyor. Arka planda diğer işlemler devam ediyor.";
-                      return adaptProcessingPhaseLabel(processingStatus?.phaseLabel || "", programSlug) || "Hazırlanıyor...";
+                      
+                      const phaseStr = adaptProcessingPhaseLabel(processingStatus?.phaseLabel || "", programSlug) || "Hazırlanıyor...";
+                      return (
+                        <Tooltip content={getPhaseDescription(phaseStr)}>
+                          <span className="cursor-help border-b border-dashed border-slate-500/50 pb-0.5">{phaseStr}</span>
+                        </Tooltip>
+                      );
                     })()}
                   </div>
                   <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
@@ -926,8 +865,9 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                   </div>
                   <div className="flex items-center justify-between mt-1">
                     <div className="text-[10px] text-slate-500">%{Math.min(processingStatus?.progress || 0, 99)}</div>
-                    <div className="flex items-center gap-1.5">
-                      <button 
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <button 
                         onClick={async (e) => {
                           e.stopPropagation()
                           triggerProcess(false, true)
@@ -976,7 +916,8 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                                 const { reprocessCourse } = await import("@/lib/actions")
                                 const res = await reprocessCourse(slug)
                                 if (res.success) {
-                                  toast.success("Süreç başarıyla iptal edildi.")
+                                  toast.success("Sistem sıfırlandı ve işleme başladı.")
+                                  setProcessLock(true)
                                   loadCourse()
                                 } else {
                                   toast.error("Hata: " + res.error)
@@ -989,7 +930,6 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                       >
                         <X className="w-2.5 h-2.5" /> İptal Et
                       </button>
-                    </div>
                   </div>
                 </>
               ) : course.status === "error" ? (
@@ -1107,9 +1047,6 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                               if (res.success) {
                                 toast.success("Eski veriler temizlendi! Sıfırdan işleme başlıyor...")
                                 const started = await triggerProcess(false, true, "reset_from_scratch")
-                                if (!started) {
-                                  await pollStatusOnce()
-                                }
                                 await loadCourse()
                               } else {
                                 toast.error("Hata: " + res.error)
@@ -1404,6 +1341,38 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
       </AnimatePresence>
 
       <StudyBuddy courseId={course.id} isProfessional={isProfessional} />
+      
+      <GenerationOptionsModal
+        isOpen={isGenerationOptionsOpen}
+        onClose={() => {
+          setIsGenerationOptionsOpen(false)
+          setPendingProcessTrigger(null)
+          setProcessLock(false)
+          processLockRef.current = false
+        }}
+        courseName={course.name}
+        onConfirm={async (options) => {
+          setIsGenerationOptionsOpen(false)
+          try {
+            await fetch('/api/courses/settings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                slug,
+                generateNotes: options.generateNotes,
+                generateQuestions: options.generateQuestions,
+                generateFlashcards: options.generateFlashcards
+              })
+            })
+          } catch (e) {
+            console.error("Failed to save settings", e)
+          }
+          if (pendingProcessTrigger) {
+            executeTriggerProcess(pendingProcessTrigger.forceRetry, pendingProcessTrigger.userInitiated, pendingProcessTrigger.source)
+            setPendingProcessTrigger(null)
+          }
+        }}
+      />
     </div>
   )
 }

@@ -1,6 +1,28 @@
 import PDFParser from "pdf2json"
 import axios from "axios"
-import { logDirectGeminiApiCall } from "@/lib/ai-service"
+import { logDirectGeminiApiCall, getAvailableGeminiKey, suspendGeminiKey } from "@/lib/ai-service"
+
+async function executeWithRotation<T>(
+  modelId: string,
+  fallbackKey: string,
+  fn: (apiKey: string) => Promise<T>
+): Promise<T> {
+  const maxRetries = 10;
+  for (let i = 0; i < maxRetries; i++) {
+    const apiKey = getAvailableGeminiKey(modelId) || fallbackKey;
+    try {
+      return await fn(apiKey);
+    } catch (e: any) {
+      if (e.response?.status === 429) {
+        suspendGeminiKey(apiKey);
+        console.warn(`[PDF_ENGINE] Key 429 verdi, askıya alındı. Kalan rotasyon denemesi: ${maxRetries - i - 1}`);
+        if (i < maxRetries - 1) continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("Maksimum API rotasyon sınırına ulaşıldı.");
+}
 
 // pdf2json ile metin çıkarma - pdfjs-dist'ten çok daha güvenilir
 // PDF'teki her sayfanın metnini ayrı ayrı çıkarır
@@ -373,24 +395,24 @@ Sadece aşağıdaki JSON array formatında çıktı ver (başka hiçbir şey yaz
     generationConfig: { temperature: 0.2 }
   }
 
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
-    body,
-    { headers, timeout: 300000 }
-  )
-  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-  try {
-    // Markdown code block varsa içini al
-    let cleaned = raw.trim()
-    const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (match) {
-      cleaned = match[1].trim()
+  return executeWithRotation("gemini-2.5-flash", apiKey, async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+      body,
+      { headers, timeout: 300000 }
+    )
+    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+    try {
+      let cleaned = raw.trim()
+      const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
+      if (match) cleaned = match[1].trim()
+      return JSON.parse(cleaned)
+    } catch {
+      const match = raw.match(/\[[\s\S]*\]/)
+      return match ? JSON.parse(match[0]) : []
     }
-    return JSON.parse(cleaned)
-  } catch {
-    const match = raw.match(/\[[\s\S]*\]/)
-    return match ? JSON.parse(match[0]) : []
-  }
+  })
 }
 
 // 🧠 METİN TABANLI AI YEDEĞİ: Görsel AI API kotalarına takılırsa, içindekiler tablosunu düz metinden çıkarır.
@@ -439,43 +461,41 @@ ${tocText}
     generationConfig: { temperature: 0.1 }
   }
 
-  const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
-    body,
-    { headers, timeout: 300000 }
-  )
-  const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-  try {
-    let cleaned = raw.trim()
-    const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (match) {
-      cleaned = match[1].trim()
-    }
+  return executeWithRotation("gemini-2.5-flash", apiKey, async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+      body,
+      { headers, timeout: 300000 }
+    )
+    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+    try {
+      let cleaned = raw.trim()
+      const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
+      if (match) cleaned = match[1].trim()
 
-    let sections: Array<{ title: string; pageStart: number; pageEnd: number }> = JSON.parse(cleaned)
+      let sections: Array<{ title: string; pageStart: number; pageEnd: number }> = JSON.parse(cleaned)
 
-    // YZ halüsinasyonlarını engellemek için sadece başlık temizliği yapıyoruz, sayfalara dokunmuyoruz
-    for (let i = 0; i < sections.length; i++) {
-      // 1. "1.", "1.2 ", "Bölüm 1 - " gibi saçma önekleri temizle
-      let cleanTitle = sections[i].title.replace(/^(Bölüm|Ünite|Kısım)?\s*\d+[\.\-\:]?\s*/i, "").trim()
-      sections[i].title = cleanTitle
-    }
-
-    // 3. pageEnd değerlerini düzelt (Bir sonraki bölümün başlangıcından 1 çıkararak)
-    for (let i = 0; i < sections.length; i++) {
-      if (i < sections.length - 1) {
-        sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
-      } else {
-        sections[i].pageEnd = pageTexts.length // Son bölüm kitabın sonuna kadar gider
+      for (let i = 0; i < sections.length; i++) {
+        let cleanTitle = sections[i].title.replace(/^(Bölüm|Ünite|Kısım)?\s*\d+[\.\-\:]?\s*/i, "").trim()
+        sections[i].title = cleanTitle
       }
-    }
 
-    return sections
-  } catch (e) {
-    console.error("[TextAI Fallback Error] Parse failed:", e)
-    const match = raw.match(/\[[\s\S]*\]/)
-    return match ? JSON.parse(match[0]) : []
-  }
+      for (let i = 0; i < sections.length; i++) {
+        if (i < sections.length - 1) {
+          sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
+        } else {
+          sections[i].pageEnd = pageTexts.length
+        }
+      }
+
+      return sections
+    } catch (e) {
+      console.error("[TextAI Fallback Error] Parse failed:", e)
+      const match = raw.match(/\[[\s\S]*\]/)
+      return match ? JSON.parse(match[0]) : []
+    }
+  })
 }
 
 // 🛡️ GENEL REGEX YEDEĞİ: Tüm AI servisleri çökerse devreye giren Jenerik Bölüm Çıkarıcı
@@ -616,38 +636,41 @@ export async function detectSectionTitlesOnlyTextAI(
   }
 
   const started = Date.now()
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      body,
-      { headers, timeout: 180000 }
-    )
-    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-    await logDirectGeminiApiCall({
-      apiKey,
-      model,
-      operation: "section_titles_text",
-      stage: "section_detect",
-      courseSlug: logContext?.courseSlug ?? null,
-      status: "SUCCESS",
-      durationMs: Date.now() - started,
-    })
-    return parseTitleArrayFromAi(raw)
-  } catch (e: unknown) {
-    const err = e as { response?: { status?: number; data?: unknown }; message?: string }
-    const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
-    await logDirectGeminiApiCall({
-      apiKey,
-      model,
-      operation: "section_titles_text",
-      stage: "section_detect",
-      courseSlug: logContext?.courseSlug ?? null,
-      status,
-      errorDetail: (err.message || "section_titles_text failed").substring(0, 500),
-      durationMs: Date.now() - started,
-    })
-    throw e
-  }
+  return executeWithRotation(model, apiKey, async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        body,
+        { headers, timeout: 180000 }
+      )
+      const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "section_titles_text",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status: "SUCCESS",
+        durationMs: Date.now() - started,
+      })
+      return parseTitleArrayFromAi(raw)
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: unknown }; message?: string }
+      const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "section_titles_text",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status,
+        errorDetail: (err.message || "section_titles_text failed").substring(0, 500),
+        durationMs: Date.now() - started,
+      })
+      throw e
+    }
+  })
 }
 
 /** Multimodal: PDF'ten yalnızca başlık listesi */
@@ -671,36 +694,39 @@ export async function detectSectionTitlesOnlyMultimodal(
   }
 
   const started = Date.now()
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      body,
-      { headers, timeout: 300000 }
-    )
-    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
-    await logDirectGeminiApiCall({
-      apiKey,
-      model,
-      operation: "section_titles_multimodal",
-      stage: "section_detect",
-      courseSlug: logContext?.courseSlug ?? null,
-      status: "SUCCESS",
-      durationMs: Date.now() - started,
-    })
-    return parseTitleArrayFromAi(raw)
-  } catch (e: unknown) {
-    const err = e as { response?: { status?: number }; message?: string }
-    const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
-    await logDirectGeminiApiCall({
-      apiKey,
-      model,
-      operation: "section_titles_multimodal",
-      stage: "section_detect",
-      courseSlug: logContext?.courseSlug ?? null,
-      status,
-      errorDetail: (err.message || "section_titles_multimodal failed").substring(0, 500),
-      durationMs: Date.now() - started,
-    })
-    throw e
-  }
+  return executeWithRotation(model, apiKey, async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        body,
+        { headers, timeout: 300000 }
+      )
+      const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "section_titles_multimodal",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status: "SUCCESS",
+        durationMs: Date.now() - started,
+      })
+      return parseTitleArrayFromAi(raw)
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number }; message?: string }
+      const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "section_titles_multimodal",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status,
+        errorDetail: (err.message || "section_titles_multimodal failed").substring(0, 500),
+        durationMs: Date.now() - started,
+      })
+      throw e
+    }
+  })
 }

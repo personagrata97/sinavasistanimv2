@@ -33,7 +33,15 @@ const MemoizedMarkdown = React.memo(({ content, wrapTooltip }: { content: string
         code: ({className, children}) => {
           const match = /language-mermaid/.exec(className || '')
           if (match) {
-            return <MermaidDiagram chart={String(children).replace(/\\n$/, '')} />
+            const extractText = (node: any): string => {
+              if (typeof node === 'string') return node;
+              if (typeof node === 'number') return node.toString();
+              if (Array.isArray(node)) return node.map(extractText).join('');
+              if (node && node.props && node.props.children) return extractText(node.props.children);
+              return '';
+            };
+            const chartData = extractText(children).replace(/\\n$/, '');
+            return <MermaidDiagram chart={chartData} />
           }
           return <code className="text-emerald-300 bg-slate-800/80 px-1.5 py-0.5 rounded text-xs">{children}</code>
         },
@@ -88,7 +96,7 @@ export function PremiumMarkdownRenderer({
 
       // ✨ YENİ: KAPSAM KİLİTLİ HİBRİT ARAMA (SCOPE-LOCKED HYBRID SEARCH) ✨
       // 1. Adım: Yapay zekanın eklediği [KAYNAK BAŞLIĞI: Başlık Adı] etiketini yakala
-      const sourceMatch = autoScrollKeyword.match(/\[KAYNAK BAŞLIĞI:\s*(.*?)\]/i);
+      const sourceMatch = autoScrollKeyword.match(/(?:\[|\*\*|\n)*KAYNAK BAŞLIĞI(.*)/i);
       if (sourceMatch && sourceMatch[1]) {
          const exactHeadingText = sourceMatch[1].trim().toLowerCase();
          for (let i = 0; i < searchScope.length; i++) {
@@ -122,7 +130,7 @@ export function PremiumMarkdownRenderer({
 
       // 2. Adım: Arama kelimelerini hazırla
       const stopWords = ['aşağıdakilerden', 'hangisi', 'yanlıştır', 'doğrudur', 'kaynak', 'metne', 'metin', 'metinde', 'metinden', 'göre', 'hangisidir', 'hangileri', 'ilgili', 'nedir', 'değildir', 'olamaz', 'olabilir', 'hakkında', '[kaynak', 'başlığı:'];
-      const keywordTokens = autoScrollKeyword.toLowerCase().replace(/\[kaynak başlığı:.*?\]/g, '').split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
+      const keywordTokens = autoScrollKeyword.toLowerCase().replace(/(?:\[|\*\*|\n)*kaynak başlığı[\s\S]*/gi, '').split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
 
       // 3. Adım: Kilitlenmiş Kapsamda (veya tüm dokümanda) Bulanık Arama (Fuzzy Search)
       for (let i = 0; i < searchScope.length; i++) {

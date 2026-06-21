@@ -448,6 +448,18 @@ function rotateToNextKey(modelId: string): string | null {
   return result
 }
 
+export function getAvailableGeminiKey(modelId: string): string | null {
+  return getNextGeminiKeyWithFallback(modelId, 1);
+}
+
+export function suspendGeminiKey(apiKey: string): void {
+  const trimmed = apiKey.trim()
+  const keyIndex = geminiKeys.findIndex((k) => k.trim() === trimmed)
+  if (keyIndex >= 0) {
+    suspendedKeys.set(keyIndex, Date.now())
+  }
+}
+
 // ==================== EXAM INTELLIGENCE ====================
 
 // Sınav bilgileri ve MUTLAK KURALLAR - tüm AI promptlarında kullanılacak
@@ -1135,10 +1147,14 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           const isSuspended = errStatus === "FORBIDDEN_403" || errData.includes("API key not valid")
           if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now())
 
-          const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || isSuspended
+          // TIMEOUT'u da kota hatası gibi değerlendirip key rotasyonuna sokuyoruz!
+          const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || errStatus === "TIMEOUT" || isSuspended
           if (isQuotaError) {
             quotaHit = true
-            suspendedKeys.set(currentKeyIndex, Date.now())
+            // Timeout ise key'i banlamaya (suspendedKeys) gerek yok, sadece diğerine geç
+            if (isSuspended || errStatus === "RATE_LIMIT_429") {
+              suspendedKeys.set(currentKeyIndex, Date.now())
+            }
             continue
           }
         }
@@ -1540,7 +1556,7 @@ ${!isGlossary ? `
    Notları görsel açıdan zengin ve çekici yap. Dümdüz paragraflarla dolu, göz yoran notlar DEĞERSİZDİR.
    Her fırsatta görselleştir, ama içerikle uyumsuz zorlama görsel EKLEME:
    - İki veya daha fazla şey karşılaştırılıyorsa (örn: kurumlar, süreler, ceza türleri, yetkiler) → **Markdown Tablosu** yap
-   - Kronolojik bir süreç, karar akışı veya hiyerarşi varsa → **Mermaid.js diyagramı** çiz (⚠️ KESİN KURAL: Mermaid diyagramlarında tüm düğüm isimlerini İSTİSNASIZ OLARAK köşeli parantez ve çift tırnak içine al (örn: A["İhraççı Şirket"] --> B["Kurul"]). Bu kurala uymazsan UI çöker!)
+   - Kronolojik bir süreç, karar akışı veya hiyerarşi varsa → **Mermaid.js diyagramı** çiz (⚠️ KESİN KURAL: Mermaid diyagramlarında düğüm kimliklerinde (ID) KESİNLİKLE Türkçe karakter (ı,ğ,ü,ş,i,ö,ç) veya boşluk KULLANMA. Örn: \`A_Sirketi["İhraççı Şirket"] --> B_Kurulu["Kurul"]\`. Bu kurala uymazsan UI çöker! ⚠️ OK ETİKETİ KURALI: Dal etiketleri (Evet/Hayır vb.) MUTLAKA \`-->|"Evet"|\` veya \`-->|"Hayır"|\` formatında yaz. ASLA \`-- "Evet" -->\` veya \`-- 'Evet' -->\` formatını kullanma.)
    - Önemli bilgiler → **Emoji kutucuğu** (⚠️, 💡, 📌, 🔑)
    - Listeler → **Madde işaretli liste**
    🎯 HEDEF: Bir bölümde içerik uygunsa en az 2-3 tablo ve en az 1 Mermaid diyagramı olsun. Ama içerik gerektirmiyorsa zorlama yapma — içerik uygunluğu her şeyden önemli.
@@ -1555,7 +1571,7 @@ BÖLÜM: "${sectionTitle}"
 2. ETİKETLEME (ÇOK ÖNEMLİ): Her ana başlığın yanına konunun ait olduğu sınav modülünü köşeli parantez içinde yaz ${disc.labelExample}.
 3. DÜZ YAZI YAZMA: Her bilgiyi görsel bir formatta sun:
    - Karşılaştırmalar → **Markdown Tablosu** (en az 2-3 tablo olmalı)
-${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid diyagramlarında tüm düğüm isimlerini İSTİSNASIZ OLARAK köşeli parantez ve çift tırnak içine al (örn: A["İhraççı Şirket"] --> B["Kurul"]). Bu kurala uymazsan UI çöker!)` : ''}
+${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid düğüm kimliklerinde (ID) ASLA Türkçe karakter veya boşluk kullanma. Örn: \`A_Sirketi["İhraççı Şirket"] --> B_Kurulu["Kurul"]\`. Bu kurala uymazsan UI çöker! ⚠️ OK ETİKETİ KURALI: Dal etiketleri MUTLAKA \`-->|"Evet"|\` formatında yaz; ASLA \`-- "Evet" -->\` kullanma.)` : ''}
    - Önemli bilgiler → **Emoji kutucukları** (⚠️, 💡, 📌, 🔑)
    - Listeler → **Madde işaretli liste**
 4. TEMİZLİK: Parantez içindeki kaynakça referanslarını (örn: (ISO 27001, Madde 7.5), (SPK Tebliğ No: III-56.1)) notlardan tamamen temizle. Sadece anlamlı bilgiyi bırak (MD5, SHA-1 gibi teknik standart adları kalabilir).
@@ -1771,6 +1787,7 @@ export async function generateFlashcards(
   pageEnd?: number,
   /** Kaynak doğrulama için ham OCR metni (notlardan bağımsız). Verilmezse content kullanılır. */
   sourceContentForAudit?: string,
+  documentType?: any,
 ): Promise<Array<{ front: string; back: string; difficulty: string }>> {
   const isGlossary = sectionTitle.toLocaleUpperCase("tr-TR").includes("KISALTMALAR") ||
     sectionTitle.toLocaleUpperCase("tr-TR").includes("SÖZLÜK") ||
@@ -1839,6 +1856,8 @@ export async function generateFlashcards(
   - Kart 2: "X ile Y arasındaki fark nedir?" (karşılaştırma)
   - Kart 3: "Hangi durumda [kaynak metindeki süre/merci/belge] uygulanır?" (uygulama)`;
 
+    const isProcedureOrMevzuat = documentType ? requiresHeadingPreservation(documentType) : false;
+
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
   ${getExamIntelligence(aiMode, courseName)}
 
@@ -1857,11 +1876,11 @@ ${cardTypesInstruction}
     Format şöyle olsun:
     - İlk 1-2 paragraf: Resmi/teknik cevap (kaynak metindeki tanım + açıklama). Düz metin, madde işaretsiz.
     - 💡 Akılda Kalıcı Örnek: 1-2 cümlelik benzetme veya senaryo.
-    - 🪤 Dikkat: 1-2 cümlelik sınav tuzağı uyarısı.
+    ${isProcedureOrMevzuat ? '- 🪤 Dikkat: 1-2 cümlelik kritik bir prosedür/mevzuat uyarısı veya karıştırılabilecek ince detay.' : '- 🪤 Dikkat: 1-2 cümlelik sınav tuzağı uyarısı.'}
     Toplam cevap 6-10 satırı GEÇMESİN. Kısa, öz ve okunabilir olsun.
   - 🛡️ EKSİKSİZ TANIM: Eğer bir kurumun (örn: BDDK, SPK) tanımını veya görevlerini yazıyorsan, sadece adından yola çıkarak (sadece bankalar gibi) sığ bir tanım yapma. Kaynak metinde geçen TÜM görevlerini ve denetlediği TÜM şirket tiplerini (Faktoring, Leasing vb.) kapsayan eksiksiz bir açıklama yap.
-  - 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar Nedir?: Öğrenciyi yanıltmak için şıklara konulabilecek çok benzer kavramlar, yanlış süreler (örn: 10 iş günü yerine 15 takvim günü) veya ezber yanılgıları. Her kartın arkasında bu uyarı KESİNLİKLE olmalıdır.
-  - Özellikle rakam, süre, oran ve istisnaları soran kartlar bol olsun — sınavda en çok bunlar sorulur
+  - 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar Nedir?: ${isProcedureOrMevzuat ? 'Kritik bir yasal detay, ince bir ayrım veya prosedürde uygulamada çok sık karıştırılan çok benzer kavramlar ve süreler. ASLA sınav kelimesini kullanma!' : 'Öğrenciyi yanıltmak için şıklara konulabilecek çok benzer kavramlar, yanlış süreler (örn: 10 iş günü yerine 15 takvim günü) veya ezber yanılgıları. Her kartın arkasında bu uyarı KESİNLİKLE olmalıdır.'}
+  - Özellikle rakam, süre, oran ve istisnaları soran kartlar bol olsun — ${isProcedureOrMevzuat ? 'uygulamada' : 'sınavda'} en çok bunlar sorulur
   - 🚫 KESİNLİKLE YASAK: "Kaynak metne göre", "Verilen metne göre", "Ders notlarında", "Metinde belirtilen", "Mevzuata göre" gibi meta-ifadeleri ASLA kullanma. Soruları doğrudan genel geçer akademik doğrular olarak sor.
   - **ASLA KENDİ KAFANDAN SINAV TAKTİĞİ VEYA YORUM UYDURMA!** "Sınavda doğrudan şu terimler sorulmaktadır", "Buraya çok dikkat edin", "Bu konu çok önemlidir" gibi HOCALIK TASLAYAN veya kaynak metinde (PDF'te) olmayan hiçbir yönlendirici/abartı cümleyi **ASLA KULLANMA.**
   - 🇹🇷 DİL KALİTESİ: Türkçe dil bilgisi, kelime dizilimi ve akıcılığa %100 uy.
@@ -1974,6 +1993,7 @@ export async function generateQuestions(
   importance?: string,
   /** Kaynak doğrulama için ham OCR metni (notlardan bağımsız). Verilmezse content kullanılır. */
   sourceContentForAudit?: string,
+  documentType?: any,
 ): Promise<Array<{ text: string; options: string[]; correct: string; explanation: string; difficulty: string }>> {
   // Chunking mantığı devreye giriyor!
   const chunkThreshold = 15000;
@@ -2015,6 +2035,8 @@ export async function generateQuestions(
       `,
     }
 
+    const isProcedureOrMevzuat = documentType ? requiresHeadingPreservation(documentType) : false;
+
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName)}
 
@@ -2027,8 +2049,8 @@ ${levelQuestionStyle[userLevel] || levelQuestionStyle.beginner}
 
 SORU KURALLARI:
 - 🚫 KESİNLİKLE YASAK: Belgenin yapısı, başlık numaraları veya içindekiler tablosuyla ilgili soru SORMA. Sadece gerçek finansal, teknik ve mevzuat bilgisini ölç.
-- 🚨 ÖLÜMCÜL HATA VE KESİN İPTAL SEBEBİ: Sorularda, şıklarda ve açıklamalarda "Kaynak metne göre", "Yukarıdaki bilgilere göre", "Ders notlarında", "Metinde belirtilen" GİBİ İFADELER ASLA VE ASLA KULLANILAMAZ! Soruyu sanki tek başına, bağımsız, profesyonel bir ÖSYM sınav sorusuymuş gibi doğrudan sor. Hiçbir şekilde öğrenciye "bu sorunun kaynağı bir metin/PDF" hissi YARATILMAYACAK.
-- **ASLA KENDİ KAFANDAN SINAV TAKTİĞİ VEYA YORUM UYDURMA!** "Sınavda doğrudan şu terimler sorulmaktadır", "Buraya çok dikkat edin", "Bu konu çok önemlidir" gibi HOCALIK TASLAYAN veya kaynak metinde (PDF'te) olmayan hiçbir yönlendirici/abartı cümleyi **ASLA KULLANMA.**
+- 🚨 ÖLÜMCÜL HATA VE KESİN İPTAL SEBEBİ: Sorularda, şıklarda ve açıklamalarda "Kaynak metne göre", "Yukarıdaki bilgilere göre", "Ders notlarında", "Metinde belirtilen" GİBİ İFADELER ASLA VE ASLA KULLANILAMAZ! Soruyu sanki tek başına, bağımsız, profesyonel bir kurum sınav sorusuymuş gibi doğrudan sor. Hiçbir şekilde öğrenciye "bu sorunun kaynağı bir metin/PDF" hissi YARATILMAYACAK.
+- **ASLA KENDİ KAFANDAN ${isProcedureOrMevzuat ? 'YORUM' : 'SINAV TAKTİĞİ VEYA YORUM'} UYDURMA!** "Sınavda doğrudan şu terimler sorulmaktadır", "Buraya çok dikkat edin", "Bu konu çok önemlidir" gibi HOCALIK TASLAYAN veya kaynak metinde (PDF'te) olmayan hiçbir yönlendirici/abartı cümleyi **ASLA KULLANMA.**
 - Doğru cevap şık harfi olsun (A, B, C, D veya E)
 - Resmi terimleri AYNEN kullan (pay, tahvil, izahname vb.)
 - Çeldirici şıklar gerçekçi olsun ve birbirine çok benzesin
@@ -2036,9 +2058,9 @@ SORU KURALLARI:
 - Metinde tarih/süre/limit varsa bunlarla ilgili soru sor
 - 🇹🇷 DİL KALİTESİ: Türkçe dil bilgisi, kelime dizilimi ve akıcılığa %100 uy. İngilizce'den doğrudan çevrilmiş gibi duran yapay veya ters yapılar ("Özeti [Konu]", "Sözlüğü [Konu]", "Notları [Konu]") KESİNLİKLE kullanma. Her zaman doğal ve düzgün bir Türkçe ile akıcı cümleler kur.
 
-DİNAMİK ÜRETİM: Bu metin ana "${sectionTitle}" bölümünün bir PARÇASIDIR. Lütfen bu metnin BİLGİ YOĞUNLUĞUNU analiz et. Eğer metin kurallar, cezalar, oranlar ve tanımlarla doluysa EN AZ 3-5 adet kaliteli sınav sorusu oluştur. Eğer metin sadece giriş, önsöz veya yüzeysel bilgilerden ibaretse sadece 1-2 adet temel soru oluştur. Kaliteden taviz verme.
+DİNAMİK ÜRETİM: Bu metin ana "${sectionTitle}" bölümünün bir PARÇASIDIR. Lütfen bu metnin BİLGİ YOĞUNLUĞUNU analiz et. Eğer metin kurallar, cezalar, oranlar ve tanımlarla doluysa EN AZ 3-5 adet kaliteli ${isProcedureOrMevzuat ? 'değerlendirme' : 'sınav'} sorusu oluştur. Eğer metin sadece giriş, önsöz veya yüzeysel bilgilerden ibaretse sadece 1-2 adet temel soru oluştur. Kaliteden taviz verme.
 
-SORU TİPLERİ VE DAĞILIMI (GERÇEK ÖSYM/SPL FORMATI):
+SORU TİPLERİ VE DAĞILIMI:
 Ürettiğin soruların en az %40'ı "ÖNCÜLLÜ (I, II, III)" formatında OLMALIDIR. Bu kesin bir kuraldır.
 1. Öncüllü Soru (ZORUNLU - %40): 
    I. [Birinci ifade]
@@ -2069,7 +2091,8 @@ ZORUNLU FORMAT (bu formata %100 uy):
 ❌ [C şıkkının tam metni]) Yanlış çünkü: [somut, spesifik neden]  
 ❌ [D şıkkının tam metni]) Yanlış çünkü: [somut, spesifik neden]
 ❌ [E şıkkının tam metni]) Yanlış çünkü: [somut, spesifik neden]\n
-💡 Sınav İpucu: [Bu soruyla ilgili karıştırılabilecek önemli bir nokta veya ezber tekniği]"
+${isProcedureOrMevzuat ? '💡 Kritik Detay: [Bu soruyla ilgili prosedürde dikkat edilmesi gereken önemli bir nokta veya risk uyarısı]' : '💡 Sınav İpucu: [Bu soruyla ilgili karıştırılabilecek önemli bir nokta veya ezber tekniği]'}
+"
 
 ⛔ YAPMA: Sadece "Doğru cevap A çünkü..." yazıp B, C, D, E'yi açıklamamak KABUL EDİLMEZ.
 ⛔ YAPMA: "Mevzuatta/Metinde/Kaynakta şöyle denmektedir:" gibi atıflar KESİNLİKLE KABUL EDİLMEZ. Doğrudan bilgiyi ver.
@@ -2495,6 +2518,7 @@ PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL, eksi/issue olarak YAZMA):
 - Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
 - Kaynak metindeki dolgu cümlelerinin atlanması ✅
 - Yazarın, kaynaktaki basit bir harf/imla hatasını düzeltmemiş olması (örn: 'Standard' yerine 'Standart') bir hata değildir ✅
+- 🚨 DİKKAT (ŞERH KURALI VE TEYİT ZORUNLULUĞU): Kaynak metindeki bilgi veya yazım hatalarını düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN. Eğer AI'ın not düştüğü düzeltme (şerh) literatürde ve gerçek dünyada GERÇEKTEN DOĞRUYSA (evet, TTK 6102'dir) KESİNLİKLE bunu bir uydurma sayma ve KABUL ET ✅. AMA eğer AI'ın şerhte iddia ettiği 'doğrusu budur' dediği bilgi YANLIŞSA (örn: TTK 6502'dir demişse), işte o zaman bunu "issues" listesine "HATALI ŞERH" olarak yaz ❌.
 ${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş başlıklar "issues"a yazılır ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
 
 ⚠️ MUTLAK DOĞRULUK KURALI: 
@@ -2654,7 +2678,8 @@ ${JSON.stringify(questions, null, 2)}
 
 🎯 MÜFETTİŞ DENETİM TALİMATLARI:
 Aşağıdaki kurallara göre her soruyu tek tek ve titizlikle incele:
-1. Bilgi Hatası (Factual Error): Soru kökünde, doğru şıkta veya açıklamalarda kaynak metinle çelişen, uydurulmuş veya yanlış aktarılmış herhangi bir yasal süre (gün/ay), para cezası miktarı, katalog suç veya kural var mı?
+1. Bilgi Hatası (Factual Error): Soru kökünde veya DOĞRU kabul edilen şıkta kaynak metinle çelişen veya uydurulmuş bir yasal süre, ceza miktarı veya kural var mı?
+   🚨 ÖNEMLİ İSTİSNA (ÇELDİRİCİ KURALI): Yanlış şıklarda (çeldiricilerde) ve "X şıkkı yanlıştır çünkü..." diyen çözüm açıklamalarında kaynak metinde OLMAYAN mantıklı dış/genel bilgilerin kullanılması BİLİNÇLİDİR VE HALÜSİNASYON SAYILMAZ. Test tekniği gereği çeldirici şıkların kaynakta olmayan mantıklı alternatiflerden oluşması KABUL EDİLEBİLİRDİR. SADECE soru kökünün ve DOĞRU cevabın kaynakta olduğunu teyit et!
 2. Şık Tutarsızlığı (Option Contradiction): Doğru kabul edilen cevap şıkkı, sorunun kendisiyle veya kaynak metindeki kuralla çelişiyor mu? (Örn: Soru "hangisi yanlıştır" derken, doğru cevap olarak "doğru" bir ifadeyi mi işaretlemiş?)
 3. Eksik Şık Açıklaması: Açıklamada (explanation alanında) A, B, C, D seçeneklerinin her biri için teker teker detaylı analiz yapılmamış, sadece tek cümleyle geçiştirilmiş veya bazı şıklar atlanmış mı?
 4. Eksik Konular (Missing Topics): Kaynak metindeki çok kritik, sınavda çıkabilecek önemli bir tanım veya kural, üretilen bu sorularda HİÇ test edilmemiş mi? (Sorularda hiç değinilmemiş olan eksik konuları belirle).
@@ -2687,9 +2712,10 @@ export async function auditFlashcardsAgainstSource(
   sourceContent: string,
   flashcards: Array<{ front: string; back: string }>,
   sectionTitle: string,
+  courseName?: string,
   fileUri?: string
 ): Promise<{ passed: boolean; issues: string[] }> {
-  const prompt = `
+  const prompt = `[LOG_CONTEXT: ${courseName ? courseName + ' > ' : ''}${sectionTitle}]
 Sen bir sınav hazırlık flashcard denetim uzmanısın (Flashcard Müfettişi). Görevin, üretilen soru-cevap kartlarını (flashcards) kaynak resmi metinle karşılaştırarak bilgi doğruluğu, yasal süre limitleri ve yapay zeka halüsinasyonları açısından denetlemektir.
 
 BÖLÜM BAŞLIĞI: "${sectionTitle}"
@@ -2744,6 +2770,7 @@ Denetim ekibi (Müfettiş) bazı eksikler tespit etti. Görevin bu eksikleri not
 2. EĞER eksik olan şeyin yanındaki konular bir TABLO'da anlatılmışsa, sen de eksik konuyu o tabloya YENİ BİR SATIR olarak ekle. Düz paragraf yazma!
 3. EĞER eksik olan şeyin etrafındaki konular bir MERMAID diyagramındaysa, diyagram kodunu güncelle ve eksiği oraya ekle.
 4. EĞER eksik olan şey senaryolaştırılmışsa (örn: "X Kurumunun Uyum Görevlisi"), eksiği de aynı karakterin hikayesine yedirerek anlat. Laubali ifadelerden KESİNLİKLE kaçın.
+5. YAMA YAPTIĞIN ASLA BELLİ OLMAMALI: "Ayrıca", "Ek olarak", "Öte yandan", "Not:" gibi geçiş kelimeleri KULLANMA. Yeni bilgiyi, önceki metnin %100 doğal bir uzantısı gibi konumlandır. Üslup, format ve tonlama birebir aynı olmalıdır.
 5. KESİNLİKLE mevcut hiçbir bilgiyi, tabloyu veya kavramı SİLME/ÖZETLEME. Sadece eksikleri ekle ve akışı düzelt.
 6. Notun genel yapısını, başlıklarını ve sıralamasını ASLA değiştirme.
 7. Notun sonuna "Ek Bilgiler", "Müfettiş Notu" gibi sonradan eklendiğini belli eden utanç verici yamalar YAPMA. 

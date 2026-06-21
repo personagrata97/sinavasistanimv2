@@ -541,6 +541,9 @@ function QuestionsTab({ slug, courseName, isProfessional }: { slug: string, cour
                                targetText = q.text + " " + q.options[optionIndex];
                             }
                          }
+                         if (q.explanation) {
+                            targetText = targetText + " " + q.explanation;
+                         }
                          setAutoScrollKeyword(targetText);
                          setShowNotesModal(true);
                       }

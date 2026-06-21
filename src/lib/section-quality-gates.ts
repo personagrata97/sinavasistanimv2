@@ -18,6 +18,7 @@ export type ParsedQualityIssues = {
   stages?: Partial<QualityStageFlags>
   auditResult?: { passed?: boolean | string; missingDetails?: string[]; contradictions?: string[] }
   inspectorFailed?: boolean
+  inspectorFindings?: Array<{ description: string; severity: string; type: string }>
   message?: string
   [key: string]: unknown
 }
@@ -72,6 +73,37 @@ export function parseQualityIssues(verificationIssues: string | null): ParsedQua
   } catch {
     return {}
   }
+}
+
+/** Mevcut denetim geçmişini koruyarak verificationIssues güncelle — currentMicroPhase tek başına yazılmaz. */
+export function mergeVerificationIssues(
+  existing: ParsedQualityIssues | string | null | undefined,
+  patch: ParsedQualityIssues,
+): ParsedQualityIssues {
+  const base =
+    typeof existing === "string"
+      ? parseQualityIssues(existing)
+      : existing && typeof existing === "object"
+        ? { ...existing }
+        : {}
+
+  const merged: ParsedQualityIssues = { ...base, ...patch }
+
+  if (base.stages && patch.stages) {
+    merged.stages = { ...base.stages, ...patch.stages }
+  }
+  if (base.auditResult && patch.auditResult) {
+    merged.auditResult = { ...base.auditResult, ...patch.auditResult }
+  }
+
+  return merged
+}
+
+export function stringifyMergedVerificationIssues(
+  existing: ParsedQualityIssues | string | null | undefined,
+  patch: ParsedQualityIssues,
+): string {
+  return JSON.stringify(mergeVerificationIssues(existing, patch))
 }
 
 function auditPassed(issuesObj: ParsedQualityIssues): boolean {

@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { getStudyNotFoundMessage } from "@/lib/program-catalog"
 import { clearProcessTriggerDebounce } from "@/lib/course-processing-status"
+import { stringifyMergedVerificationIssues } from "@/lib/section-quality-gates"
 import { cancelCourseProcessing, clearHeartbeat } from "@/lib/process-registry"
 
 /** Çalışan arka plan işçisini durdurur — bölüm/not verisi silinmez. */
@@ -38,13 +39,13 @@ export async function POST(req: NextRequest) {
       const pendingSection = await prisma.section.findFirst({
         where: { courseId: course.id, processed: false },
         orderBy: { order: "asc" },
-        select: { id: true },
+        select: { id: true, verificationIssues: true },
       })
       if (pendingSection) {
         await prisma.section.update({
           where: { id: pendingSection.id },
           data: {
-            verificationIssues: JSON.stringify({
+            verificationIssues: stringifyMergedVerificationIssues(pendingSection.verificationIssues, {
               currentMicroPhase: pauseMessage,
               pauseReason: "user_cancelled",
               pausedAt: new Date().toISOString(),

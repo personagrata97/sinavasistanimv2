@@ -19,6 +19,7 @@ import { getBookmarkForCourse, setBookmark, removeBookmark, getHighlightsForSect
 import { PremiumMarkdownRenderer } from "./PremiumMarkdownRenderer"
 import { SectionQualityModal } from "@/components/admin/SectionQualityModal"
 import { parseQualityIssues, deriveQualityStages, getQualityBadgeState } from "@/lib/section-quality-gates"
+import { prepareMermaidForRender } from "@/lib/mermaid-normalize"
 
 const PDF_SHARED_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
@@ -336,59 +337,10 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
         // 0. Yeni satırları (\r\n -> \n) normalize et. Bu sayede tablolar ve listeler asla bozulmaz.
         const normalizedText = (text || '').replace(/\r\n/g, '\n');
 
-        // Şemalardaki uzun kutu metinlerini otomatik bölen yardımcı fonksiyon (Mermaid'in devasa kutu çizmesini engeller)
-        function wrapLongText(str: string, maxLineLength = 15): string {
-          if (str.includes('<br>') || str.includes('<br/>') || str.toLowerCase().includes('<br')) return str;
-          if (str.length <= maxLineLength) return str;
-          
-          // Boşluk yoksa karakter bazlı zorla böl (Türkçe uzun terimler için fallback)
-          if (!str.includes(' ')) {
-            const chunks: string[] = [];
-            for (let i = 0; i < str.length; i += maxLineLength) {
-              chunks.push(str.substring(i, i + maxLineLength));
-            }
-            return chunks.join('<br>');
-          }
-          
-          const words = str.split(' ');
-          const lines: string[] = [];
-          let currentLine = '';
-          
-          words.forEach(word => {
-            // Tek kelime bile maxLineLength'ten uzunsa onu da böl
-            if (word.length > maxLineLength) {
-              if (currentLine) { lines.push(currentLine); currentLine = ''; }
-              for (let i = 0; i < word.length; i += maxLineLength) {
-                lines.push(word.substring(i, i + maxLineLength));
-              }
-              return;
-            }
-            if ((currentLine + ' ' + word).trim().length <= maxLineLength) {
-              currentLine = (currentLine + ' ' + word).trim();
-            } else {
-              if (currentLine) lines.push(currentLine);
-              currentLine = word;
-            }
-          });
-          if (currentLine) lines.push(currentLine);
-          
-          return lines.join('<br>');
-        }
-
         // 1. Mermaid bloklarını korumaya al (Böylece cleanMarkdown veya \n -> <br/> değişimlerinden etkilenmez)
         const mermaidBlocks: string[] = [];
-        let tempText = normalizedText.replace(/```mermaid\n([\s\S]*?)```/g, (match, code) => {
-          // Kutulardaki ([], {}, ()) uzun metinleri otomatik <br> ile bölerek şemayı son derece dengeli ve kompakt yapıyoruz
-          const processedCode = code.replace(/([a-zA-Z0-9_-]+)({\s*"([^"]+)"\s*}|{\s*([^{}]+)\s*}|\[\s*"([^"]+)"\s*\]|\[\s*([^\[\]]+)\s*\]|\(\s*"([^"]+)"\s*\)|\(\s*([^\(\)]+)\s*\))/g, (m: string, id: string, shapes: string, g1: string | undefined, g2: string | undefined, g3: string | undefined, g4: string | undefined, g5: string | undefined, g6: string | undefined) => {
-            const rawText = g1 || g2 || g3 || g4 || g5 || g6 || '';
-            const wrappedText = wrapLongText(rawText.trim(), 15);
-            if (shapes.startsWith('{')) return `${id}{"${wrappedText}"}`;
-            if (shapes.startsWith('[')) return `${id}["${wrappedText}"]`;
-            if (shapes.startsWith('(')) return `${id}("${wrappedText}")`;
-            return m;
-          });
-          
-          mermaidBlocks.push(processedCode);
+        let tempText = normalizedText.replace(/```mermaid\s*\n?([\s\S]*?)```/g, (match, code) => {
+          mermaidBlocks.push(prepareMermaidForRender(code));
           return `%%DIAGRAM_BLOCK_${mermaidBlocks.length - 1}%%`;
         });
 
@@ -495,43 +447,7 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
 <head>
   <meta charset="UTF-8">
   <title>${course.name} - Ders Notları</title>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-  <script>
-    let mermaidInitialized = false;
-    function initMermaid() {
-      if (mermaidInitialized) return;
-      if (typeof mermaid !== 'undefined') {
-        mermaidInitialized = true;
-        mermaid.initialize({ startOnLoad: false, theme: 'default' });
-        
-        // Markdown kod bloklarını mermaid div'lerine çevir
-        document.querySelectorAll('code.language-mermaid').forEach(el => {
-          const div = document.createElement('div');
-          div.className = 'mermaid';
-          div.textContent = el.textContent;
-          el.parentNode.replaceWith(div);
-        });
-
-        // Hepsini tek seferde render et ve boyutları normalize et
-        mermaid.run({
-          nodes: document.querySelectorAll('.mermaid'),
-          suppressErrors: true
-        }).then(() => {
-          document.querySelectorAll('.mermaid svg').forEach(svg => {
-            svg.style.maxWidth = '100%';
-            svg.style.height = 'auto';
-            svg.removeAttribute('width');
-          });
-        });
-      } else {
-        setTimeout(initMermaid, 50);
-      }
-    }
-    
-    initMermaid();
-    document.addEventListener('DOMContentLoaded', initMermaid);
-    window.addEventListener('load', initMermaid);
-  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     
@@ -639,11 +555,10 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
     .mermaid-wrap svg {
       display: block !important;
       margin: 0 auto !important;
-      /* Responsive ölçekleme: şema sayfadan taşmaz, kendi doğal boyutunda kalır */
-      width: max-content !important;
-      max-width: 100% !important;
+      /* UI ile aynı mantık: viewBox korunarak kapsayıcıya sığdır */
+      width: 100% !important;
+      max-width: 650px !important;
       height: auto !important;
-      /* viewBox korunduğu sürece SVG kendi kendini ölçekler */
       overflow: visible !important;
       page-break-inside: avoid !important;
       break-inside: avoid !important;
@@ -765,6 +680,55 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
         summary.style.marginTop = "10px";
       }
     });
+  </script>
+  <script>
+    let mermaidRenderDone = false;
+
+    async function initMermaid() {
+      if (mermaidRenderDone) return;
+      if (typeof mermaid === 'undefined') {
+        setTimeout(initMermaid, 50);
+        return;
+      }
+
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        flowchart: { htmlLabels: true, curve: 'basis' }
+      });
+
+      document.querySelectorAll('code.language-mermaid').forEach(el => {
+        const div = document.createElement('div');
+        div.className = 'mermaid';
+        div.textContent = el.textContent;
+        el.parentNode.replaceWith(div);
+      });
+
+      const nodes = Array.from(document.querySelectorAll('.mermaid')).filter(
+        (node) => !node.querySelector('svg')
+      );
+
+      if (nodes.length === 0) {
+        if (document.querySelectorAll('.mermaid-wrap, .mermaid').length === 0) {
+          mermaidRenderDone = true;
+        }
+        return;
+      }
+
+      try {
+        await mermaid.run({
+          nodes,
+          suppressErrors: false
+        });
+        mermaidRenderDone = true;
+      } catch (err) {
+        console.error('Mermaid render failed:', err);
+      }
+    }
+
+    initMermaid();
+    document.addEventListener('DOMContentLoaded', initMermaid);
+    window.addEventListener('load', initMermaid);
   </script>
 </body>
 </html>`

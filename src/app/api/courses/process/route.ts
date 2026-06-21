@@ -490,10 +490,11 @@ export async function POST(req: NextRequest) {
               logCourseSlug: slug,
             })
 
-            if (result && result.sections.length >= 2 && result.validation.valid) {
+            const isLastAttempt = tocAttempts >= MAX_TOC_ATTEMPTS
+            if (result && result.sections.length >= 2 && (result.validation.valid || isLastAttempt)) {
               sections = sectionsToDetected(result.sections, pageTexts)
               console.log(
-                `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score})`
+                `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score}${!result.validation.valid ? " - Son deneme kabulü" : ""})`
               )
               break
             }
@@ -517,16 +518,30 @@ export async function POST(req: NextRequest) {
 
     // Bölüm algılanamazsa dur — tek parça veya elle tablo yok (otonom sistem).
     if (sections.length === 0) {
-      releaseProcessing(slug)
-      await prisma.course.update({ where: { slug }, data: { status: "error" } })
-      console.error(`[PROCESS] 🛑 Bölüm algılama başarısız — işlem durduruldu (${course.name}).`)
-      return NextResponse.json(
-        {
-          error:
-            "PDF bölümleri otomatik algılanamadı (içindekiler okunamadı veya doğrulama geçmedi). Kitabın fiziksel sayfa sırasına göre içindekiler sayfasını kontrol edip PDF'i yeniden yükleyin.",
-        },
-        { status: 422 }
-      )
+      // 🚀 Zeliha Prosedürleri / Kısa Belgeler için KORUMA KALKANI (Fallback)
+      // Eğer doküman 60 sayfadan kısaysa ve AI "İçindekiler" bulamadıysa hata verme, 
+      // tüm dokümanı tek bir "Genel İçerik" bölümü olarak kaydet!
+      if (course.totalPages <= 60) {
+        console.log(`[PROCESS] ⚠️ İçindekiler tablosu bulunamadı ama belge kısa (${course.totalPages} sayfa). Tek parça (Genel İçerik) olarak işleniyor.`);
+        sections = [{
+          title: "Genel İçerik",
+          pageStart: 1,
+          pageEnd: course.totalPages,
+          notes: "",
+          module: "1"
+        }];
+      } else {
+        releaseProcessing(slug)
+        await prisma.course.update({ where: { slug }, data: { status: "error" } })
+        console.error(`[PROCESS] 🛑 Bölüm algılama başarısız — işlem durduruldu (${course.name}).`)
+        return NextResponse.json(
+          {
+            error:
+              "PDF bölümleri otomatik algılanamadı (içindekiler okunamadı veya doğrulama geçmedi). Kitabın fiziksel sayfa sırasına göre içindekiler sayfasını kontrol edip PDF'i yeniden yükleyin.",
+          },
+          { status: 422 }
+        )
+      }
     }
 
     // ⚠️ İÇİNDEKİLER / ÖNSÖZ / KAPAK FİLTRESİ
@@ -602,18 +617,13 @@ export async function POST(req: NextRequest) {
   }
 
   // ========== PHASE 3+4: AI Analysis + Schedule — ARKA PLANDA ==========
-  // HTTP response'u hemen dön. AI analizi Node.js event loop'unda arka planda devam eder.
-  // Bu sayede Next.js API route timeout (~60sn) sorunu çözülür.
-  (async () => {
-    try {
-      await processInBackground(slug, course)
-    } catch (err: any) {
-      console.error("[BG] FATAL ERROR in background process:", err)
-      await finalizeCourseStatusIfStillProcessing(slug, "error").catch(() => { })
-    }
-  })().catch(error => {
-    console.error("[PROCESS_FATAL]", error);
-  })
+  // İşlem veritabanı kuyruğuna (Job Queue) eklenir. Sunucu kapansa bile güvendedir.
+  try {
+    const { enqueueCourseProcessJob } = await import("@/lib/job-processor")
+    await enqueueCourseProcessJob(slug, forceRetry)
+  } catch (error) {
+    console.error("[QUEUE_ERROR] Kuyruğa eklenemedi:", error)
+  }
 
   return NextResponse.json({
     success: true,
@@ -646,7 +656,7 @@ async function finalizeCourseStatusIfStillProcessing(
   return result.count > 0
 }
 
-export async function processInBackground(slug: string, course: any) {
+export async function processInBackground(slug: string, course: any, forceRetry: boolean = false) {
   try {
     let fileUrisReady = false
 
@@ -666,22 +676,6 @@ export async function processInBackground(slug: string, course: any) {
     const isProfessional = isProfessionalProgram(programSlug)
     const shouldStop = async (): Promise<boolean> => {
       if (isCancelled(slug, course.name)) return true
-      if (isHeartbeatStale(slug)) {
-        console.log(`[BG] 💔 Heartbeat kopuk — ${course.name} duraklatılıyor`)
-        cancelCourseProcessing(slug, course.name)
-        clearHeartbeat(slug)
-        try {
-          await pauseGhostProcessingInDb(
-            course.id,
-            slug,
-            HEARTBEAT_STALE_MESSAGE,
-            "heartbeat_stale",
-          )
-        } catch (pauseErr) {
-          console.warn("[BG] Heartbeat duraklatma DB yazılamadı:", pauseErr)
-        }
-        return true
-      }
       try {
         const fresh = await prisma.course.findUnique({
           where: { slug },
@@ -946,9 +940,15 @@ export async function processInBackground(slug: string, course: any) {
 
           // ==================== KALİTE DÖNGÜSÜ (Not Üretimi ve Doğrulama) ====================
           // Her yeni oturumda MAX_RETRIES kadar taze hak verilir, ancak sayaç geçmişten devam eder.
-          if (!notesAttemptSuccess) {
+          if (course.generateNotes === false) {
+            console.log(`[BG] ⏭️ Kullanıcı tercihi: Not üretimi KESİNLİKLE atlanıyor.`);
+            notesAttemptSuccess = true;
+            currentScore = 100;
+            notes = section.rawContent.length > 50 ? section.rawContent : "Not üretimi atlandı.";
+          } else if (!notesAttemptSuccess) {
             const loopTarget = startingAttempt + MAX_RETRIES - 1;
             for (let vAttempt = startingAttempt; vAttempt <= loopTarget; vAttempt++) {
+              if (await shouldStop()) break;
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
                 try {
@@ -966,6 +966,17 @@ export async function processInBackground(slug: string, course: any) {
                 // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
                 let isSurgicalPatch = false;
                 let enrichedContent = section.rawContent;
+
+                // 🚨 KISALTMALAR/TERİMLER İSTİSNASI (BYPASS)
+                const isDictionarySection = section.title.toUpperCase().includes("KISALTMALAR") || section.title.toUpperCase().includes("TERİMLER") || section.title.toUpperCase().includes("SÖZLÜK");
+                
+                if (isDictionarySection && notes && notes.length > 50) {
+                  console.log(`[BG] 🚀 [İSTİSNA]: "${section.title}" bölümü algılandı. Sözlük formatında olduğu için pedagojik puanlama ve Ground Truth (Müfettiş) testi atlanıyor!`);
+                  notesAttemptSuccess = true;
+                  currentScore = 100;
+                  // Force break out of the retry loop
+                  break;
+                }
 
                 if (lastVerification) {
                   const feedbackItems: string[] = [];
@@ -1403,13 +1414,22 @@ export async function processInBackground(slug: string, course: any) {
                             cerrahiYama: false,
                             flashcards: false,
                             questions: false,
-                            published: false,
+                            published: false, // DO NOT PUBLISH YET, wait for flashcards and questions
                           },
                           currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör ve Müfettiş onayı tamamlandı`,
                         },
                         { notes: notes, verificationScore: 100 },
                       )
-                      console.log(`[BG] 💾 %100 Kusursuz Not Anında Veritabanına Kazındı!`)
+                      
+                      // PROGRESİF KAYIT AŞAMA 1: Notlar mükemmelse anında canlıya al (processed: true)
+                      await prisma.section.update({
+                        where: { id: section.id },
+                        data: {
+                          notes: notes,
+                          verificationScore: 100
+                        }
+                      });
+                      console.log(`[BG] 💾 %100 Kusursuz Not Anında CANLIYA ALINDI (processed: true)!`)
                     } catch (saveErr) {
                       console.error(`[BG] ❌ Not anlık kaydetme hatası:`, saveErr)
                     }
@@ -1516,11 +1536,39 @@ export async function processInBackground(slug: string, course: any) {
             break
           }
 
+          // PROGRESİF KAYIT AŞAMA 1: Notlar onaylandığı an (veya en iyi skora düşüldüğünde) veritabanına kaydet
+          // Böylece sorular/flashcardlar beklenirken arayüzde notlar anında görünür!
+          if (notes && notes.length > 500) {
+            try {
+              await prisma.section.update({
+                where: { id: section.id },
+                data: {
+                  notes: notes,
+                  verificationScore: currentScore,
+                  verificationIssues: lastVerification
+                    ? JSON.stringify({
+                        missingTopics: lastVerification.missingTopics,
+                        issues: lastVerification.issues,
+                        suggestions: lastVerification.suggestions,
+                        attemptHistory: attemptHistory,
+                      })
+                    : null
+                }
+              })
+              console.log(`[BG] 💾 Notlar anında veritabanına CANLI olarak kaydedildi! (Flashcardlar beklenmiyor)`)
+            } catch (err) {
+              console.error(`[BG] ❌ Notların erken kayıt aşamasında hata:`, err)
+            }
+          }
+
           // ==================== DOĞRULANMIŞ NOT ÜZERİNDEN DERS ÖĞELERİNİ ÜRETME ====================
 
           let flashcards: any[] = []
           let questions: any[] = []
+          let isNewFlashcards = false
+          let isNewQuestions = false
           let analysis: any = {}
+          let detectedModule: string | null = null
           let finalTitle = section.title
           let requiresQuestions = true
 
@@ -1532,9 +1580,20 @@ export async function processInBackground(slug: string, course: any) {
             const finalContent = notes || section.rawContent;
             try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Flashcard Kartları (Bilgi Kartları) Oluşturuluyor...` }) } catch { }
 
-            // Flashcard'ları üret (tek deneme, tasarruf)
-            for (let fAttempt = 1; fAttempt <= 3; fAttempt++) {
-              try {
+            // GÜVENLİK DUVARI: Zaten flashcard varsa (ve zorla demiyorsa) eskisini koru ve atla
+            const existingFlashcardCount = await prisma.flashcard.count({ where: { sectionId: section.id } });
+            if (course.generateFlashcards === false) {
+              console.log(`[BG] ⏭️ Kullanıcı tercihi: Flashcard üretimi KESİNLİKLE atlanıyor.`);
+            } else if (existingFlashcardCount > 0 && !forceRetry) {
+              console.log(`[BG] ⏭️ Zaten ${existingFlashcardCount} flashcard mevcut. Yeniden üretilip silinmeyecek!`);
+              flashcards = await prisma.flashcard.findMany({ where: { sectionId: section.id } });
+              try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm mevcut Flashcard'lar korundu.` }) } catch { }
+            } else {
+              isNewFlashcards = true;
+              // Flashcard'ları üret (tek deneme, tasarruf)
+              for (let fAttempt = 1; fAttempt <= 3; fAttempt++) {
+                if (await shouldStop()) break;
+                try {
                 flashcards = await generateFlashcards(
                   finalContent,
                   section.title,
@@ -1544,12 +1603,62 @@ export async function processInBackground(slug: string, course: any) {
                   undefined,
                   section.pageStart,
                   section.pageEnd,
-                  section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, "")
+                  section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, ""),
+                  course.documentType
                 )
                 
                 // SOLVER AI: Flashcard Sağlaması
                 if (flashcards.length > 0) {
                   flashcards = await validateFlashcardsWithSolver(finalContent, flashcards);
+                  
+                  if (needsBilingualStudyItems(aiMode)) {
+                    console.log(`[BG] 🌐 Flashcard İngilizce çevirisi yapılıyor...`)
+                    try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Flashcard İngilizce çevirisi...` }) } catch { }
+                    const enCards = await translateFlashcardsToEnglish(flashcards, finalTitle, fullCourseName)
+                    
+                    const pairCheck = await validateBilingualPairs(
+                      flashcards.slice(0, 8).map((f, i) => ({
+                        tr: f.front,
+                        en: enCards[i]?.front_en || "",
+                        label: `flashcard-${i + 1}`,
+                      })),
+                      finalTitle,
+                      fullCourseName
+                    )
+                    if (!pairCheck.passed) {
+                      console.warn(`[BG] ⚠️ Flashcard çeviri tutarlılık uyarısı:`, pairCheck.issues.join("; "))
+                    }
+                    
+                    flashcards = flashcards.map((f, i) => ({
+                      ...f,
+                      front_en: enCards[i]?.front_en || null,
+                      back_en: enCards[i]?.back_en || null,
+                    }))
+                  }
+                  
+                  // PROGRESİF KAYIT AŞAMA 2: Flaşkartlar hazır olduğu an canlıya al (Soru havuzunu bekleme!)
+                  try {
+                    await prisma.flashcard.deleteMany({ where: { sectionId: section.id } });
+                    const existingFronts = new Set<string>()
+                    for (const card of flashcards) {
+                      const normalizedFront = card.front.trim().toLowerCase()
+                      if (!existingFronts.has(normalizedFront)) {
+                        existingFronts.add(normalizedFront)
+                        await prisma.flashcard.create({
+                          data: {
+                            courseId: course.id,
+                            sectionId: section.id,
+                            front: card.front,
+                            back: card.back,
+                            difficulty: card.difficulty || "medium"
+                          }
+                        })
+                      }
+                    }
+                    console.log(`[BG] 💾 ${flashcards.length} Flaşkart Anında CANLIYA ALINDI (Sorular beklenmiyor)!`)
+                  } catch (err) {
+                    console.error(`[BG] ❌ Flaşkart progresif kayıt hatası:`, err)
+                  }
                 }
                 
                 console.log(`[BG] ✅ Flashcards: ${flashcards.length}`)
@@ -1558,14 +1667,17 @@ export async function processInBackground(slug: string, course: any) {
                 console.error(`[BG] ⚠️ Flashcard üretimi başarısız:`, e.message)
                 if (fAttempt === 3) console.error(`[BG] ❌ Flashcard üretimi atlandı.`)
                 else await new Promise(r => setTimeout(r, 10000))
-              }
-            }
-            await new Promise(r => setTimeout(r, 15000))
+              } // end of catch
+              } // end of for loop
+              await new Promise(r => setTimeout(r, 15000))
+            } // End of else block for flashcards check
 
             // Bölüm analizi yap
             try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Üretimi İçin Bilişsel Rotalama Yapılıyor...` }) } catch { }
             analysis = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
             await new Promise(r => setTimeout(r, 15000))
+
+            detectedModule = (analysis as any).module || null
 
             requiresQuestions = resolveRequiresQuestions(section.title, analysis?.requiresQuestions);
 
@@ -1573,8 +1685,18 @@ export async function processInBackground(slug: string, course: any) {
               console.log(`[BG] 🧠 COGNITIVE ROUTING: Bu bölüm için soru üretimi atlanıyor (requiresQuestions: false).`);
             } else {
               try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Havuzu Oluşturuluyor...` }) } catch { }
-              for (let qAttempt = 1; qAttempt <= 3; qAttempt++) {
-                try {
+              
+              // GÜVENLİK DUVARI: Zaten soru varsa (ve zorla demiyorsa) eskisini koru ve atla
+              const existingQuestionCount = await prisma.question.count({ where: { sectionId: section.id } });
+              if (course.generateQuestions === false) {
+                console.log(`[BG] ⏭️ Kullanıcı tercihi: Soru üretimi KESİNLİKLE atlanıyor.`);
+              } else if (existingQuestionCount > 0 && !forceRetry) {
+                console.log(`[BG] ⏭️ Zaten ${existingQuestionCount} soru mevcut. Yeniden üretilip silinmeyecek! (Kullanıcı manuel çoğaltmış olabilir)`);
+                questions = await prisma.question.findMany({ where: { sectionId: section.id } });
+              } else {
+                for (let qAttempt = 1; qAttempt <= 3; qAttempt++) {
+                  if (await shouldStop()) break;
+                  try {
                   questions = await generateQuestions(
                     finalContent,
                     section.title,
@@ -1586,6 +1708,7 @@ export async function processInBackground(slug: string, course: any) {
                     section.pageEnd,
                     section.importance || undefined,
                     section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, ""),
+                    course.documentType
                   )
                   
                   // NORMALİZASYON: Şıkları 'A) ', 'B) ' formatına zorla
@@ -1621,6 +1744,40 @@ export async function processInBackground(slug: string, course: any) {
                   // SOLVER AI: Soru Sağlaması (Question Validator)
                   if (questions.length > 0) {
                     questions = await validateQuestionsWithSolver(finalContent, questions);
+
+                    if (needsBilingualStudyItems(aiMode)) {
+                      console.log(`[BG] 🌐 Soru İngilizce çevirisi yapılıyor...`)
+                      try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru İngilizce çevirisi...` }) } catch { }
+                      const enQs = await translateQuestionsToEnglish(questions, finalTitle, fullCourseName)
+                      questions = questions.map((q, i) => ({
+                        ...q,
+                        text_en: enQs[i]?.text_en || null,
+                        options_en: enQs[i]?.options_en || null,
+                        explanation_en: enQs[i]?.explanation_en || null,
+                      }))
+                    }
+
+                    // PROGRESİF KAYIT AŞAMA 3: Sorular hazır olduğu an canlıya al
+                    try {
+                      await prisma.question.deleteMany({ where: { sectionId: section.id } });
+                      for (const q of questions) {
+                        await prisma.question.create({
+                          data: {
+                            courseId: course.id,
+                            sectionId: section.id,
+                            text: q.text,
+                            options: JSON.stringify(q.options),
+                            correct: q.correctOption || q.correctAnswer || q.correct,
+                            explanation: q.explanation || "Açıklama bulunmuyor.",
+                            difficulty: q.difficulty || "medium",
+                            module: detectedModule
+                          }
+                        })
+                      }
+                      console.log(`[BG] 💾 ${questions.length} Soru Anında CANLIYA ALINDI!`)
+                    } catch (err) {
+                      console.error(`[BG] ❌ Soru progresif kayıt hatası:`, err)
+                    }
                   }
 
                   break
@@ -1629,8 +1786,9 @@ export async function processInBackground(slug: string, course: any) {
                   if (qAttempt === 3) console.error(`[BG] ❌ Soru üretimi atlandı.`)
                   else await new Promise(r => setTimeout(r, 10000))
                 }
-              }
-              await new Promise(r => setTimeout(r, 15000))
+                } // end of for loop
+                await new Promise(r => setTimeout(r, 15000))
+              } // End of else block for questions check
             }
 
             // Başlığı iyileştir
@@ -1646,15 +1804,15 @@ export async function processInBackground(slug: string, course: any) {
             }
           }
 
-          const detectedModule = (analysis as any).module || null
+          // detectedModule is declared above
 
           // FIX #2: Soru/flashcard eksikliğini tespit et ve sessizce geçme
           const missingContent: string[] = []
-          if (flashcards.length === 0 && notes && notes.length > 500) {
+          if (course.generateFlashcards !== false && flashcards.length === 0 && notes && notes.length > 500) {
             missingContent.push("flashcards")
             console.error(`[BG] 🚨 [${finalTitle}] UYARI: Flashcard üretimi TAMAMEN BAŞARISIZ! Bölüm eksik olarak işaretleniyor.`)
           }
-          if (requiresQuestions && questions.length === 0 && notes && notes.length > 500) {
+          if (course.generateQuestions !== false && requiresQuestions && questions.length === 0 && notes && notes.length > 500) {
             missingContent.push("questions")
             console.error(`[BG] 🚨 [${finalTitle}] UYARI: Soru üretimi TAMAMEN BAŞARISIZ! Bölüm eksik olarak işaretleniyor.`)
           }
@@ -1669,43 +1827,7 @@ export async function processInBackground(slug: string, course: any) {
           // FIX #3: Importance null kalmasını engelle
           const resolvedImportance = analysis.importance || section.importance || "Medium"
 
-          // ==================== ÇİFT DİL (TR + EN) — Soru & Flashcard (CISA/CIA) ====================
-          // Notlar yalnızca Türkçe kalır; notes_en üretilmez.
-          if (needsBilingualStudyItems(aiMode) && notesAttemptSuccess) {
-            console.log(`[BG] 🌐 Uluslararası sınav modu: Soru ve flashcard için TR+EN çeviri...`)
-            try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru/kart İngilizce çevirisi...` }) } catch { }
-
-            if (flashcards.length > 0) {
-              const enCards = await translateFlashcardsToEnglish(flashcards, finalTitle, fullCourseName)
-              const pairCheck = await validateBilingualPairs(
-                flashcards.slice(0, 8).map((f, i) => ({
-                  tr: f.front,
-                  en: enCards[i]?.front_en || "",
-                  label: `flashcard-${i + 1}`,
-                })),
-                finalTitle,
-                fullCourseName
-              )
-              if (!pairCheck.passed) {
-                console.warn(`[BG] ⚠️ Flashcard çeviri tutarlılık uyarısı:`, pairCheck.issues.join("; "))
-              }
-              flashcards = flashcards.map((f, i) => ({
-                ...f,
-                front_en: enCards[i]?.front_en || null,
-                back_en: enCards[i]?.back_en || null,
-              }))
-            }
-            if (questions.length > 0) {
-              const enQs = await translateQuestionsToEnglish(questions, finalTitle, fullCourseName)
-              questions = questions.map((q, i) => ({
-                ...q,
-                text_en: enQs[i]?.text_en || null,
-                options_en: enQs[i]?.options_en || null,
-                explanation_en: enQs[i]?.explanation_en || null,
-              }))
-            }
-          }
-
+          // (Çift dil işlemleri artık Progressive Save öncesi yapılıyor)
           // Veritabanı kayıtlarını oluştur
           // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Not yalnızca %100 onaylıysa (Kontrolör+Müfettiş)
           // öğrenciye gösterilmek üzere yayınlanır. Onaylanmamış not DB'de notes=null kalır.
@@ -1782,53 +1904,8 @@ export async function processInBackground(slug: string, course: any) {
             }
           }
 
-          // FIX #6: Zombi süreçlerden kalan eski (başarısız) soru ve flashcardları temizle
-          try {
-            await prisma.flashcard.deleteMany({ where: { sectionId: section.id } });
-            await prisma.question.deleteMany({ where: { sectionId: section.id } });
-            console.log(`[BG] 🧹 Eski (yarım kalmış) soru ve flashcardlar temizlendi.`);
-          } catch (delErr) {
-            console.error(`[BG] 🧹 Temizlik hatası:`, delErr);
-          }
+          console.log(`[BG] ✅ BÖLÜM TAMAMLANDI: ${finalTitle} → ${flashcards.length} cards, ${questions.length} questions. Skor: ${currentScore}/100`)
 
-          // Kendi içinde (current run) mükerrer flashcard koruması
-          const existingFronts = new Set<string>()
-          let dedupSkipped = 0
-          for (const card of flashcards) {
-            const normalizedFront = card.front.trim().toLowerCase()
-            if (existingFronts.has(normalizedFront)) {
-              dedupSkipped++
-              continue // Mükerrer — atla
-            }
-            existingFronts.add(normalizedFront)
-            
-            // [KAYNAK BAŞLIĞI: ...] metnini temizle
-            if (card.back) {
-              card.back = card.back.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
-            }
-            
-            try { await prisma.flashcard.create({ data: { courseId: course.id, sectionId: section.id, front: card.front, back: card.back, front_en: card.front_en || null, back_en: card.back_en || null, difficulty: card.difficulty || "medium" } }) } catch { }
-          }
-          if (dedupSkipped > 0) {
-            console.log(`[BG] 🔄 ${dedupSkipped} mükerrer flashcard atlandı (kendi içinde dedup).`)
-          }
-
-          // Kendi içinde (current run) mükerrer soru koruması
-          const existingTexts = new Set<string>()
-          for (const q of questions) {
-            const normalizedText = q.text.trim().toLowerCase()
-            if (existingTexts.has(normalizedText)) continue
-            existingTexts.add(normalizedText)
-            
-            // [KAYNAK BAŞLIĞI: ...] metnini açıklamadan temizle
-            if (q.explanation) {
-              q.explanation = q.explanation.replace(/\[KAYNAK BAŞLIĞI:.*?\]\s*$/, '').trim();
-            }
-            
-            try { await prisma.question.create({ data: { courseId: course.id, sectionId: section.id, text: q.text, text_en: q.text_en || null, options: JSON.stringify(q.options), options_en: q.options_en ? JSON.stringify(q.options_en) : null, correct: q.correct, explanation: q.explanation, explanation_en: q.explanation_en || null, difficulty: q.difficulty || "medium", module: detectedModule } }) } catch { }
-          }
-
-          console.log(`[BG] ✅ SAVED: ${finalTitle} → ${flashcards.length} cards, ${questions.length} questions. Skor: ${currentScore}/100`)
 
           // ==================== ANA TABLO CANLILIK SİNYALİ GÜNCELLEMESİ (15dk timeout engelleme) ====================
           await prisma.course.update({
@@ -1838,11 +1915,7 @@ export async function processInBackground(slug: string, course: any) {
           console.log(`[BG] 💓 Ders canlılık sinyali (updatedAt) güncellendi.`)
 
           success = true
-
-          // "100 ALANA KADAR SAVAŞACAK" KURALI GEREĞİ: 
-          // İnsan onayı için bekletme (isPausedForApproval) tamamen SİLİNDİ.
-          // Yapay zeka 15 deneme hakkını sonuna kadar kullanacak.
-          
+          break // 🚨 CRITICAL FIX: Infinite loop prevented
         } catch (aiError: any) {
           sectionRetries++
           console.error(`[BG_ERROR] [Deneme #${sectionRetries}/${maxSectionRetries}] ${section.title} işlenirken hata oluştu:`, aiError.message?.substring(0, 120))

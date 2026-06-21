@@ -12,6 +12,7 @@ import {
   sanitizePhaseLabel,
   sectionRawContentReady,
 } from "@/lib/course-processing-status"
+import { stringifyMergedVerificationIssues } from "@/lib/section-quality-gates"
 import { cancelCourseProcessing, clearHeartbeat } from "@/lib/process-registry"
 
 // Polling endpoint - frontend her 3 saniyede bu endpoint'i çağırarak
@@ -165,7 +166,7 @@ export async function GET(req: NextRequest) {
               await prisma.section.update({
                 where: { id: currentSection.id },
                 data: {
-                  verificationIssues: JSON.stringify({
+                  verificationIssues: stringifyMergedVerificationIssues(currentSection.verificationIssues, {
                     currentMicroPhase: pauseMessage,
                     pauseReason: "zombie_timeout",
                     pausedAt: new Date().toISOString(),

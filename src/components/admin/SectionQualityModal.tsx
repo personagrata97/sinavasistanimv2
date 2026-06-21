@@ -453,8 +453,10 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                                 <span className="text-blue-400 font-bold">{attemptLabel.headline}</span>
                               ) : h.attempt === 0 ? (
                                 <span className="text-amber-400/90 font-bold">Eksikler / Öneriler Tespit Edildi</span>
+                              ) : displayScore >= 95 ? (
+                                <span className="text-emerald-400/90 font-bold">Sorunsuz Geçiş Bekleniyor</span>
                               ) : (
-                                <span className="text-amber-400/90 font-bold">Eksikler / Öneriler Giderildi</span>
+                                <span className="text-amber-400/90 font-bold">Yeni Eksikler / Hatalar Bulundu</span>
                               )}
                             </div>
                             <span className={`font-black text-xs ${isTrulyPerfect ? 'text-emerald-400' : isKontrolorOnlyPerfect ? 'text-blue-400' : displayScore >= 95 ? 'text-emerald-400' : 'text-slate-400'}`}>%{displayScore}</span>

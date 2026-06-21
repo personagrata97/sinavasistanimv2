@@ -18,22 +18,19 @@ export async function pauseOrphanedProcessingOnBoot(): Promise<void> {
   // Önceki sunucu oturumundan kalan bellek kilidi — yeni işçi yok
   activeProcesses.clear()
 
-  const stuck = await prisma.course.findMany({
-    where: { status: { in: ["processing", "uploading"] } },
-    select: { slug: true, name: true },
+  // Yarım kalan (processing) işleri tekrar pending'e alıp kuyruğu çalıştırıyoruz
+  const stuckJobs = await prisma.job.updateMany({
+    where: { status: "processing" },
+    data: { status: "pending", lockedAt: null }
   })
 
-  for (const course of stuck) {
-    setCancelSignal(course.slug, course.name)
-    releaseProcessing(course.slug)
-    await prisma.course.update({
-      where: { slug: course.slug },
-      data: { status: "paused", updatedAt: new Date() },
-    })
-    console.log(
-      `[STARTUP] ⏸️ Sunucu açılışı — otomatik devam kapalı: ${course.name} (${course.slug})`,
-    )
+  if (stuckJobs.count > 0) {
+    console.log(`[STARTUP] 🔄 Sunucu açılışı — ${stuckJobs.count} adet yarım kalan görev tekrar kuyruğa alındı.`)
   }
+
+  // İşçi motorunu tetikle (Eğer pending işler varsa çalışmaya başlar)
+  const { startWorkerLoop } = await import("@/lib/job-processor")
+  startWorkerLoop().catch(console.error)
 }
 
 /** Acil durum: belirtilen slug hariç tüm arka plan işlerini durdur. */

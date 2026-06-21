@@ -84,6 +84,9 @@ model Course {
   updatedAt      DateTime    @updatedAt
   glossary       String?     // Dinamik sözlük JSON formatında
   markdownContent String?    // Tek seferde PDF'den çıkarılan saf metin (Token tasarrufu için)
+  generateNotes      Boolean   @default(true)
+  generateQuestions  Boolean   @default(true)
+  generateFlashcards Boolean   @default(true)
 
   sections    Section[]
   flashcards  Flashcard[]
@@ -411,4 +414,23 @@ model GenerationLog {
 
   @@index([courseId])
   @@index([sectionId])
+}
+
+// ================= BACKGROUND QUEUE =================
+
+model Job {
+  id          String   @id @default(cuid())
+  type        String   // "process_course_section", "extract_toc" vs.
+  courseSlug  String
+  sectionId   String?
+  payload     String?  // JSON data
+  status      String   @default("pending") // pending, processing, completed, failed
+  error       String?
+  retryCount  Int      @default(0)
+  lockedAt    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, type])
+  @@index([courseSlug])
 }

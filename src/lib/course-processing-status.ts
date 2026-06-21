@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma"
 import { shouldRunMarkdownOcr } from "@/lib/pdf-engine"
+import { stringifyMergedVerificationIssues } from "@/lib/section-quality-gates"
 import {
   computeDebounceRemainingMs,
   PROCESS_TRIGGER_DEBOUNCE_MS,
@@ -133,13 +134,13 @@ export async function pauseGhostProcessingInDb(
   const pendingSection = await prisma.section.findFirst({
     where: { courseId, processed: false },
     orderBy: { order: "asc" },
-    select: { id: true },
+    select: { id: true, verificationIssues: true },
   })
   if (pendingSection) {
     await prisma.section.update({
       where: { id: pendingSection.id },
       data: {
-        verificationIssues: JSON.stringify({
+        verificationIssues: stringifyMergedVerificationIssues(pendingSection.verificationIssues, {
           currentMicroPhase: pauseMessage,
           pauseReason,
           pausedAt: new Date().toISOString(),

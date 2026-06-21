@@ -14,7 +14,7 @@ export const API_OPERATION_LABELS: Record<string, string> = {
   ground_truth: "Çapraz test (Ground Truth)",
   mufettis: "Derin denetim (Müfettiş)",
   cerrahi_yama: "Cerrahi yama (AST)",
-  verification: "Doğrulama (eski)",
+  verification: "Mantıksal Doğrulama (Solver AI)",
 }
 
 export function getApiOperationLabel(operation: string): string {

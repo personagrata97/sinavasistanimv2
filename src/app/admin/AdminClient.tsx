@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
-import { Users, Bot, Activity, Target, Clock, ShieldAlert, Flame, AlertTriangle, CheckCircle2, BookOpen, Check, ChevronLeft, ChevronRight, Search, ShieldCheck, FileText, AlertCircle, Sparkles, X, Database, Zap, RefreshCw } from "lucide-react"
+import { Users, Bot, Activity, Target, Clock, ShieldAlert, Flame, AlertTriangle, CheckCircle2, BookOpen, Check, ChevronLeft, ChevronRight, Search, ShieldCheck, FileText, AlertCircle, Sparkles, X, Database, Zap, RefreshCw, Server } from "lucide-react"
 import { resolveQuestion } from "@/lib/actions"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -71,7 +71,7 @@ interface AdminClientProps {
   systemKeys?: string[]
 }
 
-type TabType = "users" | "reported" | "quality" | "api_usage"
+type TabType = "users" | "reported" | "quality" | "api_usage" | "queue"
 
 const MODEL_LABELS: Record<string, string> = {
   "gemini-3.5-flash": "Gemini 3.5 Flash",
@@ -188,6 +188,23 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
   const [apiSortMethod, setApiSortMethod] = useState("default")
   const [showAllApiKeys, setShowAllApiKeys] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [jobs, setJobs] = useState<any[]>([])
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDestructive?: boolean;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+
+  const handleConfirmAction = (config: Omit<typeof confirmConfig, "isOpen">) => {
+    setConfirmConfig({ ...config, isOpen: true })
+  }
+
+  const closeConfirm = () => setConfirmConfig(prev => ({ ...prev, isOpen: false }))
+
   const router = useRouter()
 
   const handleRefresh = () => {
@@ -244,6 +261,23 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
     return () => { cancelled = true; clearInterval(id) }
   }, [activeTab])
 
+  // Aktif Görevler Kuyruğu (3sn polling)
+  useEffect(() => {
+    if (activeTab !== "queue") return
+    let cancelled = false
+    const fetchJobs = async () => {
+      try {
+        const res = await fetch("/api/admin/jobs", { cache: "no-store" })
+        if (res.ok && !cancelled) {
+          setJobs(await res.json())
+        }
+      } catch { /* sessiz */ }
+    }
+    fetchJobs()
+    const id = setInterval(fetchJobs, 3000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [activeTab])
+
   const [activeSectionForHistory, setActiveSectionForHistory] = useState<any | null>(null)
   const [mounted, setMounted] = useState(false)
 
@@ -256,16 +290,23 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
 
   // Handle reported question resolution
   const handleResolve = async (id: string) => {
-    if (confirm("Bu sorunun hatalı işaretini kaldırmak istediğinize emin misiniz?")) {
-      startTransition(async () => {
-        const res = await resolveQuestion(id)
-        if (res.success) {
-          router.refresh()
-        } else {
-          alert("Hata: " + res.error)
-        }
-      })
-    }
+    handleConfirmAction({
+      title: "Hatalı İşareti Kaldır",
+      message: "Bu sorunun hatalı işaretini kaldırmak istediğinize emin misiniz?",
+      confirmText: "Kaldır",
+      isDestructive: false,
+      onConfirm: () => {
+        closeConfirm()
+        startTransition(async () => {
+          const res = await resolveQuestion(id)
+          if (res.success) {
+            router.refresh()
+          } else {
+            alert("Hata: " + res.error)
+          }
+        })
+      }
+    })
   }
 
   // Filter lists based on search
@@ -485,6 +526,17 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
             <Database className="w-4 h-4" />
             API Kullanımı
           </button>
+
+          <button
+            onClick={() => setActiveTab("queue")}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === "queue"
+              ? "bg-indigo-600 text-white shadow-lg"
+              : "text-slate-400 hover:text-white"
+              }`}
+          >
+            <Server className="w-4 h-4" />
+            Aktif Üretimler
+          </button>
         </div>
 
         {/* SEKMELİ İÇERİK ALANLARI */}
@@ -585,6 +637,92 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB: AKTİF ÜRETİMLER (QUEUE) */}
+          {activeTab === "queue" && (
+            <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.05] space-y-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Server className="w-6 h-6 text-indigo-400" />
+                  <h2 className="text-xl font-bold">Kuyruk Yöneticisi (Aktif API İşlemleri)</h2>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/10 text-slate-400 text-sm">
+                      <th className="py-3 px-4 font-medium">Kurs / PDF</th>
+                      <th className="py-3 px-4 font-medium">Durum</th>
+                      <th className="py-3 px-4 font-medium">Başlangıç</th>
+                      <th className="py-3 px-4 font-medium">İşlem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobs.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-8 text-center text-slate-500 text-sm">Şu an arka planda çalışan veya bekleyen bir işlem yok.</td>
+                      </tr>
+                    ) : (
+                      jobs.map((job) => (
+                        <tr key={job.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                          <td className="py-4 px-4">
+                            {job.programSlug && job.courseSlug ? (
+                              <a 
+                                href={`/program/${job.programSlug}/${job.courseSlug}`} 
+                                target="_blank" 
+                                className="hover:text-indigo-400 transition-colors flex flex-col"
+                              >
+                                <span className="text-xs text-slate-400 font-medium mb-1">{job.programName || "Program"}</span>
+                                <span className="font-semibold">{job.courseName}</span>
+                              </a>
+                            ) : (
+                              <div className="flex flex-col">
+                                <span className="text-xs text-slate-400 font-medium mb-1">{job.programName || "Program"}</span>
+                                <span className="font-semibold">{job.courseName}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-4 px-4">
+                            <span className={`px-2 py-1 rounded text-xs font-bold ${job.status === "processing" ? "bg-amber-500/20 text-amber-400 animate-pulse" : "bg-slate-500/20 text-slate-400"}`}>
+                              {job.status === "processing" ? "Üretiliyor" : "Kuyrukta Bekliyor"}
+                            </span>
+                          </td>
+                          <td className="py-4 px-4 text-sm text-slate-500">
+                            {new Date(job.createdAt).toLocaleString("tr-TR")}
+                          </td>
+                          <td className="py-4 px-4">
+                            <button
+                              onClick={() => {
+                                handleConfirmAction({
+                                  title: "Görevi İptal Et",
+                                  message: "Bu görevi iptal etmek istediğine emin misin?",
+                                  confirmText: "Evet, İptal Et",
+                                  isDestructive: true,
+                                  onConfirm: async () => {
+                                    closeConfirm()
+                                    await fetch("/api/admin/jobs", {
+                                      method: "DELETE",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ id: job.id, courseSlug: job.courseSlug })
+                                    });
+                                    setJobs(jobs.filter(j => j.id !== job.id));
+                                  }
+                                })
+                              }}
+                              className="px-3 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-md text-xs font-bold transition-colors"
+                            >
+                              İptal Et
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -1253,6 +1391,43 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
         </AnimatePresence>,
         document.body
       )}
+
+      <AnimatePresence>
+        {confirmConfig.isOpen && (
+          <Modal
+            onClose={closeConfirm}
+            title={confirmConfig.title}
+            icon={<AlertTriangle className="w-5 h-5" />}
+            maxWidth="sm"
+            zIndex={9999}
+          >
+            <div className="pt-2">
+              <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                {confirmConfig.message}
+              </p>
+              
+              <div className="flex justify-end gap-3 mt-8">
+                <button
+                  onClick={closeConfirm}
+                  className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                  {confirmConfig.cancelText || "İptal"}
+                </button>
+                <button
+                  onClick={confirmConfig.onConfirm}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg ${
+                    confirmConfig.isDestructive 
+                      ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white border border-rose-500/20' 
+                      : 'bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white border border-indigo-500/20'
+                  }`}
+                >
+                  {confirmConfig.confirmText || "Tamam"}
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

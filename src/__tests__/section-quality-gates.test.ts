@@ -4,6 +4,8 @@ import {
   isAttemptFullyApproved,
   getAttemptDisplayLabel,
   getQualityBadgeState,
+  mergeVerificationIssues,
+  stringifyMergedVerificationIssues,
 } from "@/lib/section-quality-gates"
 
 describe("section-quality-gates", () => {
@@ -81,5 +83,45 @@ describe("section-quality-gates", () => {
     const doneBadge = getQualityBadgeState(100, true, doneStages, null)
     expect(doneBadge.isFullyApproved).toBe(true)
     expect(doneBadge.tone).toBe("green")
+  })
+
+  it("mergeVerificationIssues preserves findings when updating currentMicroPhase", () => {
+    const existing = {
+      missingTopics: ["Konu A"],
+      issues: ["Hata B"],
+      attemptHistory: [{ attempt: 1, score: 85, missingTopics: ["Konu A"], issues: [] }],
+      inspectorFailed: true,
+      inspectorFindings: [{ description: "Eksik detay", severity: "CRITICAL", type: "missing" }],
+      auditResult: { passed: false, missingDetails: ["Detay 1"] },
+      currentAttempt: 1,
+      stages: { notesGenerated: true, kontrolorGroundTruth: true, mufettis: false },
+    }
+
+    const merged = mergeVerificationIssues(existing, {
+      currentMicroPhase: "2/5. Aşama 4: Başmüfettiş Çapraz Denetimi...",
+    })
+
+    expect(merged.currentMicroPhase).toContain("Başmüfettiş")
+    expect(merged.missingTopics).toEqual(["Konu A"])
+    expect(merged.issues).toEqual(["Hata B"])
+    expect(merged.attemptHistory).toHaveLength(1)
+    expect(merged.inspectorFailed).toBe(true)
+    expect(merged.inspectorFindings).toHaveLength(1)
+    expect(merged.auditResult?.missingDetails).toEqual(["Detay 1"])
+    expect(merged.stages?.kontrolorGroundTruth).toBe(true)
+  })
+
+  it("stringifyMergedVerificationIssues parses JSON string existing", () => {
+    const existingJson = JSON.stringify({
+      missingTopics: ["X"],
+      attemptHistory: [{ attempt: 2, score: 70 }],
+    })
+    const out = stringifyMergedVerificationIssues(existingJson, {
+      currentMicroPhase: "Kontrolör inceliyor",
+    })
+    const parsed = JSON.parse(out)
+    expect(parsed.missingTopics).toEqual(["X"])
+    expect(parsed.attemptHistory).toHaveLength(1)
+    expect(parsed.currentMicroPhase).toBe("Kontrolör inceliyor")
   })
 })

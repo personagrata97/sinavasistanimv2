@@ -78,7 +78,10 @@ export function detectTocPages(
     if (
       upper.includes("İÇİNDEKİLER") ||
       upper.includes("ICINDEKILER") ||
-      upper.includes("CONTENTS")
+      upper.includes("CONTENTS") ||
+      upper.includes("SINAV ALT KONU BAŞLIKLARI") ||
+      upper.includes("ALT KONU BAŞLIKLARI") ||
+      upper.includes("SINAV KONULARI")
     ) {
       tocPages.add(p)
     }
@@ -141,7 +144,10 @@ function pageHasTocMarker(pageText: string): boolean {
   return (
     collapsed.includes("İÇİNDEKİLER") ||
     collapsed.includes("ICINDEKILER") ||
-    collapsed.includes("CONTENTS")
+    collapsed.includes("CONTENTS") ||
+    collapsed.includes("SINAVALTKONUBAŞLIKLARI") ||
+    collapsed.includes("ALTKONUBAŞLIKLARI") ||
+    collapsed.includes("SINAVKONULARI")
   )
 }
 
@@ -200,6 +206,9 @@ export function extractTitlesFromTocPages(pageTexts: string[]): string[] {
     /^(.{3,90}?)\s+(?:[\.…·\u2024\u2025\u2026]{2,})\s*(\d{1,3})\s*$/,
     /^(\d+\.\s+.{3,80}?)\s+(\d{1,3})\s*$/,
     /^((?:Kısaltmalar|Tanımlar|Kavramlar|Giriş)[^\d]{0,40})\s+(\d{1,3})\s*$/i,
+    // Sayfa numarası OLMAYAN ama bariz liste elemanı olan başlıklar için otonom fallback:
+    /^(\d+\.\s+[A-ZÇĞİÖŞÜ][^\n]{3,80})$/,
+    /^((?:BÖLÜM|MODÜL|ÜNİTE)\s+\d+\s*:\s*[A-ZÇĞİÖŞÜ][^\n]{3,80})$/i
   ]
 
   const tocPageIndices = new Set<number>()
@@ -208,7 +217,8 @@ export function extractTitlesFromTocPages(pageTexts: string[]): string[] {
     if (
       upper.includes("İÇİNDEKİLER") ||
       upper.includes("ICINDEKILER") ||
-      upper.includes("CONTENTS")
+      upper.includes("CONTENTS") ||
+      upper.includes("SINAV ALT KONU BAŞLIKLARI")
     ) {
       tocPageIndices.add(p)
       if (p + 1 < pageTexts.length) tocPageIndices.add(p + 1)
