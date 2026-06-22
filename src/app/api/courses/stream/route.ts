@@ -82,7 +82,8 @@ export async function GET(request: NextRequest) {
             totalSections: total,
             completedSections: completed,
             processingSection,
-            workerLive: true
+            workerLive: true,
+            sections
           })
 
           if (course.status === "ready" || course.status === "error" || course.status === "paused") {

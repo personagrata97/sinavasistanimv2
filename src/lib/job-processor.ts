@@ -5,18 +5,34 @@ import { getCourseBySlug } from "./course-data"
 let isWorkerRunning = false
 
 export async function enqueueCourseProcessJob(slug: string, forceRetry: boolean = false) {
-  // If a job already exists and is pending/processing, don't enqueue a duplicate
-  const existingJob = await prisma.job.findFirst({
-    where: {
-      courseSlug: slug,
-      type: "process_course",
-      status: { in: ["pending", "processing"] }
-    }
-  })
+  if (forceRetry) {
+    // If force retry, break the lock by failing existing active jobs
+    await prisma.job.updateMany({
+      where: {
+        courseSlug: slug,
+        type: "process_course",
+        status: { in: ["pending", "processing"] }
+      },
+      data: {
+        status: "failed",
+        error: "Kullanıcı tarafından zorla yeniden başlatıldı."
+      }
+    })
+    console.log(`[QUEUE] 🔓 ${slug} için mevcut kilit kırılarak zorla yeni görev başlatılıyor.`)
+  } else {
+    // If a job already exists and is pending/processing, don't enqueue a duplicate
+    const existingJob = await prisma.job.findFirst({
+      where: {
+        courseSlug: slug,
+        type: "process_course",
+        status: { in: ["pending", "processing"] }
+      }
+    })
 
-  if (existingJob) {
-    console.log(`[QUEUE] ⏭️ ${slug} için zaten aktif bir görev var, kuyruğa eklenmedi.`)
-    return existingJob
+    if (existingJob) {
+      console.log(`[QUEUE] ⏭️ ${slug} için zaten aktif bir görev var, kuyruğa eklenmedi.`)
+      return existingJob
+    }
   }
 
   const job = await prisma.job.create({

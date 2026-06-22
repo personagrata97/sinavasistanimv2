@@ -474,8 +474,19 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
             totalSections: data.totalSections,
             completedSections: data.completedSections,
             processingSection: data.processingSection,
-            workerLive: data.workerLive
+            workerLive: data.workerLive,
+            sections: data.sections
           }))
+
+          if (data.sections && data.sections.length > 0) {
+            setCourse((prev: any) => {
+              if (!prev) return prev
+              if (!prev.sections || prev.sections.length === 0 || prev.sections.length < data.sections.length) {
+                return { ...prev, sections: data.sections }
+              }
+              return prev
+            })
+          }
         }
 
         // Eğer bittiyse (ready veya error) SSE bağlantısını kapat ve verileri tazele
