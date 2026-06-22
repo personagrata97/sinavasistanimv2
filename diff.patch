@@ -1,0 +1,129 @@
+diff --git a/src/app/api/courses/process/route.ts b/src/app/api/courses/process/route.ts
+index db1883d..ac54b9d 100644
+--- a/src/app/api/courses/process/route.ts
++++ b/src/app/api/courses/process/route.ts
+@@ -925,9 +925,10 @@ export async function processInBackground(slug: string, course: any, forceRetry:
+             }
+           }
+ 
+-          // Eğer halihazırda yüksek puanlı notlar varsa kalite döngüsünü atla
+-          if (notes && notes.length > 500 && currentScore >= 98) {
+-            console.log(`[BG] 🌟 [${section.title}] Zaten kusursuz (%${currentScore}) notlara sahip. Not üretimi atlanıyor, doğrudan eksik materyaller (soru/flashcard) üretilecek.`)
++          // Eğer halihazırda yüksek puanlı notlar varsa ve MÜFETTİŞ'ten geçmişse kalite döngüsünü atla
++          const hasMufettisPassed = sectionIssuesObj?.stages?.mufettis === true;
++          if (notes && notes.length > 500 && currentScore >= 98 && hasMufettisPassed) {
++            console.log(`[BG] 🌟 [${section.title}] Zaten kusursuz (%${currentScore}) ve Müfettiş onaylı notlara sahip. Not üretimi atlanıyor.`)
+             notesAttemptSuccess = true
+             
+             // Zombi dedektörünün haksız yere tetiklenmemesi için veritabanını boş bir veriyle güncelleyip updatedAt süresini sıfırlıyoruz.
+@@ -966,18 +967,6 @@ export async function processInBackground(slug: string, course: any, forceRetry:
+                 // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
+                 let isSurgicalPatch = false;
+                 let enrichedContent = section.rawContent;
+-
+-                // 🚨 KISALTMALAR/TERİMLER İSTİSNASI (BYPASS)
+-                const isDictionarySection = section.title.toUpperCase().includes("KISALTMALAR") || section.title.toUpperCase().includes("TERİMLER") || section.title.toUpperCase().includes("SÖZLÜK");
+-                
+-                if (isDictionarySection && notes && notes.length > 50) {
+-                  console.log(`[BG] 🚀 [İSTİSNA]: "${section.title}" bölümü algılandı. Sözlük formatında olduğu için pedagojik puanlama ve Ground Truth (Müfettiş) testi atlanıyor!`);
+-                  notesAttemptSuccess = true;
+-                  currentScore = 100;
+-                  // Force break out of the retry loop
+-                  break;
+-                }
+-
+                 if (lastVerification) {
+                   const feedbackItems: string[] = [];
+                   if (lastVerification.missingTopics?.length > 0) {
+@@ -1053,38 +1042,48 @@ export async function processInBackground(slug: string, course: any, forceRetry:
+                   }
+                 }
+ 
+-                if (!isSurgicalPatch) {
+-                  await ensureFileUrisForNotes()
+-                  notes = await generateCourseNotes(
+-                    enrichedContent, section.title, fullCourseName, course.userLevel,
+-                    aiMode, section.pageStart, section.pageEnd,
+-                    false, 0, 1, undefined, sourceMode,
+-                    getDocumentNoteInstructions(documentProfile),
+-                    documentProfile.documentType,
+-                  )
+-                }
+-
+-                console.log(`[BG] ✅ Notes generated/injected: ${notes.length} chars`)
+-                await new Promise(r => setTimeout(r, 8000)) // Rate limit koruması
+-
+-                // Doğrulama yap - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
+-                // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
+-                console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
+-                try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
+-                const verification = await verifyNotesAgainstSource(
+-                  section.rawContent, notes, section.title, fullCourseName, sourceMode,
+-                  documentProfile.documentType,
+-                )
++                  
++                  let verification: any;
++                  
++                  // 🛡️ RESUME MİMARİSİ: Eğer veritabanında daha önceden onaylanmış bir not varsa
++                  // ve bu not Kontrolör'den 100 almışsa (veya manuel 100 verilmişse), 
++                  // motorun ilk uyanışında (vAttempt === 1) bu notu EZME/BAŞTAN YAZMA.
++                  // Mevcut notu koruyarak doğrudan Başmüfettiş denetimine sok.
++                  if (notes && notes.length > 500 && currentScore === 100 && vAttempt === 1) {
++                    console.log(`[BG] 🛡️ Resume Mekanizması: Mevcut notlar korundu (Skor: 100), doğrudan Müfettişe geçiliyor.`);
++                    verification = { score: 100, missingTopics: [], issues: [], suggestions: [] };
++                  } else {
++                    if (!isSurgicalPatch) {
++                      await ensureFileUrisForNotes()
++                      notes = await generateCourseNotes(
++                        enrichedContent, section.title, fullCourseName, course.userLevel,
++                        aiMode, section.pageStart, section.pageEnd,
++                        false, 0, 1, undefined, sourceMode,
++                        getDocumentNoteInstructions(documentProfile),
++                        documentProfile.documentType,
++                      )
++                    }
++                    console.log(`[BG] ✅ Notes generated/injected: ${notes.length} chars`)
++                    await new Promise(r => setTimeout(r, 8000)) // Rate limit koruması
++
++                    // Doğrulama yap
++                    console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
++                    try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
++                    verification = await verifyNotesAgainstSource(
++                      section.rawContent, notes, section.title, fullCourseName, sourceMode,
++                      documentProfile.documentType,
++                    )
+ 
+-                // score: -1 -> teknik hata, deneme hakkı yeme
+-                if (verification.score === -1) {
+-                  console.warn(`[BG] ⚠️ Doğrulama API hatası. Deneme hakkı yenmedi, 30sn bekleniyor...`)
+-                  await new Promise(r => setTimeout(r, 30000))
+-                  vAttempt-- // Bu deneme sayılmasın
+-                  continue
+-                }
++                    // score: -1 -> teknik hata, deneme hakkı yeme
++                    if (verification.score === -1) {
++                      console.warn(`[BG] ⚠️ Doğrulama API hatası. Deneme hakkı yenmedi, 30sn bekleniyor...`)
++                      await new Promise(r => setTimeout(r, 30000))
++                      vAttempt-- // Bu deneme sayılmasın
++                      continue
++                    }
++                  }
+ 
+-                currentScore = verification.score
++                  currentScore = verification.score
+ 
+                 // KONTROLÖR ÇELİŞKİ DENETÇİSİ (Consistency Check)
+                 // Kontrolör "hata/eksik var" deyip puanı 100 döndürürse, çelişkiyi tespit edip puanı
+@@ -1197,12 +1196,6 @@ export async function processInBackground(slug: string, course: any, forceRetry:
+ 
+                 // Eğer skor tam 100 ise Müfettiş Derin Denetimine geç
+                 if (verification.score === 100) {
+-                  // KOTA TASARRUFU: İlk turda Müfettiş denetimini atla — Kontrolör %100 yeterli.
+-                  // 2. turdan itibaren Müfettiş devreye girer (kalite güvencesi korunur).
+-                  if (vAttempt <= 1) {
+-                    console.log(`[BG] ⏩ İlk tur: Müfettiş atlanıyor, Kontrolör %100 yeterli.`)
+-                    notesAttemptSuccess = true
+-
+                     if (historyEntry) {
+                       historyEntry.mufettis = false
+                       historyEntry.fullyApproved = true

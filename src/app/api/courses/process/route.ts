@@ -203,15 +203,27 @@ export async function POST(req: NextRequest) {
       await clearProcessTriggerDebounce(slug)
     }
 
-    if (workerAlive && !(forceRetry && isAdmin)) {
-      console.log(`[PROCESS] 🔒 Tek uçuş kilidi: ${course.name} zaten işleniyor`)
-      return NextResponse.json(
-        {
-          message: "Bu modül zaten işleniyor. Bitmesini bekleyin; tekrar «Devam Ettir» tıklamayın.",
-          alreadyRunning: true,
-        },
-        { status: 200 },
-      )
+    if (workerAlive) {
+      if (forceRetry && isAdmin) {
+        // Zorla devam: Önce eski işçiyi durdur, kilidini temizle, SONRA yenisini başlat
+        console.log(`[PROCESS] ⚠️ Zorla devam: Eski işçi durduruluyor → ${course.name}`);
+        cancelCourseProcessing(slug, course.name);
+        releaseProcessing(slug);
+        clearHeartbeat(slug);
+        await clearProcessTriggerDebounce(slug);
+        // Eski işçinin iptal sinyalini alıp çıkması için kısa bekleme
+        await new Promise(r => setTimeout(r, 3000));
+        console.log(`[PROCESS] ✅ Eski işçi durduruldu, yeni motor başlatılıyor → ${course.name}`);
+      } else {
+        console.log(`[PROCESS] 🔒 Tek uçuş kilidi: ${course.name} zaten işleniyor`)
+        return NextResponse.json(
+          {
+            message: "Bu modül zaten işleniyor. Bitmesini bekleyin; tekrar «Devam Ettir» tıklamayın.",
+            alreadyRunning: true,
+          },
+          { status: 200 },
+        )
+      }
     }
 
     try {
@@ -527,7 +539,7 @@ export async function POST(req: NextRequest) {
           title: "Genel İçerik",
           pageStart: 1,
           pageEnd: course.totalPages,
-          notes: "",
+          content: "",
           module: "1"
         }];
       } else {
@@ -728,7 +740,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
         break;
       }
       const section = savedSections[sIdx]
-      const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
+      const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
 
       // OCR bekleyen taranmış bölümler kısa placeholder içerir — atlanmamalı
       if (section.rawContent.length < 100 && !isPendingOcrContent(section.rawContent)) {
@@ -925,9 +937,14 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             }
           }
 
-          // Eğer halihazırda yüksek puanlı notlar varsa kalite döngüsünü atla
-          if (notes && notes.length > 500 && currentScore >= 98) {
-            console.log(`[BG] 🌟 [${section.title}] Zaten kusursuz (%${currentScore}) notlara sahip. Not üretimi atlanıyor, doğrudan eksik materyaller (soru/flashcard) üretilecek.`)
+          let isMufettisPassed = false;
+          try {
+            const v = JSON.parse(section.verificationIssues || "{}");
+            isMufettisPassed = v?.stages?.mufettis === true || v?.mufettis === true;
+          } catch(e) {}
+          // Eğer halihazırda yüksek puanlı notlar varsa ve müfettişten de geçmişse kalite döngüsünü atla
+          if (notes && notes.length > 500 && currentScore >= 98 && isMufettisPassed) {
+            console.log(`[BG] 🌟 [${section.title}] Zaten kusursuz (%${currentScore}) notlara ve Müfettiş onayına sahip. Not üretimi atlanıyor, doğrudan eksik materyaller (soru/flashcard) üretilecek.`)
             notesAttemptSuccess = true
             
             // Zombi dedektörünün haksız yere tetiklenmemesi için veritabanını boş bir veriyle güncelleyip updatedAt süresini sıfırlıyoruz.
@@ -966,18 +983,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                 // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
                 let isSurgicalPatch = false;
                 let enrichedContent = section.rawContent;
-
-                // 🚨 KISALTMALAR/TERİMLER İSTİSNASI (BYPASS)
-                const isDictionarySection = section.title.toUpperCase().includes("KISALTMALAR") || section.title.toUpperCase().includes("TERİMLER") || section.title.toUpperCase().includes("SÖZLÜK");
-                
-                if (isDictionarySection && notes && notes.length > 50) {
-                  console.log(`[BG] 🚀 [İSTİSNA]: "${section.title}" bölümü algılandı. Sözlük formatında olduğu için pedagojik puanlama ve Ground Truth (Müfettiş) testi atlanıyor!`);
-                  notesAttemptSuccess = true;
-                  currentScore = 100;
-                  // Force break out of the retry loop
-                  break;
-                }
-
+                // 🚨 SÖZLÜK BYPASS KALDIRILDI: Tüm metinler Müfettiş denetimine girmek zorundadır.
                 if (lastVerification) {
                   const feedbackItems: string[] = [];
                   if (lastVerification.missingTopics?.length > 0) {
@@ -996,15 +1002,17 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     const missingCount = (lastVerification.missingTopics || []).length;
 
                     // DONDURMA VE YAMA KARAR MATRİSİ
-                    console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}`);
+                    const suggestionCount = (lastVerification.suggestions || []).length;
+                    console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}, Öneri=${suggestionCount}`);
                     
                     // Frankenstein Kuralı: Hata yoğunluğu %15'i aşarsa veya pedagojik skor 75'in altındaysa sıfırdan yazım
                     const blockCount = Math.max(10, notes.split('\n\n').length);
-                    const totalDefects = missingCount + contradictionCount;
+                    // Öneriler de yamalanabilir defect olarak sayılır — 2 puanlık stil eksikliği için tüm notu baştan yazdırmak israf!
+                    const totalDefects = missingCount + contradictionCount + suggestionCount;
                     const defectDensity = totalDefects / blockCount;
                     
                     if (kontrolorStructuralScore >= 75 && defectDensity <= 0.15 && totalDefects > 0) {
-                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${totalDefects} Toplam Hata, Yoğunluk: %${(defectDensity*100).toFixed(1)}, Pedagojik Puan: %${kontrolorStructuralScore}. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
+                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${totalDefects} Toplam Hata/Öneri (${missingCount} eksik + ${contradictionCount} çelişki + ${suggestionCount} öneri), Yoğunluk: %${(defectDensity*100).toFixed(1)}, Pedagojik Puan: %${kontrolorStructuralScore}. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
                       isSurgicalPatch = true;
                     } else {
                       console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Puan (${kontrolorStructuralScore}) çok düşük veya Hata Yoğunluğu (%${(defectDensity*100).toFixed(1)}) çok yüksek. Sıfırdan yazıma dönülüyor.`);
@@ -1023,11 +1031,16 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         `[ÇELİŞKİ DÜZELTMESİ] ${c.replace("[MÜFETTİŞ HATASI]", "").replace("Bilgi Hatası/Çelişki:", "").trim()}`
                       );
 
-                      const allFactsToPatch = [...cleanMissingFacts, ...cleanContradictions];
+                      // Önerileri de yama motoruna gönder — [ÖNERİ / İYİLEŞTİRME] etiketi ile
+                      const cleanSuggestions = (lastVerification.suggestions || []).map((s: string) =>
+                        `[ÖNERİ / İYİLEŞTİRME] ${s.trim()}`
+                      );
+
+                      const allFactsToPatch = [...cleanMissingFacts, ...cleanContradictions, ...cleanSuggestions];
 
                       try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama (AST) Uygulanıyor...` }) } catch { }
 
-                      const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
+                      const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
                       const patchResult = await generateAndInjectPatch(notes, allFactsToPatch, fullCourseName, section.rawContent, section.title);
 
                       if (patchResult.success) {
@@ -1053,35 +1066,39 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   }
                 }
 
-                if (!isSurgicalPatch) {
-                  await ensureFileUrisForNotes()
-                  notes = await generateCourseNotes(
-                    enrichedContent, section.title, fullCourseName, course.userLevel,
-                    aiMode, section.pageStart, section.pageEnd,
-                    false, 0, 1, undefined, sourceMode,
-                    getDocumentNoteInstructions(documentProfile),
+                let verification: any;
+                
+                if (notes && notes.length > 500 && currentScore === 100 && vAttempt === 1) {
+                  console.log(`[BG] 🛡️ Resume Mekanizması: Mevcut notlar korundu (Skor: 100), doğrudan Başmüfettişe geçiliyor.`);
+                  verification = { score: 100, missingTopics: [], issues: [], suggestions: [] };
+                } else {
+                  if (!isSurgicalPatch) {
+                    await ensureFileUrisForNotes()
+                    notes = await generateCourseNotes(
+                      enrichedContent, section.title, fullCourseName, course.userLevel,
+                      aiMode, section.pageStart, section.pageEnd,
+                      false, 0, 1, undefined, sourceMode,
+                      getDocumentNoteInstructions(documentProfile),
+                      documentProfile.documentType,
+                    )
+                  }
+
+                  console.log(`[BG] ✅ Notes generated/injected: ${notes.length} chars`)
+                  await new Promise(r => setTimeout(r, 8000)) // Rate limit koruması
+
+                  console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
+                  try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
+                  verification = await verifyNotesAgainstSource(
+                    section.rawContent, notes, section.title, fullCourseName, sourceMode,
                     documentProfile.documentType,
                   )
-                }
 
-                console.log(`[BG] ✅ Notes generated/injected: ${notes.length} chars`)
-                await new Promise(r => setTimeout(r, 8000)) // Rate limit koruması
-
-                // Doğrulama yap - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
-                // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
-                console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
-                try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
-                const verification = await verifyNotesAgainstSource(
-                  section.rawContent, notes, section.title, fullCourseName, sourceMode,
-                  documentProfile.documentType,
-                )
-
-                // score: -1 -> teknik hata, deneme hakkı yeme
-                if (verification.score === -1) {
-                  console.warn(`[BG] ⚠️ Doğrulama API hatası. Deneme hakkı yenmedi, 30sn bekleniyor...`)
-                  await new Promise(r => setTimeout(r, 30000))
-                  vAttempt-- // Bu deneme sayılmasın
-                  continue
+                  if (verification.score === -1) {
+                    console.warn(`[BG] ⚠️ Doğrulama API hatası. Deneme hakkı yenmedi, 30sn bekleniyor...`)
+                    await new Promise(r => setTimeout(r, 30000))
+                    vAttempt-- // Bu deneme sayılmasın
+                    continue
+                  }
                 }
 
                 currentScore = verification.score
@@ -1197,45 +1214,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
                 // Eğer skor tam 100 ise Müfettiş Derin Denetimine geç
                 if (verification.score === 100) {
-                  // KOTA TASARRUFU: İlk turda Müfettiş denetimini atla — Kontrolör %100 yeterli.
-                  // 2. turdan itibaren Müfettiş devreye girer (kalite güvencesi korunur).
-                  if (vAttempt <= 1) {
-                    console.log(`[BG] ⏩ İlk tur: Müfettiş atlanıyor, Kontrolör %100 yeterli.`)
-                    notesAttemptSuccess = true
-
-                    if (historyEntry) {
-                      historyEntry.mufettis = false
-                      historyEntry.fullyApproved = true
-                    }
-
-                    try {
-                      await applySectionIssuesPatch(
-                        {
-                          message: "Kontrolör onayı tamamlandı (ilk tur — Müfettiş atlandı).",
-                          currentAttempt: vAttempt,
-                          attemptHistory: attemptHistory,
-                          missingTopics: [],
-                          issues: [],
-                          stages: {
-                            notesGenerated: true,
-                            kontrolorGroundTruth: true,
-                            mufettis: false,
-                            cerrahiYama: false,
-                            flashcards: false,
-                            questions: false,
-                            published: false,
-                          },
-                          currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamamlandı`,
-                        },
-                        { notes: notes, verificationScore: 100 },
-                      )
-                      console.log(`[BG] 💾 İlk tur %100 not veritabanına kaydedildi.`)
-                    } catch (saveErr) {
-                      console.error(`[BG] ❌ Not kaydetme hatası:`, saveErr)
-                    }
-
-                    break
-                  }
+                  // İlk turda Müfettiş atlama kuralı iptal edildi. Skor 100 bile olsa HER ZAMAN Müfettiş devreye girecek.
 
                   console.log(`[BG] 🎉 KONTROLÖR ONAYI (%100) — 4. Katman: Müfettiş Derin Denetimi (Deep Audit) Başlıyor...`)
                   try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş (Deep Audit) Çapraz Denetimi Yapılıyor...` }) } catch { }
@@ -1266,7 +1245,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         await new Promise(r => setTimeout(r, 4000))
 
                         try {
-                          const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`;
+                          const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
                           const auditResult = await auditNotesAgainstSourceSpecific(
                             fullCourseName,
                             section.rawContent,
@@ -1551,6 +1530,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         issues: lastVerification.issues,
                         suggestions: lastVerification.suggestions,
                         attemptHistory: attemptHistory,
+                        groundTruthQuestions: lastVerification.groundTruthQuestions,
                       })
                     : null
                 }
@@ -1817,11 +1797,11 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             console.error(`[BG] 🚨 [${finalTitle}] UYARI: Soru üretimi TAMAMEN BAŞARISIZ! Bölüm eksik olarak işaretleniyor.`)
           }
 
-          // Bölüm onay durumu: Notlar kusursuz olsa bile soru/flashcard yoksa tam onay verilmez
+          // Bölüm onay durumu: Notlar kusursuzsa, sırf soru/flashcard API hatası aldı diye sonsuz döngüye girmesini engelle.
           let isSectionApproved = notesAttemptSuccess
           if (missingContent.length > 0) {
-            isSectionApproved = false // Eksik içerik varsa onaylama!
-            console.error(`[BG] ⛔ [${finalTitle}] Eksik içerik nedeniyle bölüm ONAYLANMADI: ${missingContent.join(", ")}`)
+            // isSectionApproved = false // KİTLEDİĞİ İÇİN İPTAL EDİLDİ (Sonsuz döngü engeli)
+            console.error(`[BG] ⚠️ [${finalTitle}] Eksik içerik var (${missingContent.join(", ")}). Ancak notlar 100 puan aldığı için bölüm ONAYLANDI kabul edilecek.`)
           }
 
           // FIX #3: Importance null kalmasını engelle
@@ -1849,6 +1829,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       missingTopics: lastVerification.missingTopics,
                       issues: lastVerification.issues,
                       suggestions: lastVerification.suggestions,
+                      groundTruthQuestions: lastVerification.groundTruthQuestions,
                       attemptHistory: attemptHistory,
                       ...(notesAttemptSuccess ? { auditResult: { passed: true } } : {}),
                       stages: {

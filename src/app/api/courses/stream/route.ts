@@ -86,7 +86,10 @@ export async function GET(request: NextRequest) {
           })
 
           if (course.status === "ready" || course.status === "error" || course.status === "paused") {
-            // Once terminal state is reached, maybe we can stop polling, but we keep the stream open just in case.
+            // Terminal duruma ulaşıldı — son bir event gönderip döngüyü kapat.
+            // Bu döngü kapanmazsa sunucu her 2 saniyede DB sorgusu yaparak CPU'yu yakar.
+            console.log(`[SSE] Terminal durum tespit edildi (${course.status}). Stream kapatılıyor.`)
+            break
           }
 
           // Poll every 2 seconds

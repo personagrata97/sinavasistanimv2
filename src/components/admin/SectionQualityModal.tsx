@@ -1,4 +1,4 @@
-import React from "react"
+import React, { useState } from "react"
 import { motion } from "framer-motion"
 import { FileText, ShieldCheck, Bot, AlertCircle, RefreshCw, ChevronRight, Sparkles, Search } from "lucide-react"
 import { Modal } from "@/components/course/shared"
@@ -24,6 +24,41 @@ interface SectionQualityModalProps {
 }
 
 export function SectionQualityModal({ section, onClose, actions }: SectionQualityModalProps) {
+  const [isRollingBack, setIsRollingBack] = useState(false);
+  const [confirmState, setConfirmState] = useState<{ isOpen: boolean; targetPhase: "mufettis" | "flashcards" | null }>({ isOpen: false, targetPhase: null });
+  const [alertState, setAlertState] = useState<{ isOpen: boolean; message: string; isError?: boolean; reloadOnClose?: boolean }>({ isOpen: false, message: "" });
+
+  const triggerRollback = (targetPhase: "mufettis" | "flashcards") => {
+    setConfirmState({ isOpen: true, targetPhase });
+  };
+
+  const executeRollback = async () => {
+    const targetPhase = confirmState.targetPhase;
+    setConfirmState({ isOpen: false, targetPhase: null });
+    if (!targetPhase) return;
+    
+    setIsRollingBack(true);
+    try {
+      const res = await fetch("/api/courses/sections/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sectionId: section.id, targetPhase })
+      });
+      if (!res.ok) throw new Error("Geri çekme işlemi başarısız oldu");
+      
+      setAlertState({ 
+        isOpen: true, 
+        message: "Bölüm başarıyla geri çekildi. Dersin işlenmesini ana ekrandaki 'Zorla' butonuna basarak yeniden başlatabilirsiniz.",
+        isError: false,
+        reloadOnClose: true
+      });
+    } catch (err: any) {
+      setAlertState({ isOpen: true, message: err.message || "Bir hata oluştu.", isError: true });
+    } finally {
+      setIsRollingBack(false);
+    }
+  };
+
   const score = section.verificationScore ?? -1
   const isSkipped = score === -1
 
@@ -62,6 +97,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const allMissingTopics = [...safeMissingTopics, ...safeMissingDetails].filter((s: string) => !isGenericEmpty(s))
   const allValidationIssues = [...safeIssues, ...safeContradictions].filter((s: string) => !isGenericEmpty(s))
   const suggestions = issuesObj.suggestions || []
+  const groundTruthQuestions = Array.isArray(issuesObj.groundTruthQuestions) ? (issuesObj.groundTruthQuestions as string[]) : []
   const attemptHistory = issuesObj.attemptHistory || []
   const actualAttempt = issuesObj.currentAttempt || (attemptHistory.length > 0 ? attemptHistory.length : 1)
   const currentMicroPhase = issuesObj.currentMicroPhase || null
@@ -359,6 +395,30 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
         {/* Logs & Geçmiş Toggle'ları */}
         <div className="w-full mt-6 space-y-3">
           
+          {/* Ground Truth Soruları Accordion */}
+          {groundTruthQuestions.length > 0 && (
+            <details className="group rounded-xl overflow-hidden border border-purple-500/20 bg-purple-500/5">
+              <summary className="p-3.5 text-[11px] font-bold text-purple-400 uppercase tracking-wider cursor-pointer hover:bg-purple-500/10 flex items-center justify-between transition-colors list-none">
+                <span className="flex items-center gap-2">
+                  <Search className="w-4 h-4 text-purple-500" /> ÇAPRAZ SORGULAMADA (GT) ÜRETİLEN VE GEÇEN SORULAR
+                </span>
+                <ChevronRight className="w-4 h-4 text-purple-500 transform transition-transform group-open:rotate-90" />
+              </summary>
+              <div className="p-4 border-t border-purple-500/20 bg-black/20">
+                <p className="text-[10px] text-purple-300/80 leading-relaxed mb-3">
+                  Aşağıdaki sorular, yapay zekanın sadece kaynak metindeki somut verileri baz alarak ürettiği kontrol sorularıdır. Bu soruların tamamının cevabı ders notunda doğru bir şekilde bulunduğu için Ground Truth testi başarıyla geçilmiştir.
+                </p>
+                <ul className="list-disc pl-4 space-y-1.5">
+                  {groundTruthQuestions.map((q: string, idx: number) => (
+                    <li key={idx} className="text-[11px] text-slate-300 leading-relaxed">
+                      {q}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </details>
+          )}
+
           {/* Process Log Accordion */}
           <details className="group rounded-xl overflow-hidden border border-white/[0.04] bg-white/[0.01]">
             <summary className="p-3.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:bg-white/[0.02] flex items-center justify-between transition-colors list-none">
@@ -537,8 +597,16 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                                       <Search className="w-3 h-3" /> ÇAPRAZ SORGULAMA (GROUND TRUTH) TESTİ
                                     </div>
                                     <div className="text-[9px] text-purple-400/70 mb-2 italic">
-                                      Yapay zeka notu yeterli bulsa bile, algoritmamız aşağıdaki kritik soruların cevabını notta bulamadığı için manuel ceza puanı uygulamıştır.
+                                      Aşağıdaki sorular kaynak metinden üretilmiş ve notlar üzerinde çapraz sorgulamaya tabi tutulmuştur.
                                     </div>
+                                    {groundTruthQuestions.length > 0 && (
+                                      <div className="text-[10px] text-purple-300/90 mb-2">
+                                        <span className="font-bold text-purple-400/80">Sorulan Sorular:</span>
+                                        <ul className="list-disc pl-3.5 space-y-0.5 mt-0.5">
+                                          {groundTruthQuestions.map((q: string, idx: number) => <li key={idx}>{q}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
                                     {groundTruthMissing.length > 0 && (
                                       <div className="text-[10px] text-purple-300/90 mb-1">
                                         <span className="font-bold text-purple-400/80">Bulunamayan Detaylar:</span>
@@ -596,6 +664,27 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
       </div>
 
       <div className="mt-6 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-6 border-t border-white/[0.05]">
+        {(section.processed || section.verificationScore !== null) && (
+          <>
+            <button
+              onClick={() => triggerRollback("mufettis")}
+              disabled={isRollingBack}
+              className="px-4 py-2 rounded-xl font-medium transition-all text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRollingBack ? 'animate-spin' : ''}`} />
+              Müfettişe Geri Gönder
+            </button>
+            <button
+              onClick={() => triggerRollback("flashcards")}
+              disabled={isRollingBack}
+              className="px-4 py-2 rounded-xl font-medium transition-all text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRollingBack ? 'animate-spin' : ''}`} />
+              Soru Üretimine Geri Gönder
+            </button>
+          </>
+        )}
+        <div className="flex-1"></div>
         {actions}
         <button
           onClick={onClose}
@@ -604,6 +693,79 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
           Kapat
         </button>
       </div>
+
+      {/* Custom Confirm Modal */}
+      {confirmState.isOpen && (
+        <Modal
+          onClose={() => setConfirmState({ isOpen: false, targetPhase: null })}
+          title="Bölümü Geri Çek"
+          icon={<AlertCircle className="w-5 h-5 text-amber-500" />}
+          maxWidth="sm"
+          zIndex={999999}
+        >
+          <div className="py-4">
+            <p className="text-sm text-slate-300 leading-relaxed mb-6">
+              Bölümü <strong>'{confirmState.targetPhase === "mufettis" ? "Müfettiş" : "Soru/Flashcard"}'</strong> aşamasından itibaren yeniden işlemek istediğinize emin misiniz? <br/><br/>
+              <span className="text-amber-400">Mevcut onaylar ve üretilmiş materyaller kalıcı olarak silinecektir.</span>
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmState({ isOpen: false, targetPhase: null })}
+                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
+              >
+                İptal
+              </button>
+              <button
+                onClick={executeRollback}
+                className="px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500 hover:text-white border border-amber-500/20"
+              >
+                Evet, Geri Çek
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Custom Alert Modal */}
+      {alertState.isOpen && (
+        <Modal
+          onClose={() => {
+            setAlertState({ isOpen: false, message: "" });
+            if (alertState.reloadOnClose) {
+              onClose();
+              window.location.reload();
+            }
+          }}
+          title={alertState.isError ? "Hata Oluştu" : "İşlem Başarılı"}
+          icon={alertState.isError ? <AlertCircle className="w-5 h-5 text-red-500" /> : <ShieldCheck className="w-5 h-5 text-emerald-500" />}
+          maxWidth="sm"
+          zIndex={999999}
+        >
+          <div className="py-4">
+            <p className={`text-sm leading-relaxed mb-6 ${alertState.isError ? 'text-red-300' : 'text-emerald-300'}`}>
+              {alertState.message}
+            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => {
+                  setAlertState({ isOpen: false, message: "" });
+                  if (alertState.reloadOnClose) {
+                    onClose();
+                    window.location.reload();
+                  }
+                }}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg ${
+                  alertState.isError 
+                    ? 'bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/20' 
+                    : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white border border-emerald-500/20'
+                }`}
+              >
+                Tamam
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Modal>
   )
 }

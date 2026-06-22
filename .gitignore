@@ -68,3 +68,4 @@ test-output.txt
 /public/uploads/
 /public/audio/
 *.log
+history-report.txt

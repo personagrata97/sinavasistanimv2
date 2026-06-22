@@ -1,0 +1,4 @@
+- [x] Fix syntax error caused by encoding failure.
+- [x] Ban meta-language in `src/lib/ai-service.ts`.
+- [x] Fix "Duraklatıldı" loop block in `route.ts`.
+- [x] Add "Müfettişe / Soru Üretimine Geri Gönder" buttons to `SectionQualityModal.tsx`.

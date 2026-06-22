@@ -371,52 +371,11 @@ export async function refineSectionNotesAction(sectionId: string) {
     // Import dynamic dependencies
     const { generateCourseNotes, verifyNotesAgainstSource } = await import("./ai-service")
 
-    // Binary Routing: Determine if we can safely bypass the PDF (Pure-Text Mode)
-    // to avoid strict Google AI Studio multimodal rate limits.
-    let activeFileUri = course.geminiFileUri || undefined
-    if (missingTopics.length > 0) {
-      const hasVisualDemand = missingTopics.some((t: string) => {
-        const lower = t.toLowerCase()
-        return lower.includes("görsel") || 
-               lower.includes("resim") || 
-               lower.includes("şema") || 
-               lower.includes("grafik") || 
-               lower.includes("diyagram")
-      })
-      if (!hasVisualDemand) {
-        // AŞIRI TEMKİNLİ KURAL (CONSERVATIVE ROUTING):
-        // Eksik konuların gerçekten rawContent metni içerisinde geçip geçmediğini (keywords bazlı) doğrula.
-        // Eğer en ufak bir şüphe veya metin dışında kalma durumu varsa, risk alma ve doğrudan multimodal PDF moduna geri dön.
-        let allTopicsFound = true
-        if (section.rawContent) {
-          const rawLower = section.rawContent.toLowerCase()
-          for (const topic of missingTopics) {
-            const cleanTopic = topic.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()'"?]/g,"")
-            const words = cleanTopic.toLowerCase().split(/\s+/).filter((w: string) => w.length > 4)
-            
-            if (words.length > 0) {
-              const matchedWords = words.filter((w: string) => rawLower.includes(w))
-              const matchRatio = matchedWords.length / words.length
-              if (matchRatio < 0.5) {
-                allTopicsFound = false
-                console.log(`[REFINEMENT] ⚠️ Temkinli Geçiş: "${topic.substring(0, 50)}..." konusu kaynak metinle düşük örtüşme gösterdi (%${Math.round(matchRatio * 100)}). Risk almamak için Multimodal PDF moduna yönlendiriliyor.`)
-                break
-              }
-            }
-          }
-        } else {
-          allTopicsFound = false
-        }
+    // 🚨 GÖRSEL BYPASS KALDIRILDI: Kullanıcı kararı doğrultusunda PDF varsa KESİNLİKLE Multimodal (Vision) kullanılır.
+    // Metinde "resim, şema" kelimeleri geçmese bile gizli görseller olabileceği için bu risk artık alınmıyor.
+    const activeFileUri = course.geminiFileUri || undefined;
 
-        if (allTopicsFound) {
-          console.log(`[REFINEMENT] 🧠 Binary Routing: No visual demands (görsel, resim, şema, grafik, diyagram) detected and all topics verified in rawContent. Bypassing PDF (Pure-Text Mode) to optimize token footprint and prevent rate limits.`)
-          activeFileUri = undefined
-        }
-      }
-    }
-
-    // Generate refined notes
-    const fullCourseName = `${course.program?.name || "SPL Düzey 3"} > ${course.name}`
+    const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^ \> /, "");
     const staticMeta = ALL_COURSES.find((c) => c.slug === course.slug)
     const { getDocumentNoteInstructions, getDocumentProcessingProfile } = await import(
       "./document-processing-profile"

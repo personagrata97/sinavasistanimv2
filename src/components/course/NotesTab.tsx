@@ -973,7 +973,11 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
                       {isAdmin && (() => {
                         const issues = parseQualityIssues(section.verificationIssues)
                         const attempt = issues.currentAttempt || (issues.attemptHistory?.length ? issues.attemptHistory.length : 1)
-                        const currentMicroPhase = issues.currentMicroPhase ?? null
+                        // LIVE POLLING OVERRIDE: Eğer `processingStatus` üzerinden gelen güncel bir microPhase varsa (ve bölüm uyuyorsa), onu kullan!
+                        const liveMicroPhase = (processingStatus?.processingSection?.id === section.id || processingStatus?.processingSection?.order === section.order) 
+                          ? processingStatus.processingSection.microPhase 
+                          : null;
+                        const currentMicroPhase = (liveMicroPhase || issues.currentMicroPhase) ?? null
                         const stages = deriveQualityStages(issues, section.verificationScore ?? -1, section.processed)
                         const badge = getQualityBadgeState(section.verificationScore, section.processed, stages, currentMicroPhase)
 
@@ -1249,6 +1253,70 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
                           }`}
                         >
                           <RefreshCw className="w-3.5 h-3.5" /> Süreci Baştan Başlat
+                        </button>
+                      </div>
+                      
+                      <div className="flex flex-col sm:flex-row gap-3 w-full mt-2 pt-2 border-t border-white/10">
+                        <button
+                          disabled={isApproving}
+                          onClick={async () => {
+                            setIsApproving(true);
+                            try {
+                              const res = await fetch("/api/courses/sections/rollback", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ sectionId: activeScoreSection.id, targetPhase: "mufettis" }),
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                toast.success("Notlar korundu! Süreç Müfettiş'e çekildi.");
+                                setActiveScoreSection(null);
+                                onReloadCourse?.();
+                              } else {
+                                toast.error(data.error || "Bilinmeyen hata");
+                              }
+                            } catch (err: any) {
+                              toast.error("Hata: " + err.message);
+                            } finally {
+                              setIsApproving(false);
+                            }
+                          }}
+                          className={`flex-1 py-3 rounded-xl bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-white font-bold transition-all text-center text-[11px] flex items-center justify-center gap-1.5 shadow-lg shadow-amber-950/30 ${
+                            isApproving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+                          }`}
+                        >
+                          ⏪ Sadece Müfettiş'e Geri Çek (Notları Koru)
+                        </button>
+
+                        <button
+                          disabled={isApproving}
+                          onClick={async () => {
+                            setIsApproving(true);
+                            try {
+                              const res = await fetch("/api/courses/sections/rollback", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ sectionId: activeScoreSection.id, targetPhase: "flashcards" }),
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                toast.success("Müfettiş onayı korundu! Soru/Kart aşamasına çekildi.");
+                                setActiveScoreSection(null);
+                                onReloadCourse?.();
+                              } else {
+                                toast.error(data.error || "Bilinmeyen hata");
+                              }
+                            } catch (err: any) {
+                              toast.error("Hata: " + err.message);
+                            } finally {
+                              setIsApproving(false);
+                            }
+                          }}
+                          className={`flex-1 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-bold transition-all text-center text-[11px] flex items-center justify-center gap-1.5 shadow-lg shadow-purple-950/30 ${
+                            isApproving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+                          }`}
+                        >
+                          ⏪ Soru/Kartları Baştan Üret
                         </button>
                       </div>
                     </div>

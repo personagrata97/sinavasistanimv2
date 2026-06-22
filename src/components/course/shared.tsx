@@ -728,3 +728,67 @@ export function CustomSelect({
     </div>
   )
 }
+
+// ==================== CONFIRM MODAL ====================
+export interface ConfirmModalProps {
+  isOpen: boolean
+  onClose: () => void
+  onConfirm: () => void
+  title: string
+  message: string | React.ReactNode
+  cancelText?: string
+  confirmText?: string
+  isDestructive?: boolean
+}
+
+export function ConfirmModal({
+  isOpen,
+  onClose,
+  onConfirm,
+  title,
+  message,
+  cancelText = "İptal",
+  confirmText = "Tamam",
+  isDestructive = true
+}: ConfirmModalProps) {
+  if (!isOpen) return null;
+
+  return (
+    <Modal onClose={onClose} maxWidth="sm" zIndex={999999} showClose={false}>
+      <div className="text-center p-2 relative z-10">
+        <div className={`w-12 h-12 rounded-full border flex items-center justify-center mx-auto mb-4 ${
+          isDestructive 
+            ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' 
+            : 'bg-amber-500/10 border-amber-500/20 text-amber-500'
+        }`}>
+          <AlertTriangle className="w-6 h-6 animate-pulse" />
+        </div>
+        
+        <h3 className="text-base font-bold text-white mb-2">{title}</h3>
+        <div className="text-xs text-slate-400 leading-relaxed mb-6 whitespace-pre-line px-2">{message}</div>
+        
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/[0.08] hover:border-white/15 font-semibold transition-all text-xs shadow-sm flex items-center justify-center gap-1.5"
+          >
+            {cancelText}
+          </button>
+          <button
+            onClick={() => {
+              onConfirm();
+              onClose();
+            }}
+            className={`flex-1 py-2.5 rounded-xl text-white font-semibold transition-all text-xs shadow-md flex items-center justify-center gap-1.5 ${
+              isDestructive 
+                ? 'bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 shadow-rose-950/50' 
+                : 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 shadow-amber-950/50'
+            }`}
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
