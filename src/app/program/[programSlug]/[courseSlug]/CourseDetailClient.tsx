@@ -925,11 +925,11 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                             message: getCancelProcessMessage(programSlug),
                             onConfirm: async () => {
                               try {
-                                const { reprocessCourse } = await import("@/lib/actions")
-                                const res = await reprocessCourse(slug)
+                                const { cancelCourseProcess } = await import("@/lib/actions")
+                                const res = await cancelCourseProcess(slug)
                                 if (res.success) {
-                                  toast.success("Sistem sıfırlandı ve işleme başladı.")
-                                  setProcessLock(true)
+                                  toast.success("İşlem iptal edildi.")
+                                  setProcessLock(false)
                                   loadCourse()
                                 } else {
                                   toast.error("Hata: " + res.error)
@@ -1058,7 +1058,9 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
                               toast.dismiss(loadingToast)
                               if (res.success) {
                                 toast.success("Eski veriler temizlendi! Sıfırdan işleme başlıyor...")
-                                const started = await triggerProcess(false, true, "reset_from_scratch")
+                                processLockRef.current = false;
+                                setProcessLock(false);
+                                const started = await triggerProcess(true, true, "reset_from_scratch")
                                 await loadCourse()
                               } else {
                                 toast.error("Hata: " + res.error)

@@ -340,6 +340,13 @@ export async function getLiveApiKeyStats() {
 let activeFileUrisMap: Record<string, string> = {}
 export function setFileUrisMap(map: Record<string, string>) { activeFileUrisMap = map }
 
+export function getActiveFileUri(apiKey: string): string | undefined {
+  const trimmed = apiKey.trim()
+  const keyIndex = geminiKeys.findIndex((k) => k.trim() === trimmed)
+  if (keyIndex >= 0) return activeFileUrisMap[String(keyIndex)]
+  return undefined
+}
+
 function getSecondsUntilKeyAvailable(modelId: string): number {
   const now = Date.now()
   let maxSuspendedWaitSec = 0
@@ -458,6 +465,51 @@ export function suspendGeminiKey(apiKey: string): void {
   const keyIndex = geminiKeys.findIndex((k) => k.trim() === trimmed)
   if (keyIndex >= 0) {
     suspendedKeys.set(keyIndex, Date.now())
+  }
+}
+
+export async function withApiRetry<T>(
+  operationName: string,
+  modelId: string,
+  maxRetries: number,
+  fn: (apiKey: string) => Promise<T>
+): Promise<T> {
+  let attempt = 0
+  let currentKey = getAvailableGeminiKey(modelId)
+  
+  if (!currentKey) {
+    throw new Error(`[AI_ENGINE] Boşta API anahtarı bulunamadı (${operationName} için).`)
+  }
+
+  while (true) {
+    try {
+      return await fn(currentKey)
+    } catch (e: unknown) {
+      attempt++
+      const msg = e instanceof Error ? e.message : String(e)
+      const is503 = msg.includes("503") || msg.includes("Service Unavailable") || msg.includes("500") || msg.includes("502") || msg.includes("fetch failed") || msg.includes("socket hang up")
+      const is429 = msg.includes("429") || msg.includes("quota")
+      const is403 = msg.includes("403") || msg.includes("Forbidden") || msg.includes("PERMISSION_DENIED")
+      
+      console.warn(`[AI_ENGINE] ⚠️ ${operationName} hatası (Deneme ${attempt}/${maxRetries}): ${msg.substring(0, 100)}`)
+      
+      if (attempt >= maxRetries) {
+        console.error(`[AI_ENGINE] ❌ ${operationName} maksimum deneme limitine ulaştı.`)
+        throw e
+      }
+      
+      if (is503 || is429 || is403) {
+        suspendGeminiKey(currentKey)
+        const nextKey = rotateToNextKey(modelId)
+        if (nextKey) currentKey = nextKey
+        
+        const waitMs = Math.pow(2, attempt) * 1000 // 2s, 4s, 8s...
+        console.log(`[AI_ENGINE] 🔄 ${waitMs/1000}s bekleniyor ve key rotasyonu yapılıyor...`)
+        await new Promise(r => setTimeout(r, waitMs))
+      } else {
+        throw e
+      }
+    }
   }
 }
 

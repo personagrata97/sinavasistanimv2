@@ -281,6 +281,31 @@ export async function reprocessCourse(slug: string) {
   }
 }
 
+export async function cancelCourseProcess(slug: string) {
+  try {
+    const auth = await requireAdmin()
+    if (!auth.authorized) return { error: auth.error }
+
+    const course = await prisma.course.findUnique({
+      where: { slug }
+    })
+    if (!course) return { error: "Course not found" }
+
+    cancelCourseProcessing(slug, course.name)
+    
+    // Anında UI'ın tepki vermesi için status'u error'a çekiyoruz.
+    // İşçi durduğunda zaten en son kaldığı section processed=false olarak bekleyecek.
+    await prisma.course.update({
+      where: { slug },
+      data: { status: "error" }
+    })
+
+    return { success: true }
+  } catch (error: any) {
+    return { error: error.message }
+  }
+}
+
 // ==================== SECTION ACTIONS ====================
 
 export async function getCourseSections(slug: string) {

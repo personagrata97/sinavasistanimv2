@@ -688,12 +688,17 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                           </td>
                           <td className="py-4 px-4">
                             <div className="flex flex-col gap-1">
-                              <span className={`px-2 py-1 rounded text-xs font-bold w-fit ${job.status === "processing" ? "bg-amber-500/20 text-amber-400 animate-pulse" : job.status === "pausing" ? "bg-rose-500/20 text-rose-400 animate-pulse" : "bg-slate-500/20 text-slate-400"}`}>
-                                {job.status === "processing" ? "Üretiliyor" : job.status === "pausing" ? "Duraklatılıyor..." : "Kuyrukta Bekliyor"}
+                              <span className={`px-2 py-1 rounded text-xs font-bold w-fit ${job.status === "processing" ? "bg-amber-500/20 text-amber-400 animate-pulse" : job.status === "pausing" ? "bg-rose-500/20 text-rose-400 animate-pulse" : job.status === "failed" ? "bg-red-500/20 text-red-400" : "bg-slate-500/20 text-slate-400"}`}>
+                                {job.status === "processing" ? "Üretiliyor" : job.status === "pausing" ? "Duraklatılıyor..." : job.status === "failed" ? "Hata (Durduruldu)" : "Kuyrukta Bekliyor"}
                               </span>
                               {job.phaseLabel && job.status === "processing" && (
                                 <span className="text-[10px] text-blue-300/80 font-medium truncate max-w-[200px]" title={job.phaseLabel}>
                                   {job.phaseLabel}
+                                </span>
+                              )}
+                              {job.status === "failed" && job.error && (
+                                <span className="text-[10px] text-red-300/80 font-medium max-w-[250px]" title={job.error}>
+                                  API Hatası: {job.error}
                                 </span>
                               )}
                             </div>
@@ -728,7 +733,7 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                   {job.status === "pausing" ? "Duraklatılıyor..." : "Duraklat"}
                                 </button>
                               )}
-                              {job.status === "failed" && job.error === "Duraklatıldı" && (
+                              {job.status === "failed" && (
                                 <button
                                   onClick={async () => {
                                     setJobs(prev => prev.filter(j => j.id !== job.id));
@@ -740,12 +745,12 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                     await fetch("/api/courses/process", {
                                       method: "POST",
                                       headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ slug: job.courseSlug, forceRetry: false })
+                                      body: JSON.stringify({ slug: job.courseSlug, forceRetry: true })
                                     });
                                   }}
                                   className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-md text-xs font-bold transition-colors"
                                 >
-                                  Devam Ettir
+                                  Tekrar Dene
                                 </button>
                               )}
                               <button

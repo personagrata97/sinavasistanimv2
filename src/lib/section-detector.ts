@@ -46,6 +46,28 @@ export function normalizeForMatch(text: string): string {
     .trim()
 }
 
+/** OCR hatalarını (I->İ, G->Ğ vb.) ve boşluk/noktalama farklılıklarını yutan bulanıklaştırıcı */
+export function deburr(text: string): string {
+  return text
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ı/g, "i").replace(/i̇/g, "i")
+    .replace(/ş/g, "s")
+    .replace(/ğ/g, "g")
+    .replace(/ü/g, "u")
+    .replace(/ö/g, "o")
+    .replace(/ç/g, "c")
+    .replace(/â/g, "a").replace(/î/g, "i").replace(/û/g, "u")
+    .replace(/[^a-z0-9]/g, "") // Sadece harf ve rakamlar kalır
+}
+
+/** Bulanık Eşleştirme (Fuzzy Match): Boşluklar, noktalamalar ve Türkçe karakter hataları yok sayılır */
+export function fuzzyIncludes(text: string, searchPhrase: string): boolean {
+  const deburredText = deburr(text)
+  const deburredSearch = deburr(searchPhrase)
+  if (deburredSearch.length < 3) return false
+  return deburredText.includes(deburredSearch)
+}
+
 /** Başlıktaki "1. ", "Bölüm 2 - " gibi önekleri temizle */
 export function cleanSectionTitle(title: string): string {
   let clean = title.replace(/^(Bölüm|Ünite|Kısım|BÖLÜM|ÜNİTE)\s*\d+[\.\-\:]?\s*/i, "").trim()
@@ -89,12 +111,19 @@ export function detectTocPages(
 
   if (candidateTitles.length >= 3) {
     for (let p = 0; p < Math.min(20, pageTexts.length); p++) {
-      if (!isLikelyTocListingPage(pageTexts[p])) continue
-      const text = normalizeForMatch(pageTexts[p])
+      // isLikelyTocListingPage (noktalı yapı) zorunluluğunu KESİNLİKLE kaldırıyoruz.
+      // Sadece o sayfada 3'ten fazla konu başlığı var mı ona bakacağız.
+      const lines = pageTexts[p].split('\\n').map(l => normalizeForMatch(l))
       let matchCount = 0
       for (const t of candidateTitles) {
         const key = normalizeForMatch(cleanSectionTitle(t))
-        if (key.length >= 4 && text.includes(key)) matchCount++
+        if (key.length >= 4) {
+          // Konu başlığının ayrı bir satırda geçmesini (veya satırın büyük kısmını oluşturmasını) bekliyoruz.
+          // Paragraf içinde virgüllerle ayrılmış konuları TOC sanmamak için:
+          if (lines.some(l => l.includes(key) && l.length < key.length + 50)) {
+            matchCount++
+          }
+        }
       }
       if (matchCount >= 3) tocPages.add(p)
     }
@@ -107,7 +136,7 @@ function isBibliographyOrSkipTitle(title: string): boolean {
   const upper = title.trim().toLocaleUpperCase("tr-TR")
   if (BIBLIOGRAPHY_TITLES.has(upper)) return true
   if (SKIP_TOC_TITLES.has(upper)) return true
-  if (/^(önsöz|sunuş|preface|acknowledgment)/i.test(title.trim())) return true
+  if (/^(?:önsöz|sunuş)$/i.test(upper)) return true
   return false
 }
 
@@ -205,7 +234,7 @@ export function extractTitlesFromTocPages(pageTexts: string[]): string[] {
     /^(\d+\.\s+[A-ZÇĞİÖŞÜ].+?)\s+(?:[\.…·\u2024\u2025\u2026]\s*){2,}(\d{1,3})\s*$/,
     /^(.{3,90}?)\s+(?:[\.…·\u2024\u2025\u2026]{2,})\s*(\d{1,3})\s*$/,
     /^(\d+\.\s+.{3,80}?)\s+(\d{1,3})\s*$/,
-    /^((?:Kısaltmalar|Tanımlar|Kavramlar|Giriş)[^\d]{0,40})\s+(\d{1,3})\s*$/i,
+    /^((?:İçindekiler|Önsöz|Kısaltmalar|Tanımlar|Kavramlar|Giriş)[^\d]{0,40})\s+(\d{1,3})\s*$/i,
     // Sayfa numarası OLMAYAN ama bariz liste elemanı olan başlıklar için otonom fallback:
     /^(\d+\.\s+[A-ZÇĞİÖŞÜ][^\n]{3,80})$/,
     /^((?:BÖLÜM|MODÜL|ÜNİTE)\s+\d+\s*:\s*[A-ZÇĞİÖŞÜ][^\n]{3,80})$/i
@@ -226,8 +255,21 @@ export function extractTitlesFromTocPages(pageTexts: string[]): string[] {
   }
 
   for (let p = 0; p < Math.min(25, pageTexts.length); p++) {
-    const upper = pageTexts[p].toLocaleUpperCase("tr-TR")
-    const isTocRegion = tocPageIndices.has(p) || (p <= 8 && isLikelyTocListingPage(pageTexts[p]))
+    // Otonom TOC Tespiti: Eğer sayfada en az 3 satır başlık desenine uyuyorsa, burası bir TOC bölgesidir!
+    let titleMatchCount = 0
+    for (const rawLine of pageTexts[p].split("\n")) {
+      const line = rawLine.trim()
+      if (line.length >= 4 && line.length <= 120) {
+        for (const pattern of tocLinePatterns) {
+          if (pattern.test(line)) {
+            titleMatchCount++
+            break
+          }
+        }
+      }
+    }
+
+    const isTocRegion = tocPageIndices.has(p) || (p <= 8 && isLikelyTocListingPage(pageTexts[p])) || titleMatchCount >= 3
 
     if (!isTocRegion) continue
 
@@ -303,50 +345,42 @@ export function extractTitlesFromProcedureBody(pageTexts: string[]): string[] {
 }
 
 function titleMatchesAtPage(title: string, pageText: string, headerLines = 8): boolean {
-  const normTitle = normalizeForMatch(cleanSectionTitle(title))
-  const strippedNum = normTitle.replace(/^\d+\.\s*/, "")
-  const firstBlock = normalizeForMatch(pageText.split("\n").slice(0, headerLines).join("\n"))
-  const fullPage = normalizeForMatch(pageText)
+  const cleanTitleStr = cleanSectionTitle(title)
+  const strippedNum = cleanTitleStr.replace(/^\d+\.\s*/, "")
+  const firstBlock = pageText.split("\n").slice(0, headerLines).join("\n")
 
-  if (normTitle.length >= 3 && firstBlock.includes(normTitle)) return true
-  if (strippedNum.length >= 4 && firstBlock.includes(strippedNum)) return true
+  if (fuzzyIncludes(firstBlock, cleanTitleStr)) return true
+  if (strippedNum.length >= 4 && fuzzyIncludes(firstBlock, strippedNum)) return true
 
-  // Numaralı başlık: "1. Bilgi Güvenliği" satırı parçalı gelebilir
+  // Numaralı başlık: "1. Bilgi Güvenliği"
   const numMatch = title.match(/^(\d+)\.\s*(.+)/)
   if (numMatch) {
     const num = numMatch[1]
-    const rest = normalizeForMatch(numMatch[2])
-    if (firstBlock.includes(`${num}. ${rest}`) || firstBlock.includes(rest)) return true
+    const rest = numMatch[2]
+    if (fuzzyIncludes(firstBlock, `${num}${rest}`) || fuzzyIncludes(firstBlock, rest)) return true
   }
 
   // Tamamı büyük harf başlıklar (KISALTMALAR)
   const upperTitle = title.trim().toLocaleUpperCase("tr-TR")
-  if (upperTitle.length >= 5 && firstBlock.includes(normalizeForMatch(upperTitle))) return true
+  if (upperTitle.length >= 5 && fuzzyIncludes(firstBlock, upperTitle)) return true
 
-  // Son çare: sayfa başında değilse kabul etme (halüsinasyonu önler)
   return false
 }
 
 function titleMatchesAnywhere(title: string, pageText: string): boolean {
-  const normTitle = normalizeForMatch(cleanSectionTitle(title))
-  const strippedNum = normTitle.replace(/^\d+\.\s*/, "")
-  const fullPage = normalizeForMatch(pageText)
-  if (normTitle.length >= 3 && fullPage.includes(normTitle)) return true
-  if (strippedNum.length >= 4 && fullPage.includes(strippedNum)) return true
+  const cleanTitleStr = cleanSectionTitle(title)
+  const strippedNum = cleanTitleStr.replace(/^\d+\.\s*/, "")
+  if (fuzzyIncludes(pageText, cleanTitleStr)) return true
+  if (strippedNum.length >= 4 && fuzzyIncludes(pageText, strippedNum)) return true
   return false
 }
 
 function procedureTitleLineMatches(title: string, line: string): boolean {
   const numMatch = title.match(/^(\d+)\.\s*(.+)/)
-  const normalizedLine = normalizeForMatch(line.trim().replace(/\s+/g, " "))
-  if (!numMatch) return normalizedLine === normalizeForMatch(cleanSectionTitle(title))
+  if (!numMatch) return fuzzyIncludes(line, cleanSectionTitle(title))
 
-  const num = numMatch[1]
-  const rest = normalizeForMatch(numMatch[2])
-  return (
-    normalizedLine === `${num}. ${rest}` ||
-    normalizedLine.startsWith(`${num}. ${rest}`)
-  )
+  const rest = numMatch[2]
+  return fuzzyIncludes(line, title) || fuzzyIncludes(line, rest)
 }
 
 /** Prosedür başlıklarını tam satır eşleşmesiyle çivile — TOC ve paragraf içi yanlış eşleşmeyi önler */
@@ -461,8 +495,8 @@ export function resolveSectionValidationLimits(
   overrides?: { maxSectionPageRatio?: number; maxSectionCharRatio?: number }
 ): { maxSectionPageRatio: number; maxSectionCharRatio: number } {
   return {
-    maxSectionPageRatio: overrides?.maxSectionPageRatio ?? 0.45,
-    maxSectionCharRatio: overrides?.maxSectionCharRatio ?? 0.55,
+    maxSectionPageRatio: overrides?.maxSectionPageRatio ?? 0.60,
+    maxSectionCharRatio: overrides?.maxSectionCharRatio ?? 0.65,
   }
 }
 
@@ -588,13 +622,14 @@ export function applyGlobalZirh(
     result.map((s) => s.title)
   )
 
+  let searchFrom = 0;
   for (let i = 0; i < result.length; i++) {
     const section = result[i]
     const rawTitles = [section.title, `${i + 1}. ${section.title}`]
     let truePage = -1
 
     for (const tryTitle of rawTitles) {
-      for (let p = 0; p < pageTexts.length; p++) {
+      for (let p = searchFrom; p < pageTexts.length; p++) {
         if (tocPages.has(p)) continue
         if (titleMatchesAtPage(tryTitle, pageTexts[p])) {
           truePage = p + 1
@@ -604,8 +639,11 @@ export function applyGlobalZirh(
       if (truePage !== -1) break
     }
 
-    if (truePage !== -1 && truePage !== section.pageStart) {
+    if (truePage !== -1 && truePage !== section.pageStart && truePage >= searchFrom) {
       section.pageStart = truePage
+      searchFrom = truePage - 1
+    } else {
+      searchFrom = Math.max(searchFrom, section.pageStart - 1)
     }
   }
 
@@ -724,8 +762,7 @@ export function detectSectionsDeterministic(pageTexts: string[]): SystematicDete
     if (!best || result.validation.score > best.validation.score) best = result
   }
 
-  if (best?.validation.valid) return best
-  return null
+  return best
 }
 
 export type SystematicDetectionOptions = {
@@ -759,19 +796,7 @@ export async function detectSectionsSystematic(
   }
 
   if (keys.length > 0) {
-    const tocSnippet = pageTexts
-      .slice(0, Math.min(20, pageTexts.length))
-      .map((t, i) => `--- SAYFA ${i + 1} ---\n${t}`)
-      .join("\n\n")
-
     const primaryKey = keys[0].trim()
-    try {
-      const aiTitles = await detectSectionTitlesOnlyTextAI(tocSnippet, primaryKey, { courseSlug: options.logCourseSlug ?? null })
-      if (aiTitles.length >= 2) attempts.push({ source: "ai-titles", titles: aiTitles })
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.warn(`[SECTION_DETECTOR] Text AI başlık çıkarma başarısız: ${msg.substring(0, 80)}`)
-    }
 
     if (options.geminiFileUri) {
       try {
@@ -781,6 +806,8 @@ export async function detectSectionsSystematic(
         const msg = e instanceof Error ? e.message : String(e)
         console.warn(`[SECTION_DETECTOR] Multimodal başlık çıkarma başarısız: ${msg.substring(0, 80)}`)
       }
+    } else {
+      console.warn("[SECTION_DETECTOR] geminiFileUri eksik, Multimodal AI çalıştırılamıyor.")
     }
   }
 

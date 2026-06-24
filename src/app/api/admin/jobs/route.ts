@@ -16,10 +16,7 @@ export async function GET() {
   try {
     const jobs = await prisma.job.findMany({
       where: {
-        OR: [
-          { status: { in: ["pending", "processing"] } },
-          { status: "failed", error: "Duraklatıldı" }
-        ]
+        status: { in: ["pending", "processing", "failed"] }
       },
       orderBy: { createdAt: "desc" },
     })

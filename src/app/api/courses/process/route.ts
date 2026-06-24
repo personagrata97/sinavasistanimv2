@@ -11,11 +11,13 @@ import {
   isPendingOcrContent,
   shouldRunMarkdownOcr,
   prepareSearchablePdfSectionContent,
+  detectSectionsMasterVisionAndSemantic,
 } from "@/lib/pdf-engine"
 import {
   buildSingleSectionFromPages,
   detectSectionsSystematic,
   sectionsToDetected,
+  detectTocPages,
 } from "@/lib/section-detector"
 import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
@@ -442,7 +444,7 @@ export async function POST(req: NextRequest) {
 
       let sections: DetectedSection[] = []
       let tocAttempts = 0
-      const MAX_TOC_ATTEMPTS = 3
+      const MAX_TOC_ATTEMPTS = 1
 
       if (isScannedPdf) {
         // Taranmış PDF: metin tabanlı bölümleme çalışmaz → görsel multimodal bölümleme veya tek bölüm
@@ -492,37 +494,29 @@ export async function POST(req: NextRequest) {
         if (processingProfile.mode === "single") {
           sections = buildSingleSectionFromPages(pageTexts, course.name)
         } else {
-          while (sections.length === 0 && tocAttempts < MAX_TOC_ATTEMPTS) {
-            tocAttempts++
-            console.log(`[PROCESS] 🔄 Sistematik bölüm algılama (Deneme ${tocAttempts}/${MAX_TOC_ATTEMPTS})...`)
-
-            const result = await detectSectionsSystematic(pageTexts, {
-              geminiFileUri: course.geminiFileUri,
-              geminiKeys,
-              logCourseSlug: slug,
-            })
-
-            const isLastAttempt = tocAttempts >= MAX_TOC_ATTEMPTS
-            if (result && result.sections.length >= 2 && (result.validation.valid || isLastAttempt)) {
-              sections = sectionsToDetected(result.sections, pageTexts)
-              console.log(
-                `[PROCESS] ✅ Sistematik: ${result.sections.length} bölüm (${result.titleSource}, doğrulama skoru ${result.validation.score}${!result.validation.valid ? " - Son deneme kabulü" : ""})`
-              )
-              break
+          console.log(`[PROCESS] 🧠 Master Vision & Semantic Bölüm Algılama başlatılıyor...`)
+          try {
+            const parsedSections = await detectSectionsMasterVisionAndSemantic(
+              course.geminiFileUri,
+              geminiKeys[0],
+              pageTexts,
+              { courseSlug: slug }
+            )
+            
+            if (parsedSections && parsedSections.length > 0) {
+              sections = parsedSections.map(s => ({
+                title: s.title,
+                pageStart: s.pageStart,
+                pageEnd: s.pageEnd,
+                content: pageTexts.slice(Math.max(0, s.pageStart - 1), s.pageEnd).join("\n\n"),
+                module: s.title
+              }))
+              console.log(`[PROCESS] ✅ Master Engine: ${sections.length} bölüm kusursuz olarak algılandı.`)
+            } else {
+              console.warn(`[PROCESS] ⚠️ Master Engine bölüm bulamadı!`)
             }
-
-            if (result) {
-              console.warn(
-                `[PROCESS] ⚠️ Sistematik algılama yetersiz (skor ${result.validation.score}): ${result.validation.errors.join("; ")}`
-              )
-            }
-
-            if (tocAttempts < MAX_TOC_ATTEMPTS) {
-              const waitMinutes = Math.min(Math.pow(2, tocAttempts - 1), 5)
-              const waitMs = waitMinutes * 60000
-              console.log(`[PROCESS] ⏱️ ${waitMinutes} dakika beklenip tekrar denenecek...`)
-              await new Promise((resolve) => setTimeout(resolve, waitMs))
-            }
+          } catch (err: any) {
+            console.error(`[PROCESS] 🛑 Master Engine hatası:`, err.message)
           }
         }
 
@@ -556,21 +550,43 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ⚠️ İÇİNDEKİLER / ÖNSÖZ / KAPAK FİLTRESİ
-    // Bu sayfalar not üretimi için anlamsızdır — filtrelenir
-    const TOC_KEYWORDS = ["İÇİNDEKİLER", "ÖNSÖZ", "FOREWORD", "TABLE OF CONTENTS", "PREFACE", "SUNUŞ"]
-    sections = sections.filter(sec => {
-      const titleUpper = sec.title.toLocaleUpperCase("tr-TR")
-      const contentFirst500 = sec.content.substring(0, 500).toLocaleUpperCase("tr-TR")
-      const isTocOrForeword = TOC_KEYWORDS.some(kw => titleUpper.includes(kw) || contentFirst500.includes(kw))
-      if (isTocOrForeword && sec.content.length < 3000) {
-        console.log(`[PROCESS] 🗑️ İçindekiler/önsöz filtresi: "${sec.title}" (Sayfa ${sec.pageStart}-${sec.pageEnd}) atlandı.`)
-        return false
+    // ⚠️ KISALTMALAR / TANIMLAR ZORUNLU EKLENTİSİ (GARANTİ ALTINA ALMA)
+    // Yapay zeka veya deterministik algoritmalar "Kısaltmalar" sayfasını içindekiler listesinde olmadığı için atlayabilir.
+    // Kullanıcı talebi üzerine bu sayfa kesinlikle bulunmalı ve işlenmelidir.
+    const hasGlossary = sections.some(sec => sec.title.toLocaleUpperCase("tr-TR").includes("KISALTMA") || sec.title.toLocaleUpperCase("tr-TR").includes("TANIM"))
+    if (!hasGlossary && sections.length > 0) {
+      // PDF metni içinde Kısaltmalar başlığını arıyoruz
+      let glossaryStartPage = -1;
+      for (let p = 0; p < Math.min(25, pageTexts.length); p++) {
+        const text = pageTexts[p].toLocaleUpperCase("tr-TR");
+        const lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+        // Genellikle sayfa numaralarından sonraki ilk birkaç satırda KISALTMALAR yazar
+        const firstFewLines = lines.slice(0, 5).join(' ');
+        if (firstFewLines.includes("KISALTMALAR") || firstFewLines.includes("TANIMLAR")) {
+          // Eğer bu sayfa zaten TOC değilse
+          const tocPages = Array.from(detectTocPages(pageTexts, sections.map(s => s.title)));
+          if (!tocPages.includes(p)) {
+            glossaryStartPage = p + 1;
+            break;
+          }
+        }
       }
-      return true
-    })
 
-    console.log(`[PROCESS] ${sections.length} bölüm algılandı (İçindekiler filtresi sonrası).`)
+      if (glossaryStartPage !== -1) {
+        const firstSectionStart = sections[0].pageStart
+        const glossaryEndPage = Math.max(glossaryStartPage, firstSectionStart - 1)
+        
+        sections.unshift({
+          title: "Kısaltmalar ve Tanımlar",
+          pageStart: glossaryStartPage,
+          pageEnd: glossaryEndPage,
+          content: "Kısaltmalar (Otomatik Eklendi)",
+        })
+        console.log(`[PROCESS] ➕ Kısaltmalar listeye zorla eklendi. (Sayfa ${glossaryStartPage}-${glossaryEndPage})`)
+      }
+    }
+
+    console.log(`[PROCESS] ${sections.length} bölüm algılandı (Kısaltmalar eklentisi sonrası).`)
 
     // ⚠️ KAYNAKÇA BÖLÜMÜ FİLTRESİ (TAMAMEN SİLME)
     // Kaynakça sınavda sorulmaz — UI'da veya veritabanında yer kaplamaması için tamamen atılır

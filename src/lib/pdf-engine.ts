@@ -1,27 +1,14 @@
 import PDFParser from "pdf2json"
 import axios from "axios"
-import { logDirectGeminiApiCall, getAvailableGeminiKey, suspendGeminiKey } from "@/lib/ai-service"
+import { logDirectGeminiApiCall, getAvailableGeminiKey, suspendGeminiKey, withApiRetry, getActiveFileUri } from "@/lib/ai-service"
 
 async function executeWithRotation<T>(
   modelId: string,
   fallbackKey: string,
+  operationName: string,
   fn: (apiKey: string) => Promise<T>
 ): Promise<T> {
-  const maxRetries = 10;
-  for (let i = 0; i < maxRetries; i++) {
-    const apiKey = getAvailableGeminiKey(modelId) || fallbackKey;
-    try {
-      return await fn(apiKey);
-    } catch (e: any) {
-      if (e.response?.status === 429) {
-        suspendGeminiKey(apiKey);
-        console.warn(`[PDF_ENGINE] Key 429 verdi, askıya alındı. Kalan rotasyon denemesi: ${maxRetries - i - 1}`);
-        if (i < maxRetries - 1) continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error("Maksimum API rotasyon sınırına ulaşıldı.");
+  return withApiRetry(operationName, modelId, 5, fn)
 }
 
 // pdf2json ile metin çıkarma - pdfjs-dist'ten çok daha güvenilir
@@ -380,7 +367,7 @@ Bu kitaptaki tüm ana bölümleri/üniteleri, başlangıç ve bitiş sayfaların
 
 ÇOK ÖNEMLİ KURALLAR:
 1. FİZİKSEL SAYFA NUMARALARI (ÇOK KRİTİK): Bana İçindekiler Tablosunun (TOC) bulunduğu sayfayı SAKIN VERME! İçindekiler tablosu genelde ilk 10 sayfadadır. Sen bana bölümün GERÇEKTE BAŞLADIĞI FİZİKSEL (MUTLAK) SAYFA İNDEKSİNİ vereceksin. Örneğin "Sayfa 103" yazan sayfa, PDF'in 115. fiziksel sayfası olabilir. Lütfen kitabın asıl içeriğinin başladığı gerçek mutlak sayfa sırasını hesapla ve onu ver! Her bölüm için "pageStart" değeri GİDEREK ARTMALIDIR, asla aynı sayfa (örnek: 4) olamaz!
-2. EKSİKSİZLİK: "Kısaltmalar", "Tanımlar" veya "Kavramlar" gibi sınav için kritik olan başlıklar varsa, bunları da mutlaka ayrı bir bölüm olarak listeye dahil et, asla atlama. ANCAK "Kaynakça" veya "Kaynaklar" gibi referans bölümlerini ASLA LİSTEYE ALMA, tamamen yoksay ve sil!
+2. EKSİKSİZLİK: "İçindekiler", "Önsöz", "Kısaltmalar", "Tanımlar" veya "Kavramlar" gibi başlıklar varsa, bunları da mutlaka ayrı bir bölüm olarak listeye dahil et, asla atlama. ANCAK "Kaynakça" veya "Kaynaklar" gibi referans bölümlerini ASLA LİSTEYE ALMA, tamamen yoksay ve sil!
 3. TEMİZ BAŞLIK: Başlıklara ASLA "(Bölüm 3/20)" gibi bölüm numarası veya parantez içi sayaçlar EKLEME. "Ünite 1" gibi genel başlıklar kullanma, direkt konunun öz adını yaz (Örn: "Bilgi Güvenliği Yönetimi").
 
 Sadece aşağıdaki JSON array formatında çıktı ver (başka hiçbir şey yazma):
@@ -395,7 +382,7 @@ Sadece aşağıdaki JSON array formatında çıktı ver (başka hiçbir şey yaz
     generationConfig: { temperature: 0.2 }
   }
 
-  return executeWithRotation("gemini-2.5-flash", apiKey, async (currentKey) => {
+  return executeWithRotation("gemini-2.5-flash", apiKey, "detectSectionsMultimodal", async (currentKey) => {
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
@@ -441,7 +428,7 @@ ADIM 3: Tespit ettiğin her başlığı, KİTABIN ASIL METNİ İÇİNDE (ilerley
 ADIM 4: Başlığı asıl metinde bulduğunda, o başlığın tam üstünde yazan "--- SAYFA X ---" etiketindeki X numarasını o bölümün "pageStart" değeri olarak kabul et.
 
 ÇOK ÖNEMLİ KURALLAR:
-1. "Kısaltmalar", "Tanımlar", "Kavramlar" gibi başlıkları mutlaka dahil et. ANCAK "Kaynakça" veya "Kaynaklar" gibi referans bölümlerini ASLA LİSTEYE ALMA, yoksay!
+1. "İçindekiler", "Önsöz", "Kısaltmalar", "Tanımlar", "Kavramlar" gibi başlıkları mutlaka dahil et. ANCAK "Kaynakça" veya "Kaynaklar" gibi referans bölümlerini ASLA LİSTEYE ALMA, yoksay!
 2. Başlıklara "(Bölüm 3/20)" gibi sayaçlar veya "Ünite 1" gibi ekler KOYMA.
 3. TÜM KİTABI son sayfasına kadar tara.
 
@@ -461,7 +448,7 @@ ${tocText}
     generationConfig: { temperature: 0.1 }
   }
 
-  return executeWithRotation("gemini-2.5-flash", apiKey, async (currentKey) => {
+  return executeWithRotation("gemini-2.5-flash", apiKey, "detectSectionsTextAI", async (currentKey) => {
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
@@ -482,8 +469,12 @@ ${tocText}
       }
 
       for (let i = 0; i < sections.length; i++) {
+        sections[i].title = sections[i].title.trim()
         if (i < sections.length - 1) {
-          sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
+          // Örtüşme (Overlap) mantığı: Bölüm 1, 15. sayfanın ortasında bitiyorsa
+          // bağlam kopukluğu olmaması için pageEnd'i 14'te kesmek yerine 15 yapıyoruz.
+          // Böylece 15. sayfa (kesişim sayfası) hem Bölüm 1'e hem Bölüm 2'ye gidiyor, veri kaybı sıfırlanıyor.
+          sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart)
         } else {
           sections[i].pageEnd = pageTexts.length
         }
@@ -605,13 +596,13 @@ Kitabın İÇİNDEKİLER (TOC) bölümünden TÜM ANA BÖLÜM/ÜNİTE başlıkla
 
 KURALLAR:
 1. SADECE başlık listesi ver — sayfa numarası ASLA verme.
-2. "Kısaltmalar", "Tanımlar", "Kavramlar" varsa dahil et.
-3. "Kaynakça", "Kaynaklar", "Önsöz", "İçindekiler" ASLA dahil etme.
+2. "Kısaltmalar", "Tanımlar", "Kavramlar", "Önsöz", "İçindekiler" varsa dahil et.
+3. "Kaynakça", "Kaynaklar" ASLA dahil etme.
 4. Başlıklara "(Bölüm 3/20)" gibi sayaç ekleme; kitaptaki gerçek adı yaz.
 5. Numaralı bölümlerde "1. Bilgi Güvenliği Yönetimi" formatını koru.
 
 Sadece JSON string array döndür:
-["Kısaltmalar", "1. Bilgi Güvenliği Yönetimi", "2. Varlık Yönetimi"]
+["İçindekiler", "1. Bilgi Güvenliği Yönetimi", "2. Varlık Yönetimi"]
 `
 
 /** AI yalnızca başlık listesi döndürür — sayfa numarası güvenilmez, kullanılmaz */
@@ -636,7 +627,7 @@ export async function detectSectionTitlesOnlyTextAI(
   }
 
   const started = Date.now()
-  return executeWithRotation(model, apiKey, async (currentKey) => {
+  return executeWithRotation(model, apiKey, "detectSectionTitlesOnlyTextAI", async (currentKey) => {
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
     try {
       const response = await axios.post(
@@ -694,12 +685,26 @@ export async function detectSectionTitlesOnlyMultimodal(
   }
 
   const started = Date.now()
-  return executeWithRotation(model, apiKey, async (currentKey) => {
+  return executeWithRotation(model, apiKey, "detectSectionTitlesOnlyMultimodal", async (currentKey) => {
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    const activeUri = getActiveFileUri(currentKey) || fileUri
+    
+    const dynamicBody = {
+      contents: [
+        {
+          parts: [
+            { fileData: { mimeType: "application/pdf", fileUri: activeUri } },
+            { text: TITLES_ONLY_PROMPT },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.1 },
+    }
+
     try {
       const response = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        body,
+        dynamicBody,
         { headers, timeout: 300000 }
       )
       const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
@@ -774,7 +779,7 @@ export async function anchorTitlesToPagesWithAI(
   }
 
   const started = Date.now()
-  return executeWithRotation(model, apiKey, async (currentKey) => {
+  return executeWithRotation(model, apiKey, "anchorTitlesToPagesWithAI", async (currentKey) => {
     const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
     try {
       const response = await axios.post(
@@ -821,6 +826,114 @@ export async function anchorTitlesToPagesWithAI(
       })
       console.warn("[PDF_ENGINE] AI Anchoring failed:", err.message)
       return []
+    }
+  })
+}
+
+// 👑 ANA MOTOR (MASTER ENGINE): Vision ve Semantic mimarisini tek bir çağrıda birleştiren kusursuz bölümleyici
+const MASTER_VISION_SEMANTIC_PROMPT = `
+Aşağıda bir kitabın hem Orijinal PDF Dosyası (Görsel) hem de bu dosyanın FİZİKSEL SAYFA etiketleriyle işaretlenmiş Saf Metin Dökümü verilmiştir.
+Görev: Kitabın tüm ana bölümlerini/ünitelerini ve bunların GERÇEK FİZİKSEL başlangıç sayfalarını %100 doğrulukla bulmak.
+
+ADIM 1 (GÖRSEL TOC ANALİZİ): PDF dosyasını incele. İlk 20 sayfada bir "İçindekiler" (Table of Contents) tablosu var mı? 
+- EĞER VARSA: TOC'taki ana başlıkları çıkar. Ancak TOC'ta yazan numaralara GÜVENME. Bu başlıkları Metin Dökümünde ara ve hangi [FİZİKSEL SAYFA X] etiketinin altında başladığını bul.
+
+ADIM 2 (SEMANTİK B PLANI): PDF dosyasında "İçindekiler" tablosu YOKSA:
+- Metin dökümünü baştan sona tara. Kitabın ana mantıksal bölümlerini (Bölüm 1, Ünite 2 vb. büyük harfli kalın başlıklar) kendin tespit et. Ve bunların hangi [FİZİKSEL SAYFA X] etiketinde başladığını bul.
+
+ÇOK ÖNEMLİ KURALLAR:
+1. "İçindekiler", "Önsöz", "Kısaltmalar", "Tanımlar", "Kavramlar" gibi başlıkları mutlaka dahil et. ANCAK "Kaynakça" veya "Kaynaklar" gibi referans bölümlerini ASLA LİSTEYE ALMA, sil!
+2. Başlıklara "(Bölüm 3/20)" gibi sayaçlar ekleme. Numaralıysa "1. Bilgi Güvenliği Yönetimi" şeklinde orijinalini koru.
+3. pageStart değerleri her zaman ARTARAK gitmelidir. Geriye dönemez.
+
+SADECE aşağıdaki JSON array formatında çıktı ver (başka hiçbir şey yazma):
+[
+  {"title": "Kısaltmalar", "pageStart": 7, "pageEnd": 10},
+  {"title": "1. Bilgi Güvenliği Yönetimi", "pageStart": 11, "pageEnd": 25}
+]
+`
+
+export async function detectSectionsMasterVisionAndSemantic(
+  fileUri: string | null | undefined,
+  apiKey: string,
+  pageTexts: string[],
+  logContext?: { courseSlug?: string | null }
+): Promise<Array<{ title: string; pageStart: number; pageEnd: number }>> {
+  const model = "gemini-3.5-flash"
+  const activeUri = fileUri ? (getActiveFileUri(apiKey) || fileUri) : null
+  
+  // Metni fiziksel sayfa etiketleriyle işaretle
+  // Model çok fazla tokene boğulmasın diye sadece her sayfanın ilk 25 satırını alıyoruz (başlıklar sayfa başındadır)
+  const markedText = pageTexts.map((text, i) => {
+    const topText = text.split("\n").slice(0, 25).join("\n").trim()
+    return `[FİZİKSEL SAYFA ${i + 1}]\n${topText}`
+  }).join("\n\n")
+
+  const parts: any[] = []
+  if (activeUri) {
+    parts.push({ fileData: { mimeType: "application/pdf", fileUri: activeUri } })
+  }
+  parts.push({ text: `${MASTER_VISION_SEMANTIC_PROMPT}\n\nMETİN DÖKÜMÜ:\n${markedText}` })
+
+  const body = {
+    contents: [{ parts }],
+    generationConfig: { temperature: 0.1 }
+  }
+
+  const started = Date.now()
+  return executeWithRotation(model, apiKey, "detectSectionsMasterVisionAndSemantic", async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        body,
+        { headers, timeout: 300000 }
+      )
+      const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "master_section_detect",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status: "SUCCESS",
+        durationMs: Date.now() - started,
+      })
+      
+      let cleaned = raw.trim()
+      const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
+      if (match) cleaned = match[1].trim()
+      
+      const parsed = JSON.parse(cleaned)
+      if (Array.isArray(parsed)) {
+        let sections = parsed.filter(s => typeof s.title === "string" && typeof s.pageStart === "number")
+        // pageEnd'leri otomatik hesapla
+        for (let i = 0; i < sections.length; i++) {
+          sections[i].title = sections[i].title.trim()
+          if (i < sections.length - 1) {
+            // Örtüşme (Overlap) mantığı: bağlam kopukluğu olmaması için pageEnd'i sonraki bölümün pageStart'ı yapıyoruz.
+            sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart)
+          } else {
+            sections[i].pageEnd = pageTexts.length
+          }
+        }
+        return sections
+      }
+      return []
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: any }; message?: string }
+      const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "master_section_detect",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status,
+        errorDetail: (err.message || "master_section_detect failed").substring(0, 500),
+        durationMs: Date.now() - started,
+      })
+      throw e
     }
   })
 }
