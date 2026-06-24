@@ -1,12 +1,13 @@
 import axios from "axios"
 import { randomUUID } from "node:crypto"
 import { prisma } from "./prisma"
+import { isCancelled } from "@/lib/process-registry"
 import { isGlossarySectionTitle } from "./glossary-utils"
 import { type DocumentType, requiresHeadingPreservation } from "./document-processing-profile"
 import { MAX_CHUNK_OCR_ATTEMPTS } from "./quota-guard"
 
-/** PDF görsel okuma (extractPerfectMarkdownOCR, ocr_extraction_chunk) — 2.5 Flash, ~20 RPD/key */
-export const OCR_MODEL = "gemini-2.5-flash"
+/** PDF görsel okuma (extractPerfectMarkdownOCR, ocr_extraction_chunk) — 3.5 Flash, ~20 RPD/key */
+export const OCR_MODEL = "gemini-3.5-flash"
 
 /** Tüm API anahtarlarının günlük kotası doldu — yeniden denemek aynı gün işe yaramaz. */
 export class ApiQuotaExhaustedError extends Error {
@@ -1042,6 +1043,17 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
     let consecutiveWaitCycles = 0
 
     while (!triedAllKeys) {
+      // 🚨 ABORT SIGNAL (İPTAL SİNYALİ) KONTROLÜ
+      // Kullanıcı Duraklat butonuna bastıysa, dış katmandan gelen sinyali yakala ve döngüyü anında kes.
+      const contextMatch = prompt.match(/\[LOG_CONTEXT:\s*([^\]]+)\]/)
+      const sectionMatch = prompt.match(/BÖLÜM:\s*"?([^"\n]+)"?/) || prompt.match(/DERS:\s*"?([^"\n]+)"?/)
+      const logContext = contextMatch ? contextMatch[1] : (sectionMatch ? sectionMatch[1] : mode)
+      const logCourseSlug = logContext.substring(0, 150)
+      
+      if (isCancelled(logCourseSlug)) {
+         throw new Error("İşlem kullanıcı tarafından anında duraklatıldı (AbortSignal).");
+      }
+
       const currentKey = getNextGeminiKeyWithFallback(MODEL_ID, consecutiveWaitCycles)
       
       if (!currentKey) {
@@ -1515,8 +1527,8 @@ Amacın, sıkıcı ve ağır kanun maddelerini veya teknik kavramları, öğrenc
 ${disc.analogies}
 - ⚠️ 💡 📌 🔑 🎯 🪤 emojilerini BOL kullan — görsel hiyerarşi yarat.
 - Bilgi kalitesi %100 kusursuz ve otoriter olmalı, ama anlatım dili su gibi akmalıdır. Tanımlar BİREBİR kaynak metinden olmalıdır.
-- 🚨 DÜZELTME ŞERHİ (ÇOK ÖNEMLİ): Eğer sana verilen kaynak PDF metninde NESNEL ve KESİN bir bilgi hatası yakalarsan (örn: eski bir kanun maddesi, yanlış bir oran veya miktar), PDF'teki O HATALI BİLGİYİ SİLMEYECEK VE AYNEN YAZACAKSIN (çünkü orijinal kaynak metinde o şekilde geçiyor), ancak hemen yanına parantez içinde kibar ve profesyonel bir şerh düşeceksin.
-  ÖRNEK: "...bu süre 15 gündür. *(Not: Orijinal ${courseName} çalışma notlarında bu süre 15 gün olarak geçse de, güncel mevzuatta/gerçekte bu süre 30 gündür.)*"
+- 🚨 DÜZELTME ŞERHİ (ÇOK ÖNEMLİ): Eğer sana verilen kaynak PDF metninde NESNEL ve KESİN bir bilgi hatası yakalarsan (örn: eski bir kanun maddesi, yanlış bir oran veya miktar), PDF'teki O HATALI BİLGİYİ SİLMEYECEK VE AYNEN YAZACAKSIN (çünkü orijinal kaynak metinde o şekilde geçiyor), ancak hemen yanına parantez içinde tam olarak şu standart formatta bir şerh düşeceksin: "(⚠️ Önemli Detay: İşbu notun orijinal dokümanında [Hatalı Bilgi] olarak geçse de, doğrusu [Doğru Bilgi]'dir.)"
+  ÖRNEK: "...bu süre 15 gündür. (⚠️ Önemli Detay: İşbu notun orijinal dokümanında 15 gün olarak geçse de, doğrusu 30 gündür.)"
 `;
 
     memoryTechniqueInstruction = `
@@ -1842,7 +1854,7 @@ export async function generateFlashcards(
 
     const instructionLimit = isGlossary
       ? `🚨 ÖZEL TALİMAT: Bu bölüm bir "${sectionTitle}" (Sözlük/Kısaltmalar) bölümüdür.\nBurada yer alan yüzlerce kısaltma/terim içinden SADECE ${courseName || "bu sınav"} müfredatında doğrudan sorulma potansiyeli yüksek olan, sektörel ve teknik öneme sahip kritik terimleri seç. "USB, SMS, PC" gibi aşırı basit terimleri KESİNLİKLE ATLA. Sadece 'Sınav Kalitesinde' olanları seç. Maksimum kart limiti yoktur.`
-      : `DİNAMİK ÜRETİM: Bu metin ana "${sectionTitle}" bölümünün bir PARÇASIDIR. Lütfen bu metnin BİLGİ YOĞUNLUĞUNU analiz et. Eğer metin kurallar, cezalar, oranlar ve tanımlarla doluysa EN AZ 4-6 adet flashcard oluştur. Eğer metin sadece giriş, önsöz veya yüzeysel bilgilerden ibaretse sadece 1-2 adet temel flashcard oluştur. Kaliteden taviz verme.`
+      : `DİNAMİK ÜRETİM (TAM KAPSAYICILIK): Bu metin ana "${sectionTitle}" bölümünün bir parçasıdır. Sayısal bir hedefin veya kısıtlaman YOKTUR. Tek görevin, bu metindeki sınavda sorulma ihtimali olan İSTİSNASIZ TÜM (100%) test edilebilir bilgileri (kavram, formül, yasal süre, kural) tüketmektir. Metin çok yoğunsa 20 tane kaliteli kart üretmekten çekinme. Ancak metin sadece yüzeysel bir girişten ibaretse, kotayı doldurmak için asla zorlama veya önemsiz detaylardan kart üretme. Sadece 'Sınav Kalitesinde' olanları seç.`
 
     const cardTypesInstruction = isGlossary
       ? `  KART TÜRLERİ VE ÖRNEKLER:
@@ -2064,7 +2076,7 @@ SORU KURALLARI:
 - Metinde tarih/süre/limit varsa bunlarla ilgili soru sor
 - 🇹🇷 DİL KALİTESİ: Türkçe dil bilgisi, kelime dizilimi ve akıcılığa %100 uy. İngilizce'den doğrudan çevrilmiş gibi duran yapay veya ters yapılar ("Özeti [Konu]", "Sözlüğü [Konu]", "Notları [Konu]") KESİNLİKLE kullanma. Her zaman doğal ve düzgün bir Türkçe ile akıcı cümleler kur.
 
-DİNAMİK ÜRETİM: Bu metin ana "${sectionTitle}" bölümünün bir PARÇASIDIR. Lütfen bu metnin BİLGİ YOĞUNLUĞUNU analiz et. Eğer metin kurallar, cezalar, oranlar ve tanımlarla doluysa EN AZ 3-5 adet kaliteli ${isProcedureOrMevzuat ? 'değerlendirme' : 'sınav'} sorusu oluştur. Eğer metin sadece giriş, önsöz veya yüzeysel bilgilerden ibaretse sadece 1-2 adet temel soru oluştur. Kaliteden taviz verme.
+DİNAMİK ÜRETİM (TAM KAPSAYICILIK): Bu metin ana "${sectionTitle}" bölümünün bir parçasıdır. Sayısal bir hedefin veya kısıtlaman YOKTUR. Tek görevin, bu metindeki sınavda çıkabilecek kalitedeki İSTİSNASIZ TÜM (100%) test edilebilir bilgileri (kavram, formül, yasal süre, istisna, kural) kapsayacak kadar ${isProcedureOrMevzuat ? 'değerlendirme' : 'sınav'} sorusu üretmektir. Metin çok yoğunsa 15 soru üretmekten çekinme. Ancak metin sadece yüzeysel bir girişten ibaretse, kotayı doldurmak için asla önemsiz detaylardan veya zorlama kurgulardan soru üretme.
 
 SORU TİPLERİ VE DAĞILIMI:
 Ürettiğin soruların en az %40'ı "ÖNCÜLLÜ (I, II, III)" formatında OLMALIDIR. Bu kesin bir kuraldır.
@@ -2520,8 +2532,8 @@ PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL, eksi/issue olarak YAZMA):
 - Eğlenceli örnekler, hikayeler, benzetmeler (analoji) eklenmesi ✅
 - Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
 - Kaynak metindeki dolgu cümlelerinin atlanması ✅
-- Yazarın, kaynaktaki basit bir harf/imla hatasını düzeltmemiş olması (örn: 'Standard' yerine 'Standart') bir hata değildir ✅
-- 🚨 DİKKAT (ŞERH KURALI VE TEYİT ZORUNLULUĞU): Kaynak metindeki bilgi veya yazım hatalarını düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN. Eğer AI'ın not düştüğü düzeltme (şerh) literatürde ve gerçek dünyada GERÇEKTEN DOĞRUYSA (evet, TTK 6102'dir) KESİNLİKLE bunu bir uydurma sayma ve KABUL ET ✅. AMA eğer AI'ın şerhte iddia ettiği 'doğrusu budur' dediği bilgi YANLIŞSA (örn: TTK 6502'dir demişse), işte o zaman bunu "issues" listesine "HATALI ŞERH" olarak yaz ❌.
+- 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İÇİN ŞERH BEKLEME: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme! ✅
+- 🚨 DİKKAT (ŞERH KURALI VE TEYİT ZORUNLULUĞU): Kaynak metindeki BİLGİ veya MEVZUAT hatalarını düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN. Eğer AI'ın not düştüğü düzeltme (şerh) literatürde ve gerçek dünyada GERÇEKTEN DOĞRUYSA (evet, TTK 6102'dir) KESİNLİKLE bunu bir uydurma sayma ve KABUL ET ✅. AMA eğer AI'ın şerhte iddia ettiği 'doğrusu budur' dediği bilgi YANLIŞSA (örn: TTK 6502'dir demişse), işte o zaman bunu "issues" listesine "HATALI ŞERH" olarak yaz ❌.
 ${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş başlıklar "issues"a yazılır ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
 
 ⚠️ MUTLAK DOĞRULUK KURALI: 
@@ -2615,10 +2627,11 @@ Sadece ve sadece yukarıda listelenen 3 spesifik konuya odaklan. Kaynak metindek
 1. EKSİKLİK (Omission): Kaynak metinde geçen herhangi bir yasal süre (örn: 10 gün), oran (örn: %5), limit (örn: 50bin TL), katalog suç listesi, yetkili merci (örn: Hazine ve Maliye Bakanlığı yerine İçişleri Bakanlığı), istisna veya mikro kural ders notunda ATLANMIŞ MI?
 2. BİLGİ HATASI/ÇARPITMA (Contradiction): Süreler, limitler veya kurallar ders notuna aktarılırken yanlış veya çarpıtılmış şekilde yazılmış mı (örn: 3 yıl yerine 5 yıl)?
 3. UYDURMA (Fabrication — TERS YÖN): Ders notunda bu 3 konuyla ilgili geçen AMA kaynak metinde KARŞILIĞI HİÇ BULUNMAYAN somut bir iddia (rakam, süre, oran, ceza, kurum, kanun/madde no, istisna) var mı? Kaynakta dayanağı olmayan böyle bir bilgi UYDURMADIR → "contradiction" tipinde ve "CRITICAL" olarak işaretle. (Benzetme, hikaye, yeniden ifade UYDURMA DEĞİLDİR; sadece kaynakta olmayan olgusal/sayısal iddialar.)
-4. DÜZELTME ŞERHLERİ (ÇOK ÖNEMLİ İSTİSNA): Eğer ders notunda orijinal kaynak metindeki sorunlu/eski/hatalı bir yasal bilgi aynen korunmuş ve yazılmışsa, ANCAK hemen yanına "*(Not: Mevzuata göre doğrusu...)*" veya benzeri bir açıklama eklenerek şerh düşülmüşse; 
+4. DÜZELTME ŞERHLERİ (ÇOK ÖNEMLİ İSTİSNA): Eğer ders notunda orijinal kaynak metindeki sorunlu/eski/hatalı bir YASAL VEYA KESİN BİLGİ aynen korunmuş ve yazılmışsa, ANCAK hemen yanına "*(Not: Mevzuata göre doğrusu...)*" veya benzeri bir açıklama eklenerek şerh düşülmüşse; 
    - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle. 
    - Eğer düşülen şerh doğru bir yasal güncelleme ise, bunu KESİNLİKLE "Contradiction" veya "Uydurma" olarak İŞARETLEME! Şerh doğruysa sorunsuzca geçirt.
    - EĞER DÜŞÜLEN ŞERH HATALIYSA (yani yapay zeka yanlış bir bilgiyi doğru zannederek şerh düşmüşse), "contradiction" olarak işaretle ve 'description' kısmına tam olarak şu formatta yaz: "Sen (Not Üretici) şöyle bir şerh düşmüşsün: [...]. Ancak ben kaynak metni/yasal durumu incelediğimde doğrusunun bu olduğunu görüyorum: [...]. Acaba ben mi yanılıyorum? Lütfen 'acaba Müfettiş haklı olabilir mi?' diye düşünerek kaynak metni ve yasal bilgiyi tekrar araştır, tekrar kontrol et. Eğer ben haklıysam şerhini/notunu buna göre düzelt, inatlaşma."
+   - 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İSTİSNASI: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme veya contradiction/hata olarak Raporlama! ✅
 
 ÖNEMLİ: Bu 3 konunun dışındaki diğer ders notu kısımlarını ve kaynak metindeki diğer konuları KESİNLİKLE göz ardı et, onları denetleme.
 

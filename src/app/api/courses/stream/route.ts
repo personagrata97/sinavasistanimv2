@@ -82,6 +82,7 @@ export async function GET(request: NextRequest) {
             totalSections: total,
             completedSections: completed,
             processingSection,
+            phaseLabel: processingSection?.microPhase || null,
             workerLive: true,
             sections
           })

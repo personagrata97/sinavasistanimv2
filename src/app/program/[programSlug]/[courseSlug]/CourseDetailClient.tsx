@@ -26,6 +26,7 @@ import CoverageTab from "@/components/course/CoverageTab"
 import DailyGoalsTab from "@/components/course/DailyGoalsTab"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { Modal, EmptyState, LoadingSkeleton, getCourseTabs, formatTitle } from "@/components/course/shared"
+import { ConfirmModal } from "@/components/course/shared/ConfirmModal"
 import { GenerationOptionsModal } from "@/components/admin/GenerationOptionsModal"
 import { Tabs, Tooltip } from "@/components/ui/shared"
 import { DatePicker } from "@/components/ui/DatePicker"
@@ -1319,36 +1320,18 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
           </Modal>
         )}
         
-        {confirmAction && (
-          <Modal onClose={() => setConfirmAction(null)}>
-            <div className="text-center p-2 relative z-10">
-              <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4 text-red-500">
-                <AlertTriangle className="w-6 h-6 animate-pulse" />
-              </div>
-              
-              <h3 className="text-base font-bold text-white mb-2">{confirmAction.title}</h3>
-              <p className="text-xs text-slate-400 leading-relaxed mb-6 whitespace-pre-line">{confirmAction.message}</p>
-              
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setConfirmAction(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/[0.08] hover:border-white/15 font-semibold transition-all text-xs shadow-sm flex items-center justify-center gap-1.5"
-                >
-                  Vazgeç
-                </button>
-                <button
-                  onClick={() => {
-                    confirmAction.onConfirm();
-                    setConfirmAction(null);
-                  }}
-                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-semibold transition-all text-xs shadow-md shadow-red-950/50 flex items-center justify-center gap-1.5"
-                >
-                  Evet, Eminim
-                </button>
-              </div>
-            </div>
-          </Modal>
-        )}
+        <ConfirmModal
+          isOpen={confirmAction !== null}
+          onClose={() => setConfirmAction(null)}
+          title={confirmAction?.title || "Onay"}
+          message={confirmAction?.message}
+          confirmText="Evet, Eminim"
+          cancelText="Vazgeç"
+          isDestructive={true}
+          onConfirm={() => {
+            if (confirmAction?.onConfirm) confirmAction.onConfirm();
+          }}
+        />
       </AnimatePresence>
 
       <StudyBuddy courseId={course.id} isProfessional={isProfessional} />

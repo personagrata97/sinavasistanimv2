@@ -1,5 +1,5 @@
 import { prisma } from "./prisma"
-import { processInBackground } from "@/app/api/courses/process/route"
+import { processInBackground } from "@/lib/background-processor"
 import { getCourseBySlug } from "./course-data"
 
 let isWorkerRunning = false

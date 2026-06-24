@@ -29,27 +29,83 @@ export async function GET(req: Request) {
       select: { id: true, slug: true, name: true }
     })
 
-    if (zombieCourses.length === 0) {
+    if (zombieCourses.length > 0) {
+      console.warn(`[CRON] ⚠️ ${zombieCourses.length} adet zombi ders tespit edildi! İptal ediliyor...`, zombieCourses.map(c => c.slug))
+      
+      // Zombi derslerin statülerini 'error' yap ve hata mesajı ekle
+      await prisma.course.updateMany({
+        where: { id: { in: zombieCourses.map(c => c.id) } },
+        data: { status: "error" }
+      })
+    } else {
       console.log("[CRON] ✨ Temizlenecek zombi süreç bulunamadı.")
-      return NextResponse.json({ success: true, message: "No zombies found", count: 0 })
     }
 
-    console.warn(`[CRON] ⚠️ ${zombieCourses.length} adet zombi ders tespit edildi! İptal ediliyor...`, zombieCourses.map(c => c.slug))
+    // ==========================================
+    // 1. VERİTABANI LOG TEMİZLİĞİ (Retention Policy)
+    // ==========================================
+    const SEVEN_DAYS_AGO = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    
+    console.log("[CRON] 🗑️ 7 günden eski loglar temizleniyor...")
+    const [delApiLogs, delSysErrs, delGenLogs, delTrigLogs] = await Promise.all([
+      prisma.apiUsageLog.deleteMany({ where: { createdAt: { lt: SEVEN_DAYS_AGO } } }),
+      prisma.systemError.deleteMany({ where: { createdAt: { lt: SEVEN_DAYS_AGO }, resolved: true } }),
+      prisma.generationLog.deleteMany({ where: { createdAt: { lt: SEVEN_DAYS_AGO } } }),
+      prisma.processTriggerLog.deleteMany({ where: { createdAt: { lt: SEVEN_DAYS_AGO } } })
+    ])
+    console.log(`[CRON] 🧹 Silinen loglar: API(${delApiLogs.count}) SysErr(${delSysErrs.count}) GenLog(${delGenLogs.count}) TrigLog(${delTrigLogs.count})`)
 
-    // Zombi derslerin statülerini 'error' yap ve hata mesajı ekle
-    await prisma.course.updateMany({
+    // ==========================================
+    // 2. OTONOM HATA KURTARMA (Dead-Letter Queue)
+    // ==========================================
+    // 2 saatten eski ve 'error' statüsündeki dersleri bul (maksimum 3 tane)
+    const TWO_HOURS_AGO = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    
+    const errorCourses = await prisma.course.findMany({
       where: {
-        id: { in: zombieCourses.map(c => c.id) }
-      },
-      data: {
         status: "error",
-      }
+        updatedAt: { lt: TWO_HOURS_AGO }
+      },
+      select: { id: true, slug: true, name: true },
+      take: 3
     })
+
+    let dlqCount = 0
+    if (errorCourses.length > 0) {
+      console.warn(`[CRON] 🚑 Otonom kurtarma (DLQ) tetikleniyor. Hatalı ${errorCourses.length} ders yeniden kuyruğa alınıyor...`)
+      
+      // Job-processor'dan import etmek yerine doğrudan fetch() ile kendi API'mize istek atabiliriz
+      // Çünkü cron'dan enqueueCourseProcessJob çağırmak import döngüsü (circular dependency) yaratabilir.
+      // En güvenlisi fetch ile tetiklemek:
+      const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000"
+      
+      for (const course of errorCourses) {
+        try {
+          // Devam Ettir (forceRetry: true) mantığıyla tetikliyoruz
+          await fetch(`${baseUrl}/api/courses/process`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              slug: course.slug,
+              forceRetry: true,
+              secretToken: process.env.CRON_SECRET || "local_dev_bypass"
+            })
+          })
+          console.log(`[CRON] 🔁 DLQ: ${course.slug} başarıyla yeniden kuyruğa alındı.`)
+          dlqCount++
+        } catch (err) {
+          console.error(`[CRON] ❌ DLQ Hatası (${course.slug}):`, err)
+        }
+      }
+    } else {
+      console.log("[CRON] ✨ Kurtarılacak hatalı ders bulunamadı.")
+    }
 
     return NextResponse.json({ 
       success: true, 
-      message: `Cleaned up ${zombieCourses.length} zombie courses.`, 
-      zombies: zombieCourses.map(c => c.slug) 
+      message: `Cleaned up ${zombieCourses.length} zombies. Deleted old logs. Recovered ${dlqCount} errored courses.`, 
+      zombies: zombieCourses.map(c => c.slug),
+      recovered: errorCourses.map(c => c.slug)
     })
   } catch (error: any) {
     console.error("[CRON] Zombi temizlik hatası:", error)

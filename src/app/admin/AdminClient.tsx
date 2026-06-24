@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation"
 import { createPortal } from "react-dom"
 import { motion, AnimatePresence } from "framer-motion"
 import { Modal } from "@/components/course/shared"
+import { ConfirmModal } from "@/components/course/shared/ConfirmModal"
 import { Tooltip } from "@/components/ui/shared"
 import { SectionQualityModal } from "@/components/admin/SectionQualityModal"
 import { parseQualityIssues, deriveQualityStages } from "@/lib/section-quality-gates"
@@ -686,36 +687,90 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                             )}
                           </td>
                           <td className="py-4 px-4">
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${job.status === "processing" ? "bg-amber-500/20 text-amber-400 animate-pulse" : "bg-slate-500/20 text-slate-400"}`}>
-                              {job.status === "processing" ? "Üretiliyor" : "Kuyrukta Bekliyor"}
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              <span className={`px-2 py-1 rounded text-xs font-bold w-fit ${job.status === "processing" ? "bg-amber-500/20 text-amber-400 animate-pulse" : job.status === "pausing" ? "bg-rose-500/20 text-rose-400 animate-pulse" : "bg-slate-500/20 text-slate-400"}`}>
+                                {job.status === "processing" ? "Üretiliyor" : job.status === "pausing" ? "Duraklatılıyor..." : "Kuyrukta Bekliyor"}
+                              </span>
+                              {job.phaseLabel && job.status === "processing" && (
+                                <span className="text-[10px] text-blue-300/80 font-medium truncate max-w-[200px]" title={job.phaseLabel}>
+                                  {job.phaseLabel}
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-4 px-4 text-sm text-slate-500">
                             {new Date(job.createdAt).toLocaleString("tr-TR")}
                           </td>
                           <td className="py-4 px-4">
-                            <button
-                              onClick={() => {
-                                handleConfirmAction({
-                                  title: "Görevi İptal Et",
-                                  message: "Bu görevi iptal etmek istediğine emin misin?",
-                                  confirmText: "Evet, İptal Et",
-                                  isDestructive: true,
-                                  onConfirm: async () => {
-                                    closeConfirm()
+                            <div className="flex items-center gap-2">
+                              {(job.status === "processing" || job.status === "pausing") && (
+                                <button
+                                  onClick={() => {
+                                    handleConfirmAction({
+                                      title: "Görevi Duraklat",
+                                      message: "Bu görevi geçici olarak duraklatmak istediğinize emin misiniz? İşlem API tüketimini kesecek ve kaldığı yerden devam ettirilebilir.",
+                                      confirmText: "Evet, Duraklat",
+                                      isDestructive: false,
+                                      onConfirm: async () => {
+                                        closeConfirm()
+                                        setJobs(prevJobs => prevJobs.map(j => j.id === job.id ? { ...j, status: "pausing" } : j));
+                                        await fetch("/api/admin/jobs", {
+                                          method: "PATCH",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ id: job.id, courseSlug: job.courseSlug, action: "pause" })
+                                        });
+                                      }
+                                    })
+                                  }}
+                                  disabled={job.status === "pausing"}
+                                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${job.status === "pausing" ? "bg-amber-500/5 text-amber-500/50 cursor-not-allowed" : "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"}`}
+                                >
+                                  {job.status === "pausing" ? "Duraklatılıyor..." : "Duraklat"}
+                                </button>
+                              )}
+                              {job.status === "failed" && job.error === "Duraklatıldı" && (
+                                <button
+                                  onClick={async () => {
+                                    setJobs(prev => prev.filter(j => j.id !== job.id));
                                     await fetch("/api/admin/jobs", {
                                       method: "DELETE",
                                       headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ id: job.id, courseSlug: job.courseSlug })
+                                      body: JSON.stringify({ id: job.id })
                                     });
-                                    setJobs(jobs.filter(j => j.id !== job.id));
-                                  }
-                                })
-                              }}
-                              className="px-3 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-md text-xs font-bold transition-colors"
-                            >
-                              İptal Et
-                            </button>
+                                    await fetch("/api/courses/process", {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ slug: job.courseSlug, forceRetry: false })
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-md text-xs font-bold transition-colors"
+                                >
+                                  Devam Ettir
+                                </button>
+                              )}
+                              <button
+                                onClick={() => {
+                                  handleConfirmAction({
+                                    title: "Görevi İptal Et / Durdur",
+                                    message: "Bu görevi tamamen iptal etmek istediğinize emin misiniz? Görev kuyruktan silinecek.",
+                                    confirmText: "Evet, İptal Et",
+                                    isDestructive: true,
+                                    onConfirm: async () => {
+                                      closeConfirm()
+                                      setJobs(prev => prev.filter(j => j.id !== job.id));
+                                      await fetch("/api/admin/jobs", {
+                                        method: "DELETE",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ id: job.id, courseSlug: job.courseSlug })
+                                      });
+                                    }
+                                  })
+                                }}
+                                className="px-3 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-md text-xs font-bold transition-colors"
+                              >
+                                İptal Et
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -1393,40 +1448,16 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
       )}
 
       <AnimatePresence>
-        {confirmConfig.isOpen && (
-          <Modal
-            onClose={closeConfirm}
-            title={confirmConfig.title}
-            icon={<AlertTriangle className="w-5 h-5" />}
-            maxWidth="sm"
-            zIndex={9999}
-          >
-            <div className="pt-2">
-              <p className="text-slate-300 text-sm mb-6 leading-relaxed">
-                {confirmConfig.message}
-              </p>
-              
-              <div className="flex justify-end gap-3 mt-8">
-                <button
-                  onClick={closeConfirm}
-                  className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
-                >
-                  {confirmConfig.cancelText || "İptal"}
-                </button>
-                <button
-                  onClick={confirmConfig.onConfirm}
-                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg ${
-                    confirmConfig.isDestructive 
-                      ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white border border-rose-500/20' 
-                      : 'bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white border border-indigo-500/20'
-                  }`}
-                >
-                  {confirmConfig.confirmText || "Tamam"}
-                </button>
-              </div>
-            </div>
-          </Modal>
-        )}
+        <ConfirmModal
+          isOpen={confirmConfig.isOpen}
+          onClose={closeConfirm}
+          title={confirmConfig.title}
+          message={confirmConfig.message}
+          confirmText={confirmConfig.confirmText}
+          cancelText={confirmConfig.cancelText}
+          isDestructive={confirmConfig.isDestructive}
+          onConfirm={confirmConfig.onConfirm}
+        />
       </AnimatePresence>
     </div>
   )

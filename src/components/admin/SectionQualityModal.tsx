@@ -1,7 +1,9 @@
 import React, { useState } from "react"
 import { motion } from "framer-motion"
-import { FileText, ShieldCheck, Bot, AlertCircle, RefreshCw, ChevronRight, Sparkles, Search } from "lucide-react"
+import { FileText, ShieldCheck, Bot, CheckCircle, ChevronDown, ChevronRight, PlayCircle, Search, Sparkles, X, RefreshCw, AlertCircle } from "lucide-react"
+import { ActionButton } from "@/components/ui/shared"
 import { Modal } from "@/components/course/shared"
+import { ConfirmModal } from "@/components/course/shared/ConfirmModal"
 import {
   parseQualityIssues,
   deriveQualityStages,
@@ -529,7 +531,7 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
                                   <Sparkles className="w-3.5 h-3.5" /> SİSTEM ONAY RAPORU
                                 </div>
                                 <div className="text-[11px] text-emerald-400/80 leading-relaxed font-medium">
-                                  Kalite Kontrolörü ve Müfettiş denetimi tamamlandı. Kaynak materyaldeki kavramlar yüksek doğrulukla aktarıldı.
+                                  Kalite Kontrolörü ve Müfettiş denetimi tamamlandı. Kaynak materyaldeki kavramlar tam doğrulukla aktarıldı.
                                 </div>
                                 {hSuggestions.length > 0 && (
                                   <div className="text-[10px] text-emerald-400/90 mt-2 pt-2 border-t border-emerald-500/10">
@@ -666,106 +668,73 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
       <div className="mt-6 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-6 border-t border-white/[0.05]">
         {(section.processed || section.verificationScore !== null) && (
           <>
-            <button
+            <ActionButton
               onClick={() => triggerRollback("mufettis")}
               disabled={isRollingBack}
-              className="px-4 py-2 rounded-xl font-medium transition-all text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
+              variant="secondary"
+              size="md"
             >
-              <RefreshCw className={`w-4 h-4 ${isRollingBack ? 'animate-spin' : ''}`} />
-              Müfettişe Geri Gönder
-            </button>
-            <button
+              <RefreshCw className={`w-4 h-4 text-amber-400 ${isRollingBack ? 'animate-spin' : ''}`} />
+              <span className="text-amber-400">Müfettişe Geri Gönder</span>
+            </ActionButton>
+            <ActionButton
               onClick={() => triggerRollback("flashcards")}
               disabled={isRollingBack}
-              className="px-4 py-2 rounded-xl font-medium transition-all text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
+              variant="secondary"
+              size="md"
             >
-              <RefreshCw className={`w-4 h-4 ${isRollingBack ? 'animate-spin' : ''}`} />
-              Soru Üretimine Geri Gönder
-            </button>
+              <RefreshCw className={`w-4 h-4 text-emerald-400 ${isRollingBack ? 'animate-spin' : ''}`} />
+              <span className="text-emerald-400">Soru Üretimine Geri Gönder</span>
+            </ActionButton>
           </>
         )}
         <div className="flex-1"></div>
         {actions}
-        <button
-          onClick={onClose}
-          className="px-6 py-3 rounded-xl font-bold transition-all text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 flex items-center justify-center gap-1.5"
-        >
+        <ActionButton onClick={onClose} variant="secondary" size="lg">
           Kapat
-        </button>
+        </ActionButton>
       </div>
 
       {/* Custom Confirm Modal */}
-      {confirmState.isOpen && (
-        <Modal
-          onClose={() => setConfirmState({ isOpen: false, targetPhase: null })}
-          title="Bölümü Geri Çek"
-          icon={<AlertCircle className="w-5 h-5 text-amber-500" />}
-          maxWidth="sm"
-          zIndex={999999}
-        >
-          <div className="py-4">
-            <p className="text-sm text-slate-300 leading-relaxed mb-6">
-              Bölümü <strong>'{confirmState.targetPhase === "mufettis" ? "Müfettiş" : "Soru/Flashcard"}'</strong> aşamasından itibaren yeniden işlemek istediğinize emin misiniz? <br/><br/>
-              <span className="text-amber-400">Mevcut onaylar ve üretilmiş materyaller kalıcı olarak silinecektir.</span>
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setConfirmState({ isOpen: false, targetPhase: null })}
-                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
-              >
-                İptal
-              </button>
-              <button
-                onClick={executeRollback}
-                className="px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500 hover:text-white border border-amber-500/20"
-              >
-                Evet, Geri Çek
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <ConfirmModal
+        isOpen={confirmState.isOpen}
+        onClose={() => setConfirmState({ isOpen: false, targetPhase: null })}
+        title="Bölümü Geri Çek"
+        message={
+          <>
+            Bölümü <strong>'{confirmState.targetPhase === "mufettis" ? "Müfettiş" : "Soru/Flashcard"}'</strong> aşamasından itibaren yeniden işlemek istediğinize emin misiniz? <br/><br/>
+            <span className="text-amber-400">Mevcut onaylar ve üretilmiş materyaller kalıcı olarak silinecektir.</span>
+          </>
+        }
+        confirmText="Evet, Geri Çek"
+        cancelText="İptal"
+        isDestructive={true}
+        onConfirm={executeRollback}
+      />
 
       {/* Custom Alert Modal */}
-      {alertState.isOpen && (
-        <Modal
-          onClose={() => {
-            setAlertState({ isOpen: false, message: "" });
-            if (alertState.reloadOnClose) {
-              onClose();
-              window.location.reload();
-            }
-          }}
-          title={alertState.isError ? "Hata Oluştu" : "İşlem Başarılı"}
-          icon={alertState.isError ? <AlertCircle className="w-5 h-5 text-red-500" /> : <ShieldCheck className="w-5 h-5 text-emerald-500" />}
-          maxWidth="sm"
-          zIndex={999999}
-        >
-          <div className="py-4">
-            <p className={`text-sm leading-relaxed mb-6 ${alertState.isError ? 'text-red-300' : 'text-emerald-300'}`}>
-              {alertState.message}
-            </p>
-            <div className="flex justify-end">
-              <button
-                onClick={() => {
-                  setAlertState({ isOpen: false, message: "" });
-                  if (alertState.reloadOnClose) {
-                    onClose();
-                    window.location.reload();
-                  }
-                }}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow-lg ${
-                  alertState.isError 
-                    ? 'bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/20' 
-                    : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white border border-emerald-500/20'
-                }`}
-              >
-                Tamam
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <ConfirmModal
+        isOpen={alertState.isOpen}
+        onClose={() => {
+          setAlertState({ isOpen: false, message: "" });
+          if (alertState.reloadOnClose) {
+            onClose();
+            window.location.reload();
+          }
+        }}
+        title={alertState.isError ? "Hata Oluştu" : "İşlem Başarılı"}
+        message={alertState.message}
+        confirmText="Tamam"
+        cancelText="Kapat"
+        isDestructive={alertState.isError}
+        onConfirm={() => {
+          setAlertState({ isOpen: false, message: "" });
+          if (alertState.reloadOnClose) {
+            onClose();
+            window.location.reload();
+          }
+        }}
+      />
     </Modal>
   )
 }

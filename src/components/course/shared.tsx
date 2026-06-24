@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { X, Search, ChevronDown, Target, BookOpen, Layers, HelpCircle, BarChart3, Clock, Trophy, CalendarDays, Brain } from "lucide-react"
+import { X, Search, ChevronDown, Target, BookOpen, Layers, HelpCircle, BarChart3, Clock, Trophy, CalendarDays, Brain, AlertTriangle } from "lucide-react"
 
 export const COURSE_TABS = [
   { id: "overview", label: "Genel", icon: Target },
