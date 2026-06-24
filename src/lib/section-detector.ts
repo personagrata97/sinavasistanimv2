@@ -1,4 +1,4 @@
-import { extractSectionsRegex, detectSectionTitlesOnlyTextAI, detectSectionTitlesOnlyMultimodal } from "@/lib/pdf-engine"
+import { extractSectionsRegex, detectSectionTitlesOnlyTextAI, detectSectionTitlesOnlyMultimodal, anchorTitlesToPagesWithAI } from "@/lib/pdf-engine"
 import { shouldUseSingleSectionModeFromProfile } from "@/lib/document-processing-profile"
 
 /**
@@ -671,6 +671,30 @@ export function detectFromTitleList(
   return { sections, titleSource, validation }
 }
 
+export async function detectFromTitleListWithAI(
+  titles: string[],
+  pageTexts: string[],
+  titleSource: TitleSource,
+  apiKey: string,
+  logCourseSlug?: string | null
+): Promise<SystematicDetectionResult | null> {
+  if (titles.length < 2) return null
+
+  // Semantik çivileme ile AI üzerinden pageStart listesi alınır
+  console.log(`[SECTION_DETECTOR] 🧠 ${titleSource} başlıkları için LLM Destekli Çivileme başlatılıyor...`)
+  const anchored = await anchorTitlesToPagesWithAI(titles, pageTexts, apiKey, { courseSlug: logCourseSlug })
+  
+  if (anchored.length < 2) return null
+
+  const bib = findBibliographyPageStart(pageTexts)
+  let sections = buildSectionRangesFromAnchors(anchored, pageTexts.length, bib)
+  // AI zaten monotonik döndürüyor ancak Global Zırhın düzeltme algoritmalarından geçmesi güvenlidir
+  sections = applyGlobalZirh(sections, pageTexts)
+  const validation = validateSectionRanges(sections, pageTexts)
+
+  return { sections, titleSource, validation }
+}
+
 /** Sıralı başlık kaynaklarını dene; ilk geçerli sonucu döndür */
 export function detectSectionsDeterministic(pageTexts: string[]): SystematicDetectionResult | null {
   const sources: Array<{ source: TitleSource; titles: string[] }> = []
@@ -763,7 +787,22 @@ export async function detectSectionsSystematic(
   let best: SystematicDetectionResult | null = deterministic
 
   for (const { source, titles } of attempts) {
-    const result = detectFromTitleList(titles, pageTexts, source)
+    let result: SystematicDetectionResult | null = null
+
+    if (keys.length > 0) {
+      // Önce AI destekli semantik çivilemeyi dene
+      result = await detectFromTitleListWithAI(titles, pageTexts, source, keys[0].trim(), options.logCourseSlug)
+    }
+
+    // AI başarısız olursa veya API hatası verirse, deterministik string çivilemeye dön (Fallback)
+    if (!result || !result.validation.valid) {
+      const fallbackResult = detectFromTitleList(titles, pageTexts, source)
+      if (fallbackResult && (!result || fallbackResult.validation.score > result.validation.score)) {
+        if (result) console.log(`[SECTION_DETECTOR] ⚠️ AI Çivileme doğrulanamadı (skor ${result.validation.score}), klasik metoda dönüldü.`)
+        result = fallbackResult
+      }
+    }
+
     if (!result) continue
     if (result.validation.valid) {
       console.log(`[SECTION_DETECTOR] ✅ ${source}: ${result.sections.length} bölüm doğrulandı`)

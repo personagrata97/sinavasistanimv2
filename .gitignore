@@ -69,3 +69,5 @@ test-output.txt
 /public/audio/
 *.log
 history-report.txt
+
+scratch/

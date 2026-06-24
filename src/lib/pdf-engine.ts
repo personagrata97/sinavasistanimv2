@@ -730,3 +730,97 @@ export async function detectSectionTitlesOnlyMultimodal(
     }
   })
 }
+
+const AI_ANCHOR_PROMPT = `
+Sana bir kitabın DOĞRU ve SIRALI bölüm başlıkları listesini ve kitabın her sayfasının ilk 10 satırının dökümünü veriyorum.
+Görevin, bu başlıkların kitabın GERÇEK fiziksel sayfalarında ("--- SAYFA X ---") kaçıncı sayfada başladığını bulmak.
+
+KURALLAR:
+1. Sayfa numaraları her zaman İLERİ GİTMELİDİR (monotonik). Önceki başlık Sayfa 15'te ise, sonraki başlık Sayfa 14'te veya 15'te Olamaz (16 ve sonrası olmalı).
+2. Bir sayfada birden fazla başlık listelenmişse, o sayfa muhtemelen bir "İçindekiler Özeti" sayfasıdır. SAKIN o sayfayı seçme! O başlığın devasa harflerle yalnız başına başladığı asıl sayfayı bul.
+3. SADECE aşağıdaki JSON formatında çıktı ver:
+[
+  {"title": "1. Bilgi Güvenliği Yönetimi", "pageStart": 14},
+  {"title": "2. Varlık Yönetimi", "pageStart": 26}
+]
+`
+
+export async function anchorTitlesToPagesWithAI(
+  titles: string[],
+  pageTexts: string[],
+  apiKey: string,
+  logContext?: { courseSlug?: string | null }
+): Promise<Array<{ title: string; pageStart: number }>> {
+  const model = "gemini-2.5-flash"
+  
+  // Sadece ilk 15 satırı alarak AI'ya gönder (büyük oranda token tasarrufu ve odaklanma)
+  const snippets = pageTexts.map((text, i) => {
+    const topText = text.split("\n").slice(0, 15).join("\n").trim()
+    return `--- SAYFA ${i + 1} ---\n${topText}`
+  }).join("\n\n")
+
+  const headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey }
+  const body = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `${AI_ANCHOR_PROMPT}\n\nBAŞLIKLAR:\n${JSON.stringify(titles, null, 2)}\n\nSAYFA BAŞLIKLARI DÖKÜMÜ:\n${snippets}`,
+          },
+        ],
+      },
+    ],
+    generationConfig: { temperature: 0.1 },
+  }
+
+  const started = Date.now()
+  return executeWithRotation(model, apiKey, async (currentKey) => {
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": currentKey }
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        body,
+        { headers, timeout: 180000 }
+      )
+      const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "anchor_titles_semantic",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status: "SUCCESS",
+        durationMs: Date.now() - started,
+      })
+      
+      let cleaned = raw.trim()
+      const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/)
+      if (match) cleaned = match[1].trim()
+      
+      const parsed = JSON.parse(cleaned)
+      if (Array.isArray(parsed)) {
+        // AI'nın döndürdüğü başlıkları orijinal title listesiyle filtrele ve eşleştir
+        return parsed.filter(p => p.title && p.pageStart > 0).map(p => ({
+          title: p.title,
+          pageStart: p.pageStart
+        }))
+      }
+      return []
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: unknown }; message?: string }
+      const status = err.response?.status === 429 ? "RATE_LIMIT_429" : err.response?.status === 403 ? "FORBIDDEN_403" : `HTTP_${err.response?.status ?? "ERR"}`
+      await logDirectGeminiApiCall({
+        apiKey: currentKey,
+        model,
+        operation: "anchor_titles_semantic",
+        stage: "section_detect",
+        courseSlug: logContext?.courseSlug ?? null,
+        status,
+        errorDetail: (err.message || "anchor_titles_semantic failed").substring(0, 500),
+        durationMs: Date.now() - started,
+      })
+      console.warn("[PDF_ENGINE] AI Anchoring failed:", err.message)
+      return []
+    }
+  })
+}

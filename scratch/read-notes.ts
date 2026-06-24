@@ -1,1 +1,0 @@
-import { PrismaClient } from "@prisma/client"; const prisma = new PrismaClient(); async function run() { const s = await prisma.section.findFirst({ where: { title: { contains: "Siber" } } }); console.log(s?.notes); } run();
