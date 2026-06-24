@@ -16,6 +16,7 @@
     "@prisma/adapter-better-sqlite3": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@ungap/with-resolvers": "^0.1.0",
+    "@upstash/redis": "^1.38.0",
     "axios": "^1.15.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",

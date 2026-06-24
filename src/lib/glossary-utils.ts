@@ -3,11 +3,19 @@ export function isGlossarySectionTitle(title: string): boolean {
   const t = title.toLocaleLowerCase("tr-TR")
   return (
     t.includes("kısaltma") ||
+    t.includes("kisaltma") ||
     t.includes("tanım") ||
+    t.includes("tanim") ||
     t.includes("terimler") ||
+    t.includes("terim") ||
     t.includes("sözlük") ||
+    t.includes("sozluk") ||
     t.includes("glossary") ||
-    t.includes("kavramlar")
+    t.includes("abbreviations") ||
+    t.includes("definitions") ||
+    t.includes("kavramlar") ||
+    t.includes("kavram dizini") ||
+    t.includes("terim dizini")
   )
 }
 

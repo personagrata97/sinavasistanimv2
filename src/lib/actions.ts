@@ -415,12 +415,19 @@ export async function refineSectionNotesAction(sectionId: string) {
       aiMode,
       totalPages: course.totalPages ?? 0,
     })
+    const nextSec = await prisma.section.findFirst({
+      where: { courseId: course.id, isStudyUnit: true, order: { gt: section.order } },
+      orderBy: { order: "asc" }
+    });
+    const nextSectionTitle = nextSec?.title || undefined;
+
     const notes = await generateCourseNotes(
       enrichedContent, section.title, fullCourseName, course.userLevel,
       aiMode, section.pageStart, section.pageEnd,
       false, 0, 1, undefined, sourceMode,
       getDocumentNoteInstructions(documentProfile),
       documentProfile.documentType,
+      nextSectionTitle,
     )
 
     // Verify notes - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,

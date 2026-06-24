@@ -447,7 +447,7 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
 <head>
   <meta charset="UTF-8">
   <title>${course.name} - Ders Notları</title>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="/js/mermaid.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     

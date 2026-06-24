@@ -1,21 +1,23 @@
-import { prisma } from './src/lib/prisma'
+import { prisma } from './src/lib/prisma';
 
-async function main() {
-  const sections = await prisma.section.findMany({
-    where: {
-      verificationIssues: {
-        contains: 'Yapılandırılıyor'
-      }
-    },
-    select: { id: true, title: true, verificationIssues: true, updatedAt: true }
+async function check() {
+  const course = await prisma.course.findFirst({
+    orderBy: { updatedAt: 'desc' },
+    include: { sections: true }
   });
-  console.log("Sections stuck with 'Yapılandırılıyor':", sections);
   
-  const processingCourses = await prisma.course.findMany({
-    where: { status: 'processing' },
-    select: { id: true, name: true, status: true, updatedAt: true }
-  });
-  console.log("Processing Courses:", processingCourses);
+  if (!course) {
+    console.log("No course found.");
+    return;
+  }
+  
+  console.log("Course:", course.name);
+  console.log("Status:", course.status);
+  console.log("Sections:", course.sections.length);
+  if (course.sections.length > 0) {
+    console.log("First section:", course.sections[0].title);
+    console.log("Page Start:", course.sections[0].pageStart);
+  }
 }
 
-main().catch(console.error).finally(() => prisma.$disconnect());
+check().catch(console.error).finally(() => prisma.$disconnect());

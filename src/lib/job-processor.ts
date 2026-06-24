@@ -106,12 +106,18 @@ export async function startWorkerLoop() {
             data: { status: "failed", error: "İşlem duraklatıldı veya kullanıcı sayfadan ayrıldı." }
           })
           console.log(`[WORKER] ⏸️ İşlem DURAKLATILDI, görev sonlandırıldı: ${job.courseSlug}`)
-        } else {
-           // still processing? Or finished but not ready?
-           await prisma.job.update({
+        } else if (checkCourse?.status === "processing" || checkCourse?.status === "uploading") {
+          await prisma.job.update({
             where: { id: job.id },
-            data: { status: "completed" } // Default to complete to avoid infinite loop
+            data: { status: "pending", lockedAt: null },
           })
+          console.log(`[WORKER] ⏳ Kurs hâlâ işleniyor — görev yeniden kuyruğa alındı: ${job.courseSlug}`)
+        } else {
+          await prisma.job.update({
+            where: { id: job.id },
+            data: { status: "completed" },
+          })
+          console.log(`[WORKER] ✅ Görev sonlandırıldı (kurs durumu: ${checkCourse?.status}): ${job.courseSlug}`)
         }
 
       } catch (err: any) {

@@ -60,12 +60,87 @@ export function deburr(text: string): string {
     .replace(/[^a-z0-9]/g, "") // Sadece harf ve rakamlar kalır
 }
 
-/** Bulanık Eşleştirme (Fuzzy Match): Boşluklar, noktalamalar ve Türkçe karakter hataları yok sayılır */
+function levenshteinDistance(s: string, t: string, maxDist = 2): number {
+  if (s === t) return 0;
+  const m = s.length;
+  const n = t.length;
+  if (Math.abs(m - n) > maxDist) return maxDist + 1;
+
+  let prevRow = new Array(n + 1);
+  let currRow = new Array(n + 1);
+
+  for (let j = 0; j <= n; j++) {
+    prevRow[j] = j;
+  }
+
+  for (let i = 1; i <= m; i++) {
+    currRow[0] = i;
+    let minVal = currRow[0];
+
+    const minJ = Math.max(1, i - maxDist);
+    const maxJ = Math.min(n, i + maxDist);
+
+    for (let j = 1; j < minJ; j++) {
+      currRow[j] = maxDist + 1;
+    }
+    for (let j = maxJ + 1; j <= n; j++) {
+      currRow[j] = maxDist + 1;
+    }
+
+    for (let j = minJ; j <= maxJ; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      currRow[j] = Math.min(
+        prevRow[j] + 1,
+        currRow[j - 1] + 1,
+        prevRow[j - 1] + cost
+      );
+      if (j === minJ || currRow[j] < minVal) {
+        minVal = currRow[j];
+      }
+    }
+
+    if (minVal > maxDist) {
+      return maxDist + 1;
+    }
+
+    const temp = prevRow;
+    prevRow = currRow;
+    currRow = temp;
+  }
+
+  return prevRow[n];
+}
+
+/** Bulanık Eşleştirme (Fuzzy Match): Boşluklar, noktalamalar ve Türkçe karakter hataları yok sayılır, Levenshtein <= 2 desteği */
 export function fuzzyIncludes(text: string, searchPhrase: string): boolean {
-  const deburredText = deburr(text)
+  const cleanText = text
+    .replace(/^\s*\d+\s*$/gm, "")
+    .replace(/^\s*(?:sayfa|page|s\.)\s*\d+(?:\s*[\/\-]\s*\d+)?\s*$/gim, "")
+    .replace(/\/Type\s*\/Page\b/gi, "")
+
+  const deburredText = deburr(cleanText)
   const deburredSearch = deburr(searchPhrase)
   if (deburredSearch.length < 3) return false
-  return deburredText.includes(deburredSearch)
+  if (deburredText.includes(deburredSearch)) return true
+
+  const searchLen = deburredSearch.length
+  const maxDistance = 2
+  for (let i = 0; i <= deburredText.length - searchLen; i++) {
+    const windowText = deburredText.substring(i, i + searchLen)
+    if (levenshteinDistance(windowText, deburredSearch) <= maxDistance) return true
+
+    if (i <= deburredText.length - searchLen - 1) {
+      const windowText2 = deburredText.substring(i, i + searchLen + 1)
+      if (levenshteinDistance(windowText2, deburredSearch) <= maxDistance) return true
+    }
+
+    if (searchLen > 3) {
+      const windowText3 = deburredText.substring(i, i + searchLen - 1)
+      if (levenshteinDistance(windowText3, deburredSearch) <= maxDistance) return true
+    }
+  }
+
+  return false
 }
 
 /** Başlıktaki "1. ", "Bölüm 2 - " gibi önekleri temizle */
@@ -111,16 +186,19 @@ export function detectTocPages(
 
   if (candidateTitles.length >= 3) {
     for (let p = 0; p < Math.min(20, pageTexts.length); p++) {
-      // isLikelyTocListingPage (noktalı yapı) zorunluluğunu KESİNLİKLE kaldırıyoruz.
-      // Sadece o sayfada 3'ten fazla konu başlığı var mı ona bakacağız.
-      const lines = pageTexts[p].split('\\n').map(l => normalizeForMatch(l))
+      const lines = pageTexts[p].split("\n").map(l => normalizeForMatch(l))
       let matchCount = 0
+      const isKnownToc = pageHasTocMarker(pageTexts[p]) || isLikelyTocListingPage(pageTexts[p])
+
       for (const t of candidateTitles) {
         const key = normalizeForMatch(cleanSectionTitle(t))
         if (key.length >= 4) {
-          // Konu başlığının ayrı bir satırda geçmesini (veya satırın büyük kısmını oluşturmasını) bekliyoruz.
-          // Paragraf içinde virgüllerle ayrılmış konuları TOC sanmamak için:
-          if (lines.some(l => l.includes(key) && l.length < key.length + 50)) {
+          if (lines.some(l => {
+            const hasKey = l.includes(key) && l.length < key.length + 50
+            if (isKnownToc) return hasKey
+            // TOC pages without explicit markers/dots must end with a page number to be matched
+            return hasKey && /\b\d{1,3}\s*$/.test(l)
+          })) {
             matchCount++
           }
         }
@@ -370,8 +448,12 @@ function titleMatchesAtPage(title: string, pageText: string, headerLines = 8): b
 function titleMatchesAnywhere(title: string, pageText: string): boolean {
   const cleanTitleStr = cleanSectionTitle(title)
   const strippedNum = cleanTitleStr.replace(/^\d+\.\s*/, "")
-  if (fuzzyIncludes(pageText, cleanTitleStr)) return true
-  if (strippedNum.length >= 4 && fuzzyIncludes(pageText, strippedNum)) return true
+  const lines = pageText.split('\n')
+  for (const line of lines) {
+    if (line.length > title.length + 45) continue
+    if (fuzzyIncludes(line, cleanTitleStr)) return true
+    if (strippedNum.length >= 4 && fuzzyIncludes(line, strippedNum)) return true
+  }
   return false
 }
 
@@ -466,6 +548,19 @@ export function anchorTitlesToPages(
   }
 
   return anchored
+}
+
+/** Ardışık bölümlerde sayfa örtüşmesini giderir (pageEnd = sonraki.pageStart - 1) */
+export function assertNoOverlapSections<T extends { pageStart: number; pageEnd: number }>(
+  sections: T[],
+): T[] {
+  for (let i = 0; i < sections.length - 1; i++) {
+    const nextStart = sections[i + 1].pageStart
+    if (sections[i].pageEnd >= nextStart) {
+      sections[i].pageEnd = Math.max(sections[i].pageStart, nextStart - 1)
+    }
+  }
+  return sections
 }
 
 export function buildSectionRangesFromAnchors(

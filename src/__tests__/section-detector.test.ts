@@ -3,6 +3,7 @@ import {
   extractTitlesFromTocPages,
   detectSectionsDeterministic,
   validateSectionRanges,
+  applyGlobalZirh,
   resolveSectionValidationLimits,
   anchorTitlesToPages,
   detectTocPages,
@@ -177,7 +178,7 @@ describe("section-detector", () => {
         aiMode: "finance",
       }),
     ).toBe(false)
-    expect(resolveSectionValidationLimits(pages.length).maxSectionPageRatio).toBe(0.45)
+    expect(resolveSectionValidationLimits(pages.length).maxSectionPageRatio).toBe(0.60)
   })
 
   it("tek parça modu tüm sayfaları tek bölümde birleştirir", () => {
@@ -187,5 +188,16 @@ describe("section-detector", () => {
     expect(single[0]).toMatchObject({ pageStart: 1, pageEnd: 16, title: "KVKK Prosedürü" })
     expect(single[0].content).toContain("Sayfa 1 metni")
     expect(single[0].content).toContain("Sayfa 16 metni")
+  })
+
+  it("applyGlobalZirh pageEnd örtüşmesini giderir (next.pageStart - 1)", () => {
+    const pages = buildBdGoldenFixture()
+    const ranges = [
+      { title: "1. Bilgi Güvenliği Yönetimi", pageStart: 11, pageEnd: 25 },
+      { title: "2. Varlık Yönetimi", pageStart: 21, pageEnd: 118 },
+    ]
+    const zirh = applyGlobalZirh(ranges, pages)
+    expect(zirh[0].pageEnd).toBeLessThan(zirh[1].pageStart)
+    expect(zirh[0].pageEnd).toBe(zirh[1].pageStart - 1)
   })
 })

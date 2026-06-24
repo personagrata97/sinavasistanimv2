@@ -3,7 +3,7 @@ import {
   isPendingOcrContent,
   shouldRunMarkdownOcr,
 } from "@/lib/pdf-engine"
-import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
+import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
 import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
 import {
@@ -27,6 +27,21 @@ import {
 import {
   mergeVerificationIssues,
 } from "@/lib/section-quality-gates"
+import { getEffectiveRawContent } from "@/lib/effective-raw-content"
+import { CHAR_SLICE_RESOLUTION, QUALITY_CONTRACT_ENABLED, STRICT_READY_GATE } from "@/lib/feature-flags"
+import { sliceContent } from "@/lib/char-slice-resolver"
+import { resolveCharSlicesV2 } from "@/lib/char-slice-resolver-v2"
+import {
+  emptyQualityChain,
+  parseQualityChain,
+  runStageWithContract,
+  type QualityChain,
+} from "@/lib/quality-contract"
+import { postProcessOcrMarkdown } from "@/lib/ocr-post-processor"
+import { runKontrolorEnsemble } from "@/lib/kontrolor-ensemble"
+import { evaluatePublishGate } from "@/lib/publish-gate"
+import { validateQuestionsAdversarial, validateFlashcardsAdversarial } from "@/lib/question-adversarial"
+import { extractStructuredGlossary } from "@/lib/glossary-extractor"
 
 // ==================== BACKGROUND PROCESSING ====================
 // HTTP response döndükten sonra Node.js event loop'unda çalışmaya devam eder.
@@ -45,6 +60,74 @@ async function finalizeCourseStatusIfStillProcessing(
     console.log(`[BG] ⏭️ Durum güncellenmedi (${status}) — başka işlem devralmış: ${slug}`)
   }
   return result.count > 0
+}
+
+/** OCR sonrası markdown başlıklarından alt konu dilimleri oluşturur */
+async function maybeCreateCharSliceChildren(
+  section: {
+    id: string
+    order: number
+    title: string
+    pageStart: number
+    pageEnd: number
+    rawContent: string
+    module: string | null
+  },
+  courseId: string,
+): Promise<boolean> {
+  if (!CHAR_SLICE_RESOLUTION()) return false
+
+  const existing = await prisma.section.count({ where: { parentSectionId: section.id } })
+  if (existing > 0) return true
+
+  const result = await resolveCharSlicesV2(
+    section.rawContent,
+    {
+      title: section.title,
+      pageStart: section.pageStart,
+      pageEnd: section.pageEnd,
+    },
+    section.title,
+  )
+  if (!result.validation.valid || result.slices.length < 2) return false
+
+  await prisma.section.update({
+    where: { id: section.id },
+    data: {
+      isStudyUnit: false,
+      resolutionScore: result.validation.score,
+      detectionSource: result.detectionSource,
+      resolutionErrors: JSON.stringify(result.validation.errors),
+    },
+  })
+
+  for (let i = 0; i < result.slices.length; i++) {
+    const sl = result.slices[i]
+    await prisma.section.create({
+      data: {
+        courseId,
+        parentSectionId: section.id,
+        title: sl.title,
+        order: section.order * 100 + (i + 1),
+        pageStart: section.pageStart,
+        pageEnd: section.pageEnd,
+        rawContent: sliceContent(section.rawContent, sl.charStart, sl.charEnd),
+        module: section.module || section.title,
+        sliceKind: "char_range",
+        charStart: sl.charStart,
+        charEnd: sl.charEnd,
+        anchorHeading: sl.anchorHeading,
+        anchorLevel: sl.anchorLevel,
+        detectionSource: result.detectionSource,
+        resolutionScore: result.validation.score,
+        isStudyUnit: true,
+        processed: false,
+      },
+    })
+  }
+
+  console.log(`[BG] ✂️ [${section.title}] ${result.slices.length} alt konu oluşturuldu (char slice).`)
+  return true
 }
 
 export async function processInBackground(slug: string, course: any, forceRetry: boolean = false) {
@@ -104,11 +187,11 @@ export async function processInBackground(slug: string, course: any, forceRetry:
     }
 
     const savedSections = await prisma.section.findMany({
-      where: { courseId: course.id, processed: false },
+      where: { courseId: course.id, processed: false, isStudyUnit: true },
       orderBy: { order: "asc" }
     })
 
-    const totalSections = await prisma.section.count({ where: { courseId: course.id } })
+    const totalSections = await prisma.section.count({ where: { courseId: course.id, isStudyUnit: true } })
     const alreadyDone = totalSections - savedSections.length
     console.log(`[BG] AI: ${savedSections.length} kalan (${alreadyDone}/${totalSections} bitti)`)
 
@@ -125,6 +208,15 @@ export async function processInBackground(slug: string, course: any, forceRetry:
       const section = savedSections[sIdx]
       const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
 
+      let nextSectionTitle: string | undefined = savedSections[sIdx + 1]?.title;
+      if (!nextSectionTitle) {
+        const nextSec = await prisma.section.findFirst({
+          where: { courseId: course.id, isStudyUnit: true, order: { gt: section.order } },
+          orderBy: { order: "asc" }
+        });
+        nextSectionTitle = nextSec?.title || undefined;
+      }
+
       // OCR bekleyen taranmış bölümler kısa placeholder içerir — atlanmamalı
       if (section.rawContent.length < 100 && !isPendingOcrContent(section.rawContent)) {
         try { await prisma.section.update({ where: { id: section.id }, data: { processed: true } }) } catch { }
@@ -133,13 +225,18 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
       let sectionIssuesObj: any = {}
       try { sectionIssuesObj = JSON.parse(section.verificationIssues || "{}") } catch {}
+      let qualityChain: QualityChain = parseQualityChain(sectionIssuesObj.qualityChain)
+      if (qualityChain.gates.length === 0) qualityChain = emptyQualityChain()
       // Eskiden burada needsUserAction === true ise döngü atlanıyordu (Kaldırıldı)
 
       const applySectionIssuesPatch = async (
         patch: Record<string, unknown>,
         extraData?: Record<string, unknown>,
       ) => {
-        sectionIssuesObj = mergeVerificationIssues(sectionIssuesObj, patch)
+        sectionIssuesObj = mergeVerificationIssues(sectionIssuesObj, {
+          ...patch,
+          ...(QUALITY_CONTRACT_ENABLED() ? { qualityChain } : {}),
+        })
         try {
           await prisma.section.update({
             where: { id: section.id },
@@ -249,9 +346,16 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   },
                 );
                 if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]") && pristineMarkdown.includes("[VISUAL_OCR_COMPLETE]")) {
-                  section.rawContent = pristineMarkdown;
+                  const ocrPost = postProcessOcrMarkdown(pristineMarkdown)
+                  section.rawContent = ocrPost.markdown
+                  const ocrContract = await runStageWithContract(qualityChain, "ocr_complete", async () => ({
+                    pass: true,
+                    contentForHash: ocrPost.markdown,
+                    metrics: ocrPost.metrics,
+                  }))
+                  qualityChain = ocrContract.chain
                   await prisma.section.update({ where: { id: section.id }, data: { rawContent: section.rawContent } });
-                  console.log(`[BG] ✅ Markdown OCR Tamamlandı.`);
+                  console.log(`[BG] ✅ Markdown OCR Tamamlandı (görsel envanter: ${ocrPost.visualCount}).`);
                   ocrSuccess = true;
                 } else {
                   throw new Error("OCR tamamlandı ancak [MARKDOWN_OCR_SUCCESS] damgası eksik.");
@@ -318,7 +422,16 @@ export async function processInBackground(slug: string, course: any, forceRetry:
               hasCriticalError = true;
               break;
             }
+
+            const splitIntoChildren = await maybeCreateCharSliceChildren(section, course.id)
+            if (splitIntoChildren) {
+              console.log(`[BG] ⏭️ [${section.title}] üst bölüm alt birimlere ayrıldı — bu turda atlanıyor.`)
+              success = true
+              break
+            }
           }
+
+          let effectiveRaw = getEffectiveRawContent(section)
 
           let isMufettisPassed = false;
           try {
@@ -329,6 +442,21 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           if (notes && notes.length > 500 && currentScore >= 98 && isMufettisPassed) {
             console.log(`[BG] 🌟 [${section.title}] Zaten kusursuz (%${currentScore}) notlara ve Müfettiş onayına sahip. Not üretimi atlanıyor, doğrudan eksik materyaller (soru/flashcard) üretilecek.`)
             notesAttemptSuccess = true
+
+            if (QUALITY_CONTRACT_ENABLED()) {
+              const kResume = await runStageWithContract(qualityChain, "kontrolor", async () => ({
+                pass: true,
+                contentForHash: notes,
+                score: currentScore,
+              }))
+              qualityChain = kResume.chain
+              const mResume = await runStageWithContract(qualityChain, "mufettis", async () => ({
+                pass: true,
+                contentForHash: notes,
+                score: 100,
+              }))
+              qualityChain = mResume.chain
+            }
             
             // Zombi dedektörünün haksız yere tetiklenmemesi için veritabanını boş bir veriyle güncelleyip updatedAt süresini sıfırlıyoruz.
             try {
@@ -344,7 +472,21 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             console.log(`[BG] ⏭️ Kullanıcı tercihi: Not üretimi KESİNLİKLE atlanıyor.`);
             notesAttemptSuccess = true;
             currentScore = 100;
-            notes = section.rawContent.length > 50 ? section.rawContent : "Not üretimi atlandı.";
+            notes = effectiveRaw.length > 50 ? effectiveRaw : "Not üretimi atlandı.";
+            if (QUALITY_CONTRACT_ENABLED()) {
+              const kSkip = await runStageWithContract(qualityChain, "kontrolor", async () => ({
+                pass: true,
+                contentForHash: notes,
+                score: 100,
+              }))
+              qualityChain = kSkip.chain
+              const mSkip = await runStageWithContract(qualityChain, "mufettis", async () => ({
+                pass: true,
+                contentForHash: notes,
+                score: 100,
+              }))
+              qualityChain = mSkip.chain
+            }
           } else if (!notesAttemptSuccess) {
             const loopTarget = startingAttempt + MAX_RETRIES - 1;
             for (let vAttempt = startingAttempt; vAttempt <= loopTarget; vAttempt++) {
@@ -365,7 +507,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
                 // ==================== AST-TABANLI CERRAHİ YAMA (SURGICAL PATCH) KARAR MATRİSİ ====================
                 let isSurgicalPatch = false;
-                let enrichedContent = section.rawContent;
+                let enrichedContent = effectiveRaw;
                 // 🚨 SÖZLÜK BYPASS KALDIRILDI: Tüm metinler Müfettiş denetimine girmek zorundadır.
                 if (lastVerification) {
                   const feedbackItems: string[] = [];
@@ -389,7 +531,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}, Öneri=${suggestionCount}`);
                     
                     // Frankenstein Kuralı: Hata yoğunluğu %15'i aşarsa veya pedagojik skor 75'in altındaysa sıfırdan yazım
-                    const blockCount = Math.max(10, notes.split('\n\n').length);
+                    const blockCount = Math.max(10, notes.split(/\n\s*\n/).filter(b => b.trim().length > 0).length);
                     // Öneriler de yamalanabilir defect olarak sayılır — 2 puanlık stil eksikliği için tüm notu baştan yazdırmak israf!
                     const totalDefects = missingCount + contradictionCount + suggestionCount;
                     const defectDensity = totalDefects / blockCount;
@@ -424,7 +566,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Cerrahi Yama (AST) Uygulanıyor...` }) } catch { }
 
                       const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
-                      const patchResult = await generateAndInjectPatch(notes, allFactsToPatch, fullCourseName, section.rawContent, section.title);
+                      const patchResult = await generateAndInjectPatch(notes, allFactsToPatch, fullCourseName, effectiveRaw, section.title);
 
                       if (patchResult.success) {
                         notes = patchResult.newMarkdown;
@@ -444,7 +586,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     if (!isSurgicalPatch) {
                       console.log(`[BG] 📋 Geri bildirimler dikkate alınarak baştan yazım (Rewrite)...`);
                       try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama: Yama İptal, Konu Yeniden Üretiliyor...` }) } catch { }
-                      enrichedContent = `⚠️⚠️⚠️ ÖNCEKİ DENEMEDE TESPİT EDİLEN EKSİKLER VE HATALAR:\nLütfen aşağıdaki geri bildirimleri dikkate alarak ders notunu baştan, organik bir akışla tekrar yaz:\n\n${feedbackItems.join("\n\n")}\n\n---\n\n${section.rawContent}`;
+                      enrichedContent = `⚠️⚠️⚠️ ÖNCEKİ DENEMEDE TESPİT EDİLEN EKSİKLER VE HATALAR:\nLütfen aşağıdaki geri bildirimleri dikkate alarak ders notunu baştan, organik bir akışla tekrar yaz:\n\n${feedbackItems.join("\n\n")}\n\n---\n\n${effectiveRaw}`;
                     }
                   }
                 }
@@ -457,24 +599,71 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                 } else {
                   if (!isSurgicalPatch) {
                     await ensureFileUrisForNotes()
-                    notes = await generateCourseNotes(
+                    const { generateCourseNotesEnsemble } = await import("@/lib/notes-ensemble")
+                    notes = await generateCourseNotesEnsemble(
                       enrichedContent, section.title, fullCourseName, course.userLevel,
                       aiMode, section.pageStart, section.pageEnd,
-                      false, 0, 1, undefined, sourceMode,
+                      undefined, sourceMode,
                       getDocumentNoteInstructions(documentProfile),
                       documentProfile.documentType,
-                    )
+                      nextSectionTitle,
+                    );
                   }
+
+                  const { dedupParagraphs } = await import("@/lib/content-dedup")
+                  notes = dedupParagraphs(notes)
 
                   console.log(`[BG] ✅ Notes generated/injected: ${notes.length} chars`)
                   await new Promise(r => setTimeout(r, 8000)) // Rate limit koruması
 
                   console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
                   try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
-                  verification = await verifyNotesAgainstSource(
-                    section.rawContent, notes, section.title, fullCourseName, sourceMode,
+                  const ensembleResult = await runKontrolorEnsemble(
+                    effectiveRaw, notes, section.title, fullCourseName, sourceMode,
                     documentProfile.documentType,
                   )
+                  verification = ensembleResult.verification
+                  if (!ensembleResult.pass && verification.score === 100) {
+                    verification.score = ensembleResult.score
+                  }
+
+                  const ocrGate = qualityChain.gates.find(g => g.stage === "ocr_complete")
+                  const visualItemCount = (ocrGate?.metrics as any)?.visualInventoryCount || 0
+                  
+                  const mermaidCount = (notes.match(/```mermaid/g) || []).length
+                  const tableCount = countMarkdownTables(notes)
+                  const totalVisuals = mermaidCount + tableCount
+                  
+                  const meetsVisualMin = visualItemCount === 0 || totalVisuals >= Math.ceil(visualItemCount * 0.9)
+                  
+                  if (!meetsVisualMin) {
+                    console.warn(`[BG] 🚨 GÖRSEL EKSİK: Notlardaki görsel öğe sayısı (${totalVisuals}) envanter beklentisinin (${visualItemCount}) altında! Cezalandırılıyor...`)
+                    verification.score = Math.max(50, Math.min(85, verification.score - 15))
+                    verification.issues.push(`[GÖRSEL EKSİK] Orijinal PDF'te ${visualItemCount} adet tablo/grafik (VIS-XXX) tespit edilmiştir. Ancak ders notlarında sadece ${totalVisuals} adet tablo/mermaid diyagramı bulunmaktadır. Lütfen tüm görsel tabloları ve şemaları ders notuna markdown tablosu veya mermaid diyagramı olarak ekle, görsel envanteri eksiksiz tamamla.`)
+                  }
+
+                  const notesContract = await runStageWithContract(qualityChain, "notes", async () => ({
+                    pass: notes.length > 100 && meetsVisualMin,
+                    contentForHash: notes,
+                    score: verification.score,
+                    metrics: {
+                      mermaidCount,
+                      tableCount,
+                      totalVisuals,
+                      visualItemCount,
+                    },
+                    errors: meetsVisualMin ? undefined : ["Notlardaki görsel öğe sayısı yetersiz"],
+                  }))
+                  qualityChain = notesContract.chain
+
+                  const kontrolorContract = await runStageWithContract(qualityChain, "kontrolor", async () => ({
+                    pass: ensembleResult.pass && meetsVisualMin,
+                    contentForHash: `${notes}|${verification.score}`,
+                    score: verification.score,
+                    metrics: { votes: ensembleResult.votes },
+                    errors: (ensembleResult.pass && meetsVisualMin) ? undefined : ["Kontrolör ensemble veya görsel envanter reddi"],
+                  }))
+                  qualityChain = kontrolorContract.chain
 
                   if (verification.score === -1) {
                     console.warn(`[BG] ⚠️ Doğrulama API hatası. Deneme hakkı yenmedi, 30sn bekleniyor...`)
@@ -602,63 +791,38 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   console.log(`[BG] 🎉 KONTROLÖR ONAYI (%100) — 4. Katman: Müfettiş Derin Denetimi (Deep Audit) Başlıyor...`)
                   try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş (Deep Audit) Çapraz Denetimi Yapılıyor...` }) } catch { }
 
-                  // 1. Tüm konuları çıkar
-                  const analysisForAudit = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
-                  const sectionTopics = analysisForAudit.topics || []
+                  const { runExhaustiveAudit } = await import("@/lib/mufettis-exhaustive")
+                  const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
+                  
+                  let overallPassed = true
+                  const allMissingDetails: string[] = []
+                  const allContradictions: string[] = []
+                  const allFindings: Array<{ description: string; severity: "CRITICAL" | "MEDIUM" | "LOW"; type: "missing" | "contradiction" }> = []
 
-                  if (sectionTopics.length > 0) {
-                    // 2. 6'lı paketlere böl (kota tasarrufu — eski: 3'lü)
-                    const packages: string[][] = []
-                    for (let i = 0; i < sectionTopics.length; i += 6) {
-                      packages.push(sectionTopics.slice(i, i + 6))
+                  try {
+                    const auditResult = await runExhaustiveAudit(
+                      effectiveRaw,
+                      notes,
+                      section.title,
+                      fullCourseName
+                    )
+
+                    if (!auditResult.passed) {
+                      overallPassed = false
+                      console.warn(`[BG] ❌ [Müfettiş Denetimi BAŞARISIZ]`)
+                      if (auditResult.missingDetails?.length) allMissingDetails.push(...auditResult.missingDetails)
+                      if (auditResult.contradictions?.length) allContradictions.push(...auditResult.contradictions)
+                    } else {
+                      console.log(`[BG] ✅ [Müfettiş Denetimi BAŞARILI]`)
                     }
-
-                    if (packages.length > 0) {
-                      let overallPassed = true
-                      const allMissingDetails: string[] = []
-                      const allContradictions: string[] = []
-                      const allFindings: Array<{ description: string; severity: string; type: string }> = []
-
-                      console.log(`[BG] 📦 Toplam Paket Sayısı: ${packages.length} paket denetlenecek.`)
-
-                      let packIdx = 1
-                      for (const pack of packages) {
-                        console.log(`[BG] 👉 [Paket ${packIdx}/${packages.length}] Müfettiş inceliyor...`)
-                        try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 4: Başmüfettiş Çapraz Denetimi (Paket ${packIdx}/${packages.length})...` }) } catch { }
-                        await new Promise(r => setTimeout(r, 4000))
-
-                        try {
-                          const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
-                          const auditResult = await auditNotesAgainstSourceSpecific(
-                            fullCourseName,
-                            section.rawContent,
-                            notes,
-                            section.title,
-                            pack,
-                            section.pageStart,
-                            section.pageEnd
-                          )
-
-                          if (!auditResult.passed) {
-                            overallPassed = false
-                            console.warn(`[BG] ❌ [Paket ${packIdx} BAŞARISIZ]`)
-                            if (auditResult.missingDetails?.length) allMissingDetails.push(...auditResult.missingDetails)
-                            if (auditResult.contradictions?.length) allContradictions.push(...auditResult.contradictions)
-                          } else {
-                            console.log(`[BG] ✅ [Paket ${packIdx} BAŞARILI]`)
-                          }
-
-                          // Severity-weighted findings biriktir
-                          if (auditResult.findings?.length) {
-                            allFindings.push(...auditResult.findings)
-                          }
-                        } catch (err: any) {
-                          overallPassed = false
-                          allMissingDetails.push(`[Paket ${packIdx} Hatası] ${err.message}`)
-                          allFindings.push({ description: `Paket ${packIdx} API Hatası: ${err.message}`, severity: "CRITICAL", type: "missing" })
-                        }
-                        packIdx++
-                      }
+                    if (auditResult.findings?.length) {
+                      allFindings.push(...auditResult.findings)
+                    }
+                  } catch (err: any) {
+                    overallPassed = false
+                    allMissingDetails.push(`[Müfettiş Hatası] ${err.message}`)
+                    allFindings.push({ description: `Müfettiş API Hatası: ${err.message}`, severity: "CRITICAL", type: "missing" })
+                  }
 
                       if (!overallPassed) {
                         // ==================== DÜRÜST PUANLAMA MOTORU (Severity-Weighted True Scoring) ====================
@@ -740,7 +904,6 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         // Notun %100 kusursuz olması ZORUNLUDUR. 96 veya 99 alınsa dahi,
                         // sistem eksikleri Smart Inject ile kapatmaya çalışacaktır.
                       }
-                    }
                   } else {
                       console.log(`[BG] ⚠️ Konu çıkarılamadı (veya 429 yedi), Müfettiş denetimi yapılamadı! Puan 100 olamaz, güvenlik için 70'e düşürülüyor!`)
                       currentScore = 70;
@@ -752,6 +915,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   if (verification.score === 100) {
                     console.log(`[BG] 🎉 KALİTE ONAYLANDI (%100) — Hem Kontrolör Hem Müfettiş Kusursuz Onay Verdi!`)
                     notesAttemptSuccess = true
+
+                    const mufettisContract = await runStageWithContract(qualityChain, "mufettis", async () => ({
+                      pass: true,
+                      contentForHash: notes,
+                      score: 100,
+                    }))
+                    qualityChain = mufettisContract.chain
                     
                     // MİMARİ HATA ÇÖZÜMÜ: %100 alan notu anında veritabanına betonla!
                     // Böylece Flashcard veya Soru üretimi sırasında sunucu çökerse API limitleri boşa gitmez.
@@ -769,21 +939,21 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                           missingTopics: [],
                           issues: [],
                           auditResult: { passed: true },
-                          stages: {
-                            notesGenerated: true,
-                            kontrolorGroundTruth: true,
-                            mufettis: true,
-                            cerrahiYama: false,
-                            flashcards: false,
-                            questions: false,
-                            published: false, // DO NOT PUBLISH YET, wait for flashcards and questions
-                          },
+                      stages: {
+                        notesGenerated: true,
+                        kontrolorGroundTruth: true,
+                        mufettis: true,
+                        cerrahiYama: false,
+                        flashcards: false,
+                        questions: false,
+                        published: false,
+                      },
                           currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör ve Müfettiş onayı tamamlandı`,
                         },
                         { notes: notes, verificationScore: 100 },
                       )
                       
-                      // PROGRESİF KAYIT AŞAMA 1: Notlar mükemmelse anında canlıya al (processed: true)
+                      // PROGRESİF KAYIT: %100 + Müfettiş onaylı notlar geçici kayıt (processed=false kalır)
                       await prisma.section.update({
                         where: { id: section.id },
                         data: {
@@ -791,14 +961,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                           verificationScore: 100
                         }
                       });
-                      console.log(`[BG] 💾 %100 Kusursuz Not Anında CANLIYA ALINDI (processed: true)!`)
+                      console.log(`[BG] 💾 %100 Müfettiş onaylı not geçici kaydedildi (yayın bekliyor).`)
                     } catch (saveErr) {
                       console.error(`[BG] ❌ Not anlık kaydetme hatası:`, saveErr)
                     }
                     
                     break
                   }
-                }
 
                 // ==================== AKILLI YÖNLENDİRME (Smart Routing) ====================
                 // Döngünün bir sonraki iterasyonunda ne yapılacağına karar veren mantık.
@@ -898,9 +1067,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             break
           }
 
-          // PROGRESİF KAYIT AŞAMA 1: Notlar onaylandığı an (veya en iyi skora düşüldüğünde) veritabanına kaydet
-          // Böylece sorular/flashcardlar beklenirken arayüzde notlar anında görünür!
-          if (notes && notes.length > 50) {
+          // PROGRESİF KAYIT: Notlar yalnızca %100+Müfettiş onaylıysa erken kayıt (STRICT_READY_GATE)
+          if (notes && notes.length > 50 && (!STRICT_READY_GATE() || notesAttemptSuccess)) {
             try {
               await prisma.section.update({
                 where: { id: section.id },
@@ -940,7 +1108,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           } else {
             console.log(`[BG] Onaylanmış not (%100) üzerinden Flashcard ve Sorular üretiliyor...`)
             // SADECE ONAYLANMIŞ NOTLARI KULLAN Kİ DIŞARIDAN BİLGİ GELMESİN
-            const finalContent = notes || section.rawContent;
+            const finalContent = notes || effectiveRaw;
             try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Flashcard Kartları (Bilgi Kartları) Oluşturuluyor...` }) } catch { }
 
             // GÜVENLİK DUVARI: Zaten flashcard varsa (ve zorla demiyorsa) eskisini koru ve atla
@@ -966,13 +1134,21 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   undefined,
                   section.pageStart,
                   section.pageEnd,
-                  section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, ""),
+                  effectiveRaw,
                   course.documentType
                 )
                 
                 // SOLVER AI: Flashcard Sağlaması
                 if (flashcards.length > 0) {
-                  flashcards = await validateFlashcardsWithSolver(finalContent, flashcards);
+                  const adversarial = await validateFlashcardsAdversarial(finalContent, flashcards);
+                  flashcards = adversarial.flashcards;
+
+                  const fcContract = await runStageWithContract(qualityChain, "flashcards", async () => ({
+                    pass: flashcards.length > 0,
+                    contentForHash: JSON.stringify(flashcards.map((f) => f.front)),
+                    metrics: { count: flashcards.length, adversarial: adversarial.metrics },
+                  }));
+                  qualityChain = fcContract.chain
                   
                   if (needsBilingualStudyItems(aiMode)) {
                     console.log(`[BG] 🌐 Flashcard İngilizce çevirisi yapılıyor...`)
@@ -1037,7 +1213,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
             // Bölüm analizi yap
             try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Bölüm Soru Üretimi İçin Bilişsel Rotalama Yapılıyor...` }) } catch { }
-            analysis = await analyzeSectionContent(section.rawContent, section.title, aiMode, undefined)
+            analysis = await analyzeSectionContent(effectiveRaw, section.title, aiMode, undefined)
             await new Promise(r => setTimeout(r, 15000))
 
             detectedModule = (analysis as any).module || null
@@ -1070,7 +1246,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     section.pageStart,
                     section.pageEnd,
                     section.importance || undefined,
-                    section.rawContent.replace(/^\[MARKDOWN_OCR_SUCCESS\]\s*/, ""),
+                    effectiveRaw,
                     course.documentType
                   )
                   
@@ -1106,7 +1282,54 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
                   // SOLVER AI: Soru Sağlaması (Question Validator)
                   if (questions.length > 0) {
-                    questions = await validateQuestionsWithSolver(finalContent, questions);
+                    const originalCount = questions.length;
+                    const adversarial = await validateQuestionsAdversarial(finalContent, questions);
+                    questions = adversarial.questions;
+
+                    // Dinamik Telafi Döngüsü (Max 2 Attempts)
+                    let telafiAttempt = 0;
+                    const maxRecoveryAttempts = 2;
+                    while (questions.length < originalCount && telafiAttempt < maxRecoveryAttempts) {
+                      const missingCount = originalCount - questions.length;
+                      console.log(`[BG] [TELAFİ] 🔄 Solver tarafından ${missingCount} soru elendi. Telafi döngüsü başlatılıyor (Deneme #${telafiAttempt + 1})...`);
+                      
+                      const existingQuestionTexts = questions.map(q => q.text);
+                      try {
+                        const telafiQuestions = await generateQuestions(
+                          finalContent + `\n\n⚠️ KESİN KURAL: Aşağıdaki soruların aynısını veya çok benzerlerini KESİNLİKLE üretme (Mevcut Sorular):\n- ${existingQuestionTexts.join("\n- ")}`,
+                          section.title,
+                          fullCourseName,
+                          course.userLevel,
+                          aiMode,
+                          undefined,
+                          section.pageStart,
+                          section.pageEnd,
+                          section.importance || undefined,
+                          effectiveRaw,
+                          course.documentType
+                        );
+                        
+                        if (telafiQuestions && telafiQuestions.length > 0) {
+                          console.log(`[BG] [TELAFİ] 🔍 ${telafiQuestions.length} adet yeni telafi sorusu üretildi. Solver doğrulamasından geçiriliyor...`);
+                          const telafiAdversarial = await validateQuestionsAdversarial(finalContent, telafiQuestions);
+                          if (telafiAdversarial.questions.length > 0) {
+                            questions = [...questions, ...telafiAdversarial.questions].slice(0, originalCount);
+                            console.log(`[BG] [TELAFİ] ✅ Telafi başarılı. Toplam geçerli soru sayısı: ${questions.length}/${originalCount}`);
+                          }
+                        }
+                      } catch (telafiErr: any) {
+                        console.error(`[BG] [TELAFİ] Telafi soru üretimi başarısız oldu (Kota veya API Hatası):`, telafiErr.message);
+                        break; // Kota hatası riskini önlemek için döngüden çık
+                      }
+                      telafiAttempt++;
+                    }
+
+                    const qContract = await runStageWithContract(qualityChain, "questions", async () => ({
+                      pass: questions.length > 0,
+                      contentForHash: JSON.stringify(questions.map((q) => q.text?.slice(0, 60))),
+                      metrics: { count: questions.length, adversarial: { pass1: originalCount, pass2: originalCount, final: questions.length } },
+                    }));
+                    qualityChain = qContract.chain
 
                     if (needsBilingualStudyItems(aiMode)) {
                       console.log(`[BG] 🌐 Soru İngilizce çevirisi yapılıyor...`)
@@ -1183,8 +1406,36 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           // Bölüm onay durumu: Notlar kusursuzsa, sırf soru/flashcard API hatası aldı diye sonsuz döngüye girmesini engelle.
           let isSectionApproved = notesAttemptSuccess
           if (missingContent.length > 0) {
-            // isSectionApproved = false // KİTLEDİĞİ İÇİN İPTAL EDİLDİ (Sonsuz döngü engeli)
-            console.error(`[BG] ⚠️ [${finalTitle}] Eksik içerik var (${missingContent.join(", ")}). Ancak notlar 100 puan aldığı için bölüm ONAYLANDI kabul edilecek.`)
+            if (STRICT_READY_GATE()) {
+              isSectionApproved = false
+              console.error(
+                `[BG] 🛑 [${finalTitle}] Eksik içerik (${missingContent.join(", ")}) — STRICT_READY_GATE: bölüm onaylanmadı.`,
+              )
+            } else {
+              console.error(
+                `[BG] ⚠️ [${finalTitle}] Eksik içerik var (${missingContent.join(", ")}). Ancak notlar 100 puan aldığı için bölüm ONAYLANDI kabul edilecek.`,
+              )
+            }
+          }
+
+          const publishContract = await runStageWithContract(qualityChain, "publish", async () => {
+            const gate = evaluatePublishGate({
+              qualityChain,
+              notesAttemptSuccess,
+              missingContent,
+              verificationScore: currentScore,
+              skipOcr: !shouldRunMarkdownOcr(section.rawContent),
+            })
+            return {
+              pass: gate.allowPublish && isSectionApproved,
+              contentForHash: `${section.id}|${currentScore}|${isSectionApproved}`,
+              errors: gate.reason ? [gate.reason] : undefined,
+            }
+          })
+          qualityChain = publishContract.chain
+          if (QUALITY_CONTRACT_ENABLED() && !publishContract.gate.pass) {
+            isSectionApproved = false
+            console.error(`[BG] 🛑 Publish gate: ${publishContract.gate.errors?.join("; ")}`)
           }
 
           // FIX #3: Importance null kalmasını engelle
@@ -1222,7 +1473,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         cerrahiYama: attemptHistory.some((h: { isSmartInject?: boolean }) => h.isSmartInject === true),
                         flashcards: flashcards.length > 0,
                         questions: questions.length > 0,
-                        published: isSectionApproved,
+                        published: isSectionApproved && missingContent.length === 0,
                       },
                       message: isSectionApproved
                         ? "Kontrolör ve Müfettiş onayı tamamlandı — bölüm yayında."
@@ -1239,21 +1490,10 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           // KISALTMALAR Sözlük Çıkarımı (Glossary Extraction)
           if (finalTitle.toUpperCase().includes("KISALTMALAR") && notes) {
             console.log(`[BG] 📚 "KISALTMALAR" bölümü algılandı. Sözlük (Glossary) çıkarılıyor...`)
-            const dict: Record<string, string> = {}
-            const lines = notes.split('\n')
-            for (const line of lines) {
-              const cleanLine = line.trim()
-              // Olası formatlar: 
-              // * **ABBR:** Definition
-              // **ABBR:** Definition
-              // ### ABBR
-              const match = cleanLine.match(/^(?:\*\s+)?\*\*([^:]+):\*\*\s*(.+)$/) ||
-                            cleanLine.match(/^####\s+([^\(]+)(?:\([^\)]*\))?\s*$/) ||
-                            cleanLine.match(/^-\s+\*\*([^*\-—]+)\*\*\s*[—\-:]\s*(.+)$/) ||
-                            cleanLine.match(/^###\s+(?:\s*)?([^\(]+?)(?:\s*\([^\)]*\))?\s*$/)
-              if (match) {
-                dict[match[1].trim()] = match[2].trim()
-              }
+            const glossaryResult = extractStructuredGlossary(notes, effectiveRaw, finalTitle)
+            const dict = glossaryResult.dict
+            if (glossaryResult.crossCheck.mismatch.length > 0) {
+              console.warn(`[BG] ⚠️ Sözlük çapraz kontrol uyumsuzluk: ${glossaryResult.crossCheck.mismatch.length} terim`)
             }
             if (Object.keys(dict).length > 0) {
               try {
@@ -1311,8 +1551,10 @@ export async function processInBackground(slug: string, course: any, forceRetry:
     // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Ders ancak TÜM bölümler %100 onaylı (processed=true)
     // ise "ready" olur. Bir tek bölüm bile eksik/onaysız ise ders "error" kalır ve kullanıcı
     // "Devam Ettir" ile kaldığı yerden tamamlatabilir. Yarım ders ASLA "hazır" gösterilmez.
-    const totalSectionCount = await prisma.section.count({ where: { courseId: course.id } })
-    const processedSectionCount = await prisma.section.count({ where: { courseId: course.id, processed: true } })
+    const totalSectionCount = await prisma.section.count({ where: { courseId: course.id, isStudyUnit: true } })
+    const processedSectionCount = await prisma.section.count({
+      where: { courseId: course.id, processed: true, isStudyUnit: true },
+    })
     const allSectionsPerfect = totalSectionCount > 0 && processedSectionCount === totalSectionCount
     const finalStatus = allSectionsPerfect ? "ready" : "error"
 
@@ -1330,5 +1572,23 @@ export async function processInBackground(slug: string, course: any, forceRetry:
     // clearHeartbeat(slug) kaldırıldı
     releaseProcessing(slug)
   }
+}
+
+export function countMarkdownTables(text: string): number {
+  const lines = text.split("\n")
+  let tableCount = 0
+  let inTable = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      if (!inTable) {
+        tableCount++
+        inTable = true
+      }
+    } else {
+      inTable = false
+    }
+  }
+  return tableCount
 }
 

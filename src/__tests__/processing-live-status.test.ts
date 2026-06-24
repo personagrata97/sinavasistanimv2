@@ -11,6 +11,7 @@ import {
   recordHeartbeat,
   releaseProcessing,
   tryClaimProcessing,
+  HEARTBEAT_STALE_VISIBLE_MS,
 } from "@/lib/process-registry"
 
 describe("processing live status honesty", () => {
@@ -45,7 +46,7 @@ describe("processing live status honesty", () => {
     tryClaimProcessing(slug)
     recordHeartbeat(slug, true)
     const hb = getHeartbeatEntry(slug)!
-    hb.lastAt = Date.now() - 120_000
+    hb.lastAt = Date.now() - (HEARTBEAT_STALE_VISIBLE_MS + 60_000)
 
     const live = resolveLiveProcessingState("processing", slug)
     expect(live.status).toBe("paused")

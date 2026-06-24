@@ -5,6 +5,7 @@ import { isCancelled } from "@/lib/process-registry"
 import { isGlossarySectionTitle } from "./glossary-utils"
 import { type DocumentType, requiresHeadingPreservation } from "./document-processing-profile"
 import { MAX_CHUNK_OCR_ATTEMPTS } from "./quota-guard"
+import { dedupFlashcards, dedupQuestions } from "@/lib/content-dedup"
 
 /** PDF görsel okuma (extractPerfectMarkdownOCR, ocr_extraction_chunk) — 3.5 Flash, ~20 RPD/key */
 export const OCR_MODEL = "gemini-3.5-flash"
@@ -1079,12 +1080,22 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
   const activeKey = getNextGeminiKey(MODEL_ID)
 
   if (activeKey) {
+    let temperature = 0.1
+    if (mode === "notes_generation") {
+      const isStrict = prompt.includes("🔒 STRICT KAYNAK MODU")
+      temperature = isStrict ? 0.3 : 0.7
+    } else if (mode === "question_generation" || mode === "flashcard_generation") {
+      temperature = 0.4
+    } else if (mode === "kontrolor" || mode === "mufettis" || mode === "ground_truth" || mode === "cerrahi_yama") {
+      temperature = 0.0
+    }
+
     const geminiBody = (p: string, maxTokens: number) => {
       const parts: any[] = [{ text: p }]
       
       return {
         contents: [{ parts }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens }
+        generationConfig: { temperature, maxOutputTokens: maxTokens }
       }
     }
 
@@ -1423,6 +1434,7 @@ export async function generateCourseNotes(
   sourceMode: "strict" | "enriched" = "strict",
   documentNoteStyle?: string,
   documentType?: DocumentType,
+  nextSectionTitle?: string,
 ): Promise<string> {
   // (OCR ŞART olduğu için fileUri asla iptal edilmez)
   const isBibliography = sectionTitle.toLocaleLowerCase('tr-TR').includes("kaynakça") || sectionTitle.toLocaleLowerCase('tr-TR').includes("referans") || sectionTitle.toLocaleLowerCase('tr-TR').includes("bibliography")
@@ -1460,6 +1472,7 @@ export async function generateCourseNotes(
           sourceMode,
           documentNoteStyle,
           documentType,
+          nextSectionTitle,
         )
         if (idx === 0) {
           mergedNotes = chunkResult
@@ -1555,11 +1568,13 @@ Amacın PDF kaynağındaki bilgiyi eksiksiz, doğru ve anlaşılır biçimde sun
 - Tanımlar, rakamlar, süreler, cezalar ve mevzuat ifadeleri kaynak metindeki gibi olmalı.
 - Hikaye, senaryo ve günlük hayat benzetmeleri SADECE kavramı açıklamaya yardımcı olacaksa ve kaynak bilgiyi bozmayacaksa kısa tutulabilir; uydurma vaka veya sayısal iddia YASAK.
 - 💡 emoji ile kısa ipuçları kullanılabilir; dolgu hikayeleri yazma.
-- 🚨 DÜZELTME ŞERHİ: Kaynakta nesnel hata varsa metni aynen koru, parantez içinde düzeltme notu ekle.
+- 🚨 DÜZELTME ŞERHİ: Kaynakta nesnel hata varsa metni aynen koru, parantez içinde düzeltme notu ekle. Kendi bilgine dayanarak uydurma şerh ekleme; şerh ekleyeceğin düzeltmenin yasal/nesnel doğruluğundan %100 emin değilsen kesinlikle şerh ekleme, metni olduğu gibi bırak.
 `;
     memoryTechniqueInstruction = `
-🧠 HAFIZA TEKNİKLERİ (STRICT — ÖLÇÜLÜ):
-- Süreç/kural yoğun bölümlerde en fazla 1-2 kısa kurumsal senaryo; sayısal eşikleri senaryoya yedir.
+🧠 HAFIZA TEKNİKLERİ (STRICT — İÇERİKLE ORANTILI VE DİNAMİK):
+Aşağıdaki teknikleri körü körüne kota doldurmak için değil, SADECE içeriğin bilişsel yapısına göre dinamik olarak kullan:
+- **🎬 Dinamik Hikaye/Senaryo:** Metin bir süreç, yasal süre sınırı, bildirim süreci veya karar mekanizması içeriyorsa, bu süreci somutlaştıran en az 1 kısa ve gerçekçi kurumsal senaryo tasarla. Sayısal eşikleri senaryonun içine yedir.
+- **💡 Dinamik Benzetme (Analoji):** Metin soyut/ağır hukuki veya finansal bir tanım içeriyorsa, bu tanımın altına 💡 emojiyle başlayan, kavramın işlevsel mantığıyla birebir eşleşen somut bir benzetme (analoji) yaz.
 - Karışan kavramlar için kısa karşılaştırma tablosu veya "İKİSİ DE... AMA..." formatı.
 - İçerik yeterliyse bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu ekle.
 `;
@@ -1579,18 +1594,17 @@ Amacın, sıkıcı ve ağır kanun maddelerini veya teknik kavramları, öğrenc
 ${disc.analogies}
 - ⚠️ 💡 📌 🔑 🎯 🪤 emojilerini BOL kullan — görsel hiyerarşi yarat.
 - Bilgi kalitesi %100 kusursuz ve otoriter olmalı, ama anlatım dili su gibi akmalıdır. Tanımlar BİREBİR kaynak metinden olmalıdır.
-- 🚨 DÜZELTME ŞERHİ (ÇOK ÖNEMLİ): Eğer sana verilen kaynak PDF metninde NESNEL ve KESİN bir bilgi hatası yakalarsan (örn: eski bir kanun maddesi, yanlış bir oran veya miktar), PDF'teki O HATALI BİLGİYİ SİLMEYECEK VE AYNEN YAZACAKSIN (çünkü orijinal kaynak metinde o şekilde geçiyor), ancak hemen yanına parantez içinde tam olarak şu standart formatta bir şerh düşeceksin: "(⚠️ Önemli Detay: İşbu notun orijinal dokümanında [Hatalı Bilgi] olarak geçse de, doğrusu [Doğru Bilgi]'dir.)"
+- 🚨 DÜZELTME ŞERHİ (ÇOK ÖNEMLİ): Eğer sana verilen kaynak PDF metninde NESNEL ve KESİN bir bilgi hatası yakalarsan (örn: eski bir kanun maddesi, yanlış bir oran veya miktar), PDF'teki O HATALI BİLGİYİ SİLMEYECEK VE AYNEN YAZACAKSIN (çünkü orijinal kaynak metinde o şekilde geçiyor), ancak hemen yanına parantez içinde tam olarak şu standart formatta bir şerh düşeceksin: "(⚠️ Önemli Detay: İşbu notun orijinal dokümanında [Hatalı Bilgi] olarak geçse de, doğrusu [Doğru Bilgi]'dir.)" Kendi genel kültür veya tahmini bilgine dayanarak uydurma şerh ekleme; şerh ekleyeceğin düzeltmenin doğruluğundan %100 emin değilsen kesinlikle şerh ekleme, metni olduğu gibi bırak.
   ÖRNEK: "...bu süre 15 gündür. (⚠️ Önemli Detay: İşbu notun orijinal dokümanında 15 gün olarak geçse de, doğrusu 30 gündür.)"
 `;
 
     memoryTechniqueInstruction = `
 🧠 HAFIZA TEKNİKLERİ — "TAM KIVAMINDA" KURALI (NE EKSİK, NE FAZLA):
-Aşağıdaki teknikleri körü körüne KOTA doldurmak için değil, SADECE öğrenmeyi gerçekten kolaylaştıracağı YERLERDE kullan. Yerindelik ve kalite, sayıdan önce gelir.
-- **🎬 Hikaye/Senaryo (BİRİNCİL TEKNİK):** Bir kavram SÜREÇ, KURAL, KARAR ya da SONUÇ içeriyorsa (örn: bir bildirim süreci, bir yaptırım, bir karar mekanizması) kısa ve gerçekçi bir kurumsal senaryo ile anlat. İçerik ne kadar çok süreç/kural barındırıyorsa o kadar çok senaryo olur.
+Aşağıdaki teknikleri körü körüne KOTA doldurmak için değil, SADECE içeriğin bilişsel yapısına göre dinamik olarak kullan:
+- **🎬 Dinamik Hikaye/Senaryo (Süreç Odaklı):** Metin bir süreç, yasal süre sınırı, yetki devri, bildirim mekanizması veya yaptırım/kural içeriyorsa, bu süreci somutlaştıran gerçekçi kurumsal senaryolar tasarla. İçerikteki süreç/kural sayısı arttıkça senaryo sayısını da orantılı olarak artır. Sayısal eşikleri ve cezaları senaryoların içine yedir.
 ${disc.stories}
-  📐 DOZ AYARI: Süreç/kural yoğun bir bölümde bol senaryo kullan; ama içerik SADECE düz tanım, liste veya sayısal sözlük niteliğindeyse senaryoyu ZORLAMA — orada net tanım + en fazla 1 kısa benzetme yeterlidir. Dolgu/yapay senaryo, hikaye yokluğu kadar zararlıdır.
-  ⚠️ Sayısal eşikleri, süreleri, cezaları mümkünse senaryonun içine yedir — böylece rakamlar da akılda kalır.
   ⚠️ KESİN KURAL: Senaryoları en altta ayrı bir başlıkta TOPLAMA! İlgili kavramın/tanımın hemen altına yerleştir ki teori ile örnek yan yana dursun.
+- **💡 Dinamik Benzetme (Analoji - Tanım Odaklı):** Metindeki her soyut/ağır tanımın veya kavramın hemen altına 💡 emojiyle başlayan, kavramın işlevsel mantığıyla birebir örtüşen akılda kalıcı somut bir benzetme (analoji) ekle.
 - **Akrostiş:** SADECE sıralı/listelenmiş maddeler varsa ve baş harfleri anlamlı bir kısaltma oluşturuyorsa kullan; zorlama. ${disc.akrostiş}
 - **Karşılaştırma ile Fark:** Birbirine karışan iki kavram varsa "İKİSİ DE... AMA..." formatında ayırt et.
 - **Mini Quiz:** İçerik yeterince doluysa büyük bölüm sonunda 1-2 "🧪 Kendini Test Et!" sorusu ekle. Cevabı hemen altına gizle.
@@ -1606,10 +1620,15 @@ ${disc.quiz}
     ? `\n📋 BELGE TİPİ REHBERİ: ${documentNoteStyle}\n`
     : ""
 
+  const nextSectionInstruction = nextSectionTitle
+    ? `\n⚠️ KAPALILIK VE KAPSAM SINIRI (ÇOK KRİTİK):\n- Bu bölümden hemen sonraki bölümün başlığı "${nextSectionTitle}"'dır.\n- Metin içerisinde bu başlığı veya bu başlığın içeriğinin başladığını görürsen okumayı KESİNLİKLE o noktada kes ve sonrasını notlarına karıştırma.\n- Notları sadece ve sadece "${sectionTitle}" bölümüne ait bilgilerle sınırla. Bir sonraki konunun içeriğini bu nota sızdırma!\n`
+    : ""
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
 ${sourceModeInstruction}${documentTypeInstruction}
 ${glossaryInstruction}
+${nextSectionInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
 
@@ -1946,10 +1965,10 @@ ${cardTypesInstruction}
     Format şöyle olsun:
     - İlk 1-2 paragraf: Resmi/teknik cevap (kaynak metindeki tanım + açıklama). Düz metin, madde işaretsiz.
     - 💡 Akılda Kalıcı Örnek: 1-2 cümlelik benzetme veya senaryo.
-    ${isProcedureOrMevzuat ? '- 🪤 Dikkat: 1-2 cümlelik kritik bir prosedür/mevzuat uyarısı veya karıştırılabilecek ince detay.' : '- 🪤 Dikkat: 1-2 cümlelik sınav tuzağı uyarısı.'}
+    ${isProcedureOrMevzuat ? '- 🪤 Tuzak: 1-2 cümlelik kritik bir prosedür/mevzuat uyarısı veya karıştırılabilecek ince detay.' : '- 🪤 Tuzak: 1-2 cümlelik sınav tuzağı uyarısı.'}
     Toplam cevap 6-10 satırı GEÇMESİN. Kısa, öz ve okunabilir olsun.
   - 🛡️ EKSİKSİZ TANIM: Eğer bir kurumun (örn: BDDK, SPK) tanımını veya görevlerini yazıyorsan, sadece adından yola çıkarak (sadece bankalar gibi) sığ bir tanım yapma. Kaynak metinde geçen TÜM görevlerini ve denetlediği TÜM şirket tiplerini (Faktoring, Leasing vb.) kapsayan eksiksiz bir açıklama yap.
-  - 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar Nedir?: ${isProcedureOrMevzuat ? 'Kritik bir yasal detay, ince bir ayrım veya prosedürde uygulamada çok sık karıştırılan çok benzer kavramlar ve süreler. ASLA sınav kelimesini kullanma!' : 'Öğrenciyi yanıltmak için şıklara konulabilecek çok benzer kavramlar, yanlış süreler (örn: 10 iş günü yerine 15 takvim günü) veya ezber yanılgıları. Her kartın arkasında bu uyarı KESİNLİKLE olmalıdır.'}
+  - 🪤 Tuzak Nedir?: ${isProcedureOrMevzuat ? 'Kritik bir yasal detay, ince bir ayrım veya prosedürde uygulamada çok sık karıştırılan çok benzer kavramlar ve süreler. ASLA sınav kelimesini kullanma!' : 'Öğrenciyi yanıltmak için şıklara konulabilecek çok benzer kavramlar, yanlış süreler (örn: 10 iş günü yerine 15 takvim günü) veya ezber yanılgıları. Her kartın arkasında bu uyarı KESİNLİKLE olmalıdır.'}
   - Özellikle rakam, süre, oran ve istisnaları soran kartlar bol olsun — ${isProcedureOrMevzuat ? 'uygulamada' : 'sınavda'} en çok bunlar sorulur
   - 🚫 KESİNLİKLE YASAK: "Kaynak metne göre", "Verilen metne göre", "Ders notlarında", "Metinde belirtilen", "Mevzuata göre" gibi meta-ifadeleri ASLA kullanma. Soruları doğrudan genel geçer akademik doğrular olarak sor.
   - **ASLA KENDİ KAFANDAN SINAV TAKTİĞİ VEYA YORUM UYDURMA!** "Sınavda doğrudan şu terimler sorulmaktadır", "Buraya çok dikkat edin", "Bu konu çok önemlidir" gibi HOCALIK TASLAYAN veya kaynak metinde (PDF'te) olmayan hiçbir yönlendirici/abartı cümleyi **ASLA KULLANMA.**
@@ -1959,7 +1978,7 @@ ${cardTypesInstruction}
 
   Sadece JSON array döndür:
   [
-    {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar: [tuzak uyarısı])", "difficulty": "easy|medium|hard"}
+    {"front": "soru", "back": "cevap (resmi tanım + 💡 örnek + 🪤 Tuzak: [tuzak uyarısı])", "difficulty": "easy|medium|hard"}
   ]
   `
     let raw = await callAI(prompt, 2, "flashcard_generation")
@@ -2045,7 +2064,7 @@ ${cardTypesInstruction}
     }
   }
 
-  return allFlashcards
+  return dedupFlashcards(allFlashcards)
 }
 
 
@@ -2404,9 +2423,15 @@ Sadece JSON array döndür:
     }
   }
 
-  return allQuestions
+  return dedupQuestions(allQuestions)
 }
 
+
+function normalizeForComparison(str: string): string {
+  return str
+    .toLocaleLowerCase("tr-TR")
+    .replace(/[^a-z0-9ıışğüçöâîû]/g, "");
+}
 
 // ==================== GROUND TRUTH TEST ====================
 
@@ -2484,10 +2509,18 @@ Sadece şu formatta JSON döndür:
     const results = extractCleanJson(aRaw) as any;
     // KANIT DENETİMİ: "foundInNotes: true" demek yetmez — nottan birebir kanıt cümlesi (evidenceQuote)
     // göstermek ZORUNLU. Kanıt yoksa (model önbilgiyle "var" demiş olabilir) soru BAŞARISIZ sayılır.
+    const normalizedNotes = normalizeForComparison(generatedNotes);
     const failed = (results.results || []).filter((r: any) => {
       if (r.foundInNotes !== true && r.foundInNotes !== "true") return true;
       const quote = (r.evidenceQuote || "").toString().trim();
-      return quote.length < 15; // kanıt cümlesi yok/yetersiz → kopya çekmiş say, başarısız
+      if (quote.length < 15) return true; // kanıt cümlesi yok/yetersiz → kopya çekmiş say, başarısız
+
+      const normalizedQuote = normalizeForComparison(quote);
+      if (!normalizedNotes.includes(normalizedQuote)) {
+        console.log(`[GROUND_TRUTH] ⚠️ Kanıt eşleşmedi (Notta bulunamadı):\nQuote: "${quote}"\nNormalized Quote: "${normalizedQuote}"`);
+        return true;
+      }
+      return false;
     }).map((r: any) => r.question);
 
     if (failed.length > 0) {
@@ -2577,15 +2610,12 @@ Eğer not çok sıkıcı, blok metin halinde, tablosuz, okunması zor veya yarı
 Bu alanlar metnin pedagojik puanından TAMAMEN BAĞIMSIZ olarak, saf bilgi doğruluğunu raporlar.
 - KISMİ ANLATIM VE EKSİKLER: Kaynak metinde DETAYLI AÇIKLANMIŞ bir konu veya bir kavramın alt maddeleri (örn: 5 özellikten 2'si unutulmuşsa) eksik bırakılmışsa bunları "missingTopics" listesine yaz.
 - KRİTİK BİLGİ HATALARI: Rakam, oran, süre, tarih, ceza miktarı veya mevzuat numarası YANLIŞ yazılmışsa bunları "issues" listesine yaz.
-- UYDURMA / HALÜSİNASYON: Üretilen notta geçen AMA kaynak metinde KARŞILIĞI BULUNMAYAN her olgusal/sayısal/hukuki iddia (örnek, analoji, genel ifade HARİÇ) bir uydurmadır. Bunları "issues" listesine "[UYDURMA]" önekiyle KESİNLİKLE yaz.
-
-PUAN KIRMAYAN DURUMLAR (bunlar sorun DEĞİL, eksi/issue olarak YAZMA):
-- Tanımın kendi cümleleriyle basitleştirilerek veya eşanlamlı kelimelerle anlatılması ✅
-- Eğlenceli örnekler, hikayeler, benzetmeler (analoji) eklenmesi ✅
-- Emoji, görsel zenginlik, mermaid diyagram kullanılması ✅
-- Kaynak metindeki dolgu cümlelerinin atlanması ✅
-- 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İÇİN ŞERH BEKLEME: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme! ✅
-- 🚨 DİKKAT (ŞERH KURALI VE TEYİT ZORUNLULUĞU): Kaynak metindeki BİLGİ veya MEVZUAT hatalarını düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN. Eğer AI'ın not düştüğü düzeltme (şerh) literatürde ve gerçek dünyada GERÇEKTEN DOĞRUYSA (evet, TTK 6102'dir) KESİNLİKLE bunu bir uydurma sayma ve KABUL ET ✅. AMA eğer AI'ın şerhte iddia ettiği 'doğrusu budur' dediği bilgi YANLIŞSA (örn: TTK 6502'dir demişse), işte o zaman bunu "issues" listesine "HATALI ŞERH" olarak yaz ❌.
+- ŞERH DENETİMİ VE MÜFETTİŞ SORGUSU: Kaynak metindeki hataları düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN.
+    - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle. 
+    - EĞER BİR ŞERHİN DOĞRULUĞUNDAN EN UFAK BİR ŞÜPHE DUYARSAN şerhi doğrudan reddet, passed değerini false yap, ve bunu bir "contradiction" olarak raporla.
+    - Eğer düşülen şerh doğru bir yasal güncelleme ise, bunu KESİNLİKLE "Contradiction" veya "Uydurma" olarak İŞARETLEME! Şerh doğruysa sorunsuzca geçirt.
+    - EĞER DÜŞÜLEN ŞERH HATALIYSA (yani yapay zeka yanlış bir bilgiyi doğru zannederek şerh düşmüşse), "contradiction" olarak işaretle ve 'description' kısmına tam olarak şu formatta yaz: "Sen (Not Üretici) şöyle bir şerh düşmüşsün: [...]. Ancak ben kaynak metni/yasal durumu incelediğimde doğrusunun bu olduğunu görüyorum: [...]. Acaba ben mi yanılıyorum? Lütfen 'acaba Müfettiş haklı olabilir mi?' diye düşünerek kaynak metni ve yasal bilgiyi tekrar araştır, tekrar kontrol et. Eğer ben haklıysam şerhini/notunu buna göre düzelt, inatlaşma."
+    - 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İSTİSNASI: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme veya contradiction/hata olarak Raporlama! ✅
 ${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş başlıklar "issues"a yazılır ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
 
 ⚠️ MUTLAK DOĞRULUK KURALI: 
@@ -2680,7 +2710,8 @@ Sadece ve sadece yukarıda listelenen 3 spesifik konuya odaklan. Kaynak metindek
 2. BİLGİ HATASI/ÇARPITMA (Contradiction): Süreler, limitler veya kurallar ders notuna aktarılırken yanlış veya çarpıtılmış şekilde yazılmış mı (örn: 3 yıl yerine 5 yıl)?
 3. UYDURMA (Fabrication — TERS YÖN): Ders notunda bu 3 konuyla ilgili geçen AMA kaynak metinde KARŞILIĞI HİÇ BULUNMAYAN somut bir iddia (rakam, süre, oran, ceza, kurum, kanun/madde no, istisna) var mı? Kaynakta dayanağı olmayan böyle bir bilgi UYDURMADIR → "contradiction" tipinde ve "CRITICAL" olarak işaretle. (Benzetme, hikaye, yeniden ifade UYDURMA DEĞİLDİR; sadece kaynakta olmayan olgusal/sayısal iddialar.)
 4. DÜZELTME ŞERHLERİ (ÇOK ÖNEMLİ İSTİSNA): Eğer ders notunda orijinal kaynak metindeki sorunlu/eski/hatalı bir YASAL VEYA KESİN BİLGİ aynen korunmuş ve yazılmışsa, ANCAK hemen yanına "*(Not: Mevzuata göre doğrusu...)*" veya benzeri bir açıklama eklenerek şerh düşülmüşse; 
-   - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle. 
+   - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle.
+   - EĞER BİR ŞERHİN DOĞRULUĞUNDAN EN UFAK BİR ŞÜPHE DUYARSAN şerhi doğrudan reddet, passed değerini false yap, ve bunu bir "contradiction" olarak raporla.
    - Eğer düşülen şerh doğru bir yasal güncelleme ise, bunu KESİNLİKLE "Contradiction" veya "Uydurma" olarak İŞARETLEME! Şerh doğruysa sorunsuzca geçirt.
    - EĞER DÜŞÜLEN ŞERH HATALIYSA (yani yapay zeka yanlış bir bilgiyi doğru zannederek şerh düşmüşse), "contradiction" olarak işaretle ve 'description' kısmına tam olarak şu formatta yaz: "Sen (Not Üretici) şöyle bir şerh düşmüşsün: [...]. Ancak ben kaynak metni/yasal durumu incelediğimde doğrusunun bu olduğunu görüyorum: [...]. Acaba ben mi yanılıyorum? Lütfen 'acaba Müfettiş haklı olabilir mi?' diye düşünerek kaynak metni ve yasal bilgiyi tekrar araştır, tekrar kontrol et. Eğer ben haklıysam şerhini/notunu buna göre düzelt, inatlaşma."
    - 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İSTİSNASI: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme veya contradiction/hata olarak Raporlama! ✅
@@ -2978,8 +3009,8 @@ Sadece şu formatta JSON döndür:
       const s = solverResults.find((res: any) => res.index === i);
       if (!s) return false;
 
-      const intendedAnswer = (q.correct || q.correctOption || q.correctAnswer)?.substring(0, 1).toUpperCase();
-      const chosenAnswer = s.chosen_answer?.substring(0, 1).toUpperCase();
+      const intendedAnswer = (q.correct || q.correctOption || q.correctAnswer)?.trim().substring(0, 1).toUpperCase();
+      const chosenAnswer = s.chosen_answer?.trim().substring(0, 1).toUpperCase();
 
       const isCorrect = intendedAnswer === chosenAnswer;
       const isSolvable = s.is_solvable === true;

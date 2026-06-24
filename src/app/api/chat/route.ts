@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     // Rate limiting (IP + user bazlı)
     const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "unknown"
     const rateLimitKey = `chat:${session.user.email}:${ip}`
-    const limit = rateLimit(rateLimitKey, 20, 60_000)
+    const limit = await rateLimit(rateLimitKey, 20, 60_000)
     if (!limit.success) {
       logger.warn("Rate limit aşıldı", "chat", { email: session.user.email, ip })
       return NextResponse.json(

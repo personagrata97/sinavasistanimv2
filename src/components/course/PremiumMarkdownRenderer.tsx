@@ -130,7 +130,8 @@ export function PremiumMarkdownRenderer({
 
       // 2. Adım: Arama kelimelerini hazırla
       const stopWords = ['aşağıdakilerden', 'hangisi', 'yanlıştır', 'doğrudur', 'kaynak', 'metne', 'metin', 'metinde', 'metinden', 'göre', 'hangisidir', 'hangileri', 'ilgili', 'nedir', 'değildir', 'olamaz', 'olabilir', 'hakkında', '[kaynak', 'başlığı:'];
-      const keywordTokens = autoScrollKeyword.toLowerCase().replace(/(?:\[|\*\*|\n)*kaynak başlığı[\s\S]*/gi, '').split(/[\s,.'"-]+/).filter(w => w.length >= 3 && !stopWords.includes(w) && w !== 'ile' && w !== 'ise' && w !== 'ama');
+      const stopWords2 = ['ve', 'da', 'de', 'ki', 'ya', 'mu', 'mi', 'ne', 'en', 'bi', 'he', 'bu', 'su', 'o', 'ile', 'ise', 'ama'];
+      const keywordTokens = autoScrollKeyword.toLowerCase().replace(/(?:\[|\*\*|\n)*kaynak başlığı[\s\S]*/gi, '').split(/[\s,.'"-]+/).filter(w => w.length >= 2 && !stopWords.includes(w) && !stopWords2.includes(w));
 
       // 3. Adım: Kilitlenmiş Kapsamda (veya tüm dokümanda) Bulanık Arama (Fuzzy Search)
       for (let i = 0; i < searchScope.length; i++) {

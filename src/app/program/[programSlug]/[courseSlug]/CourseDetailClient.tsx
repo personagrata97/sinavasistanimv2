@@ -475,6 +475,7 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
             totalSections: data.totalSections,
             completedSections: data.completedSections,
             processingSection: data.processingSection,
+            phaseLabel: data.phaseLabel ?? prev?.phaseLabel,
             workerLive: data.workerLive,
             sections: data.sections
           }))

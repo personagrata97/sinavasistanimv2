@@ -6,7 +6,8 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { writeFile, mkdir } from "fs/promises"
 import path from "path"
 import { getStudyNotFoundMessage } from "@/lib/program-catalog"
-// import { GoogleAIFileManager } from "@google/generative-ai/server" // Removed static import
+import { createHash } from "crypto"
+import { runStageWithContract, emptyQualityChain } from "@/lib/quality-contract"
 
 export async function POST(req: NextRequest) {
   try {
@@ -66,6 +67,8 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
 
+    const pdfHash = createHash("sha256").update(buffer).digest("hex")
+
     // Magic Bytes Kontrolü
     if (buffer.length < 4 || buffer.toString("utf8", 0, 4) !== "%PDF") {
       return NextResponse.json({ error: "Geçersiz PDF formatı (Magic Bytes eşleşmiyor)." }, { status: 400 })
@@ -100,6 +103,8 @@ export async function POST(req: NextRequest) {
       prisma.studyPlan.deleteMany({ where: { courseId: course.id } })
     ])
 
+    const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").split(",").filter(k => k.trim())
+
     // Gemini'ye yükle — merkezi helper ile (DRY — daha önce 3 yerde tekrarlanan kod)
     let geminiFileUri = null
     const geminiFileUris: Record<string, string> = {}
@@ -109,8 +114,13 @@ export async function POST(req: NextRequest) {
       Object.assign(geminiFileUris, uriMap)
       geminiFileUri = uriMap["0"] || null
       console.log(`[UPLOAD] 📊 ${Object.keys(uriMap).length} key'e başarıyla yüklendi`)
-    } catch (gErr) {
-      console.warn("[UPLOAD] ⚠️ Gemini File API yüklemesi başarısız oldu. İşlem metin tabanlı olarak devam edecek:", gErr)
+
+      if (geminiKeys.length > 0 && Object.keys(uriMap).length < geminiKeys.length) {
+        throw new Error(`Anahtar Parite Hatası: ${geminiKeys.length} API anahtarı tanımlı ancak sadece ${Object.keys(uriMap).length} tanesi için dosya yüklenebildi.`)
+      }
+    } catch (gErr: any) {
+      console.error("[UPLOAD] ❌ Gemini File API yükleme/parite hatası:", gErr.message)
+      throw new Error(`Gemini File API yükleme hatası: ${gErr.message}`)
     }
 
     // Dersi güncelle
@@ -118,6 +128,7 @@ export async function POST(req: NextRequest) {
       where: { slug },
       data: {
         pdfPath: filePath,
+        pdfHash,
         geminiFileUri,
         geminiFileUris: Object.keys(geminiFileUris).length > 0 ? JSON.stringify(geminiFileUris) : null,
         totalPages,

@@ -1,5 +1,12 @@
 /** API kotası koruma sabitleri — test edilebilir tek kaynak */
 
+import {
+  applyGlobalZirh,
+  validateSectionRanges,
+  type SectionRange,
+} from "@/lib/section-detector"
+import { SECTION_UNIFIED_ZIRH } from "@/lib/feature-flags"
+
 export const PROCESS_TRIGGER_DEBOUNCE_MS = 60_000
 export const RECENT_API_ACTIVITY_MS = 4 * 60_000
 export const MAX_NOTES_GENERATION_RETRIES = 5
@@ -19,14 +26,29 @@ export function isAdminSession(user: unknown): boolean {
 
 export function sectionsLookValid(
   sections: Array<{ pageStart: number; pageEnd: number; title: string }>,
+  pageTexts?: string[],
 ): boolean {
   if (sections.length === 0) return false
-  return sections.every(
+  const basic = sections.every(
     (s) =>
       s.pageStart >= 1 &&
       s.pageEnd >= s.pageStart &&
       s.title.trim().length > 0,
   )
+  if (!basic) return false
+
+  if (pageTexts && pageTexts.length > 0 && SECTION_UNIFIED_ZIRH()) {
+    const ranges: SectionRange[] = sections.map((s) => ({
+      title: s.title,
+      pageStart: s.pageStart,
+      pageEnd: s.pageEnd,
+    }))
+    const zirh = applyGlobalZirh(ranges, pageTexts)
+    const validation = validateSectionRanges(zirh, pageTexts, { minSections: 1 })
+    return validation.valid
+  }
+
+  return true
 }
 
 export type ProcessTriggerDebounceInput = {

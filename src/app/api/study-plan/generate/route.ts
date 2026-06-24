@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Course not found" }, { status: 404 })
     }
 
-    // Zayıf Konuları Bul (Mock Exam sonuçlarından)
+    // Zayıf Konuları Bul (Hem Mock Exam sonuçlarından hem de normal soru testlerindeki yanlışlardan)
     const mockResults = await prisma.userMockExamResult.findMany({
       where: { userId: user.id, courseId: course.id },
       orderBy: { createdAt: "desc" },
@@ -58,6 +58,27 @@ export async function POST(req: Request) {
         console.error("Failed to parse weakAreas", e)
       }
     }
+
+    // Normal testlerdeki yanlış yapılan soruların bölümlerini de ekle
+    const wrongAnswers = await prisma.userQuestionAnswer.findMany({
+      where: {
+        userId: user.id,
+        isCorrect: false,
+        question: {
+          courseId: course.id
+        }
+      },
+      include: {
+        question: true
+      }
+    })
+
+    const wrongAnswerSectionIds = wrongAnswers
+      .map(wa => wa.question?.sectionId)
+      .filter((id): id is string => !!id)
+
+    // Her iki listeyi birleştirip tekilleştir
+    weakSectionIds = Array.from(new Set([...weakSectionIds, ...wrongAnswerSectionIds]))
 
     // Eski planı sil
     await prisma.studyPlan.deleteMany({

@@ -77,6 +77,7 @@ model Course {
   totalPages     Int         @default(0)
   processedPages Int         @default(0)
   pdfPath        String?     // Yüklenen PDF dosya yolu
+  pdfHash        String?     // Bütünlük kontrolü için SHA-256 hash'i
   geminiFileUri  String?     // Google Gemini File API referansı (ilk key)
   geminiFileUris String?     // Tüm key'lerin fileUri'leri (JSON: {"0":"uri1","1":"uri2",...})
   status         String      @default("not_started") // not_started, uploading, processing, ready
@@ -84,6 +85,7 @@ model Course {
   updatedAt      DateTime    @updatedAt
   glossary       String?     // Dinamik sözlük JSON formatında
   markdownContent String?    // Tek seferde PDF'den çıkarılan saf metin (Token tasarrufu için)
+  pageLineMap     String?    // JSON: sayfa→satır eşlemesi (OCR sonrası alt konu çözümleme)
   generateNotes      Boolean   @default(true)
   generateQuestions  Boolean   @default(true)
   generateFlashcards Boolean   @default(true)
@@ -117,6 +119,18 @@ model Section {
   verificationIssues String?  // JSON: eksik konular, sorunlar, öneriler
   module      String?  // Hangi sınav modülüne ait (örn: "Modül 1", "Modül 2")
   processed   Boolean  @default(false)
+  parentSectionId String?
+  parentSection   Section?  @relation("SectionChildren", fields: [parentSectionId], references: [id], onDelete: Cascade)
+  childSections   Section[] @relation("SectionChildren")
+  sliceKind       String    @default("page_range") // page_range | char_range
+  charStart       Int?
+  charEnd         Int?
+  anchorHeading   String?
+  anchorLevel     Int?
+  detectionSource String?
+  resolutionScore Int?
+  resolutionErrors String?  // JSON
+  isStudyUnit     Boolean   @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt @default(now())
   
@@ -126,6 +140,7 @@ model Section {
   generationLogs GenerationLog[]
 
   @@index([courseId])
+  @@index([parentSectionId])
 }
 
 model Flashcard {

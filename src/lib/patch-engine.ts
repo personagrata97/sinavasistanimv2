@@ -114,22 +114,32 @@ Dikkat: targetBlockId belge içindeki geçerli bir ID olmalıdır.
     const facts = groupedFacts.get(key)!;
     
     const targetBlockText = blockList[targetId].text;
+    const succeedingBlockText = blockList[targetId + 1]?.text || undefined;
 
     console.log(`[PATCH_ENGINE] 🛠️ Operasyon: ID=${targetId}, Action=${action}. Bekleyen ${facts.length} fact var.`);
     
-    const writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
+    let writerPrompt = `[LOG_CONTEXT: ${fullCourseName} > ${sectionTitle}]
 Sen bir Cerrahi Yama Yazarı (Micro-Writer) ajanısın. Görevin bir Markdown bloğuna noktasal müdahale yapmaktır.
 Sana bir hedef blok verilecek ve bazı eksik/hatalı bilgiler verilecek.
 
 HEDEF BLOK:
 ${targetBlockText}
+`;
 
+    if (succeedingBlockText) {
+      writerPrompt += `
+HEDEFTEN HEMEN SONRA GELEN BLOK (BAĞLAM):
+${succeedingBlockText}
+`;
+    }
+
+    writerPrompt += `
 EKSİK/HATALI BİLGİLER:
 ${facts.join('\n')}
 
 GÖREV:
 ${action === 'insert_after' 
-  ? "Bu hedef bloğu YENİDEN YAZMA. Sadece bu bilgileri anlatan, bu bloğun altına eklenecek YENİ BİR metin üret. DİKKAT: Hedef blok bir tablo ise yeni bir tablo satırı, bir liste ise yeni bir liste maddesi, bir hikaye/senaryo ise senaryonun devamı niteliğinde, akademik bir metinse akademik bir paragraf üret. Sadece YENİ EKLENECEK markdown metnini ver." 
+  ? `Bu hedef bloğu YENİDEN YAZMA. Sadece bu bilgileri anlatan, bu bloğun altına eklenecek YENİ BİR metin üret. DİKKAT: Hedef blok bir tablo ise yeni bir tablo satırı, bir liste ise yeni bir liste maddesi, bir hikaye/senaryo ise senaryonun devamı niteliğinde, akademik bir metinse akademik bir paragraf üret. Sadece YENİ EKLENECEK markdown metnini ver.${succeedingBlockText ? " Ürettiğin yeni metin, hem kendisinden önceki HEDEF BLOK ile hem de kendisinden sonra gelen HEDEFTEN HEMEN SONRA GELEN BLOK ile dilsel, anlamsal ve akış olarak kusursuz bir köprü oluşturmalıdır." : ""}` 
   : "Bu hedef blokta çelişkili veya yanlış bir bilgi var. Bu bloğu DÜZELTEREK baştan yaz. Sadece düzeltilmiş bloğu (markdown) ver. Ekstra bir şey yazma."}
 
 🚨 GİZLİLİK KURALI (STEALTH MODE): Eklediğin veya değiştirdiğin metnin başına ASLA "Ayrıca", "Ek olarak", "Bunun yanı sıra", "Belirtmek gerekir ki", "Özetle", "Not:" gibi yapay geçiş kelimeleri KOYMA. Önceki metnin %100 organik bir parçası gibi davran, sonradan yama yapıldığını ASLA belli etme. Üslup, format ve tonlama hedef blokla BİREBİR aynı olmalıdır.

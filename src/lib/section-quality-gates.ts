@@ -17,6 +17,7 @@ export type ParsedQualityIssues = {
   currentMicroPhase?: string | null
   stages?: Partial<QualityStageFlags>
   auditResult?: { passed?: boolean | string; missingDetails?: string[]; contradictions?: string[] }
+  qualityChain?: { version?: number; gates?: unknown[]; lastHash?: string }
   inspectorFailed?: boolean
   inspectorFindings?: Array<{ description: string; severity: string; type: string }>
   message?: string

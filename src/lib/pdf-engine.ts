@@ -26,8 +26,24 @@ function fixMathChars(text: string): string {
     .replace(/β/g, "Beta");
 }
 
+export function getRawPdfPageCount(buffer: Buffer): number {
+  const content = buffer.toString("binary")
+  const countMatches = [...content.matchAll(/\/Type\s*\/Pages\b[\s\S]*?\/Count\s*(\d+)\b/gi)]
+  if (countMatches.length > 0) {
+    const counts = countMatches.map(m => parseInt(m[1], 10)).filter(c => c > 0)
+    if (counts.length > 0) {
+      return Math.max(...counts)
+    }
+  }
+  const pageMatches = content.match(/\/Type\s*\/Page\b/g)
+  if (pageMatches && pageMatches.length > 0) {
+    return pageMatches.length
+  }
+  return -1
+}
+
 export async function getPdfPageCount(buffer: Buffer): Promise<number> {
-  return new Promise((resolve, reject) => {
+  const libCount = await new Promise<number>((resolve, reject) => {
     const parser = new PDFParser()
 
     parser.on("pdfParser_dataReady", (data: any) => {
@@ -46,6 +62,14 @@ export async function getPdfPageCount(buffer: Buffer): Promise<number> {
 
     parser.parseBuffer(buffer)
   })
+
+  const rawCount = getRawPdfPageCount(buffer)
+  if (rawCount !== -1 && libCount !== rawCount) {
+    console.error(`[PDF_ENGINE] 🚨 Sayfa sayısı uyuşmazlığı tespit edildi! Kütüphane: ${libCount}, Ham Sayıcı: ${rawCount}`)
+    throw new Error(`PDF Sayfa Sayısı Uyuşmazlığı: Kütüphane=${libCount}, Ham Sayıcı=${rawCount}. PDF yapısı bozuk olabilir.`)
+  }
+
+  return libCount
 }
 
 
@@ -471,10 +495,7 @@ ${tocText}
       for (let i = 0; i < sections.length; i++) {
         sections[i].title = sections[i].title.trim()
         if (i < sections.length - 1) {
-          // Örtüşme (Overlap) mantığı: Bölüm 1, 15. sayfanın ortasında bitiyorsa
-          // bağlam kopukluğu olmaması için pageEnd'i 14'te kesmek yerine 15 yapıyoruz.
-          // Böylece 15. sayfa (kesişim sayfası) hem Bölüm 1'e hem Bölüm 2'ye gidiyor, veri kaybı sıfırlanıyor.
-          sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart)
+          sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
         } else {
           sections[i].pageEnd = pageTexts.length
         }
@@ -911,8 +932,7 @@ export async function detectSectionsMasterVisionAndSemantic(
         for (let i = 0; i < sections.length; i++) {
           sections[i].title = sections[i].title.trim()
           if (i < sections.length - 1) {
-            // Örtüşme (Overlap) mantığı: bağlam kopukluğu olmaması için pageEnd'i sonraki bölümün pageStart'ı yapıyoruz.
-            sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart)
+            sections[i].pageEnd = Math.max(sections[i].pageStart, sections[i + 1].pageStart - 1)
           } else {
             sections[i].pageEnd = pageTexts.length
           }

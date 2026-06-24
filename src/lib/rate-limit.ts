@@ -1,18 +1,4 @@
-/**
- * In-memory rate limiter
- * 
- * ⚠️ PRODUCTION GEÇİŞİ:
- * Serverless ortamlarda (Vercel) in-memory store her fonksiyon çağrısında sıfırlanır.
- * Production'da şu alternatiflerden birini kullanın:
- * 1. Upstash Redis (@upstash/ratelimit) — Vercel uyumlu, ücretsiz tier
- * 2. Redis (ioredis) — Self-hosted
- * 3. Vercel KV — Native entegrasyon
- * 
- * Geçiş örneği:
- * import { Ratelimit } from "@upstash/ratelimit"
- * import { Redis } from "@upstash/redis"
- * const ratelimit = new Ratelimit({ redis: Redis.fromEnv(), limiter: Ratelimit.slidingWindow(30, "60 s") })
- */
+import { isRedisEnabled, redis } from "./redis"
 
 interface RateLimitEntry {
   count: number
@@ -39,11 +25,35 @@ if (typeof process !== 'undefined') {
   process.on('beforeExit', () => clearInterval(cleanupInterval))
 }
 
-export function rateLimit(
+export async function rateLimit(
   key: string,
   limit: number = 30,
   windowMs: number = 60_000
-): { success: boolean; remaining: number; resetIn: number } {
+): Promise<{ success: boolean; remaining: number; resetIn: number }> {
+  
+  if (isRedisEnabled() && redis) {
+    try {
+      const redisKey = `ratelimit:${key}`
+      const count = await redis.incr(redisKey)
+      
+      if (count === 1) {
+        await redis.pexpire(redisKey, windowMs)
+      }
+      
+      const ttl = await redis.pttl(redisKey)
+      const resetIn = ttl > 0 ? ttl : windowMs
+      
+      if (count > limit) {
+        return { success: false, remaining: 0, resetIn }
+      }
+      
+      return { success: true, remaining: limit - count, resetIn }
+    } catch (e) {
+      console.warn("[RATE_LIMIT] Redis hızı sınırlayıcı başarısız oldu, Memory fallback devrede:", e)
+    }
+  }
+
+  // İn-memory yedek mekanizma
   const now = Date.now()
   const entry = store.get(key)
 

@@ -18,7 +18,12 @@ import {
   detectSectionsSystematic,
   sectionsToDetected,
   detectTocPages,
+  assertNoOverlapSections,
+  applyGlobalZirh,
+  validateSectionRanges,
 } from "@/lib/section-detector"
+import { SECTION_UNIFIED_ZIRH } from "@/lib/feature-flags"
+import { hashContent, type QualityChain, type QualityGateResult } from "@/lib/quality-contract"
 import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, verifyNotesAgainstSource, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
 import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
@@ -96,6 +101,42 @@ interface DetectedSection {
 // 1 sayfa ortalama ~2000 karakter → 12-15 sayfa = 25000 karakter
 // Küçük chunk'lar sığ/tekrarlı içerik üretiyor!
 const MAX_CHUNK_CHARS = 12000 // ~5 sayfa = daha detaylı, eksik konu riski düşük
+
+async function populatePageTextsWithOcr(
+  pdfPath: string,
+  ranges: Array<{ pageStart: number }>,
+  pageTexts: string[],
+  courseName: string,
+) {
+  const pagesToOcr: number[] = []
+  for (const r of ranges) {
+    if (r.pageStart >= 1 && r.pageStart <= pageTexts.length) {
+      pagesToOcr.push(r.pageStart)
+      if (r.pageStart > 1) {
+        pagesToOcr.push(r.pageStart - 1)
+      }
+    }
+  }
+  const uniquePages = Array.from(new Set(pagesToOcr))
+  
+  console.log(`[PROCESS] 📷 Taranmış PDF sınır doğrulama: ${uniquePages.length} adet sınır sayfası için OCR başlatılıyor...`)
+  
+  const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service")
+  
+  const promises = uniquePages.map(async (pageNo) => {
+    try {
+      const ocrText = await extractPerfectMarkdownOCR(pdfPath, pageNo, pageNo, `${courseName} (Sınır OCR p${pageNo})`)
+      const pageIdx = pageNo - 1
+      if (pageIdx >= 0 && pageIdx < pageTexts.length) {
+        pageTexts[pageIdx] = ocrText
+      }
+    } catch (err: any) {
+      console.warn(`[PROCESS] ⚠️ Sayfa ${pageNo} OCR hatası:`, err.message)
+    }
+  })
+  
+  await Promise.all(promises)
+}
 
 /** Son birkaç dakikada bu derse ait API hareketi var mı? Yoksa arka plan işi kopmuş olabilir. */
 async function hasRecentCourseApiActivity(slug: string): Promise<boolean> {
@@ -453,13 +494,37 @@ export async function POST(req: NextRequest) {
           try {
             const multimodalSections = await detectSectionsMultimodal(course.geminiFileUri, geminiKeys[0])
             if (multimodalSections.length >= 1) {
-              sections = multimodalSections.map((s) => ({
+              let ranges = multimodalSections.map((s) => ({
                 title: s.title,
                 pageStart: Math.max(1, s.pageStart),
                 pageEnd: Math.min(totalPages, s.pageEnd),
-                content: SCANNED_PDF_PENDING_OCR,
               }))
-              console.log(`[PROCESS] ✅ Görsel bölümleme: ${sections.length} bölüm algılandı (OCR arka planda dolduracak).`)
+
+              if (SECTION_UNIFIED_ZIRH()) {
+                await populatePageTextsWithOcr(course.pdfPath || "", ranges, pageTexts, course.name)
+                ranges = applyGlobalZirh(ranges, pageTexts)
+                const validation = validateSectionRanges(ranges, pageTexts)
+                if (!validation.valid) {
+                  console.warn(
+                    `[PROCESS] ⚠️ Taranmış PDF Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
+                    validation.errors.slice(0, 5).join("; "),
+                  )
+                  // Kalite kapısı kuralı: Doğrulanamayan bölümleme geçersiz sayılır
+                  ranges = []
+                } else {
+                  console.log(`[PROCESS] ✅ Taranmış PDF: ${ranges.length} bölüm Global Zırh ile doğrulandı.`)
+                }
+              }
+
+              if (ranges.length > 0) {
+                sections = ranges.map((s) => ({
+                  title: s.title,
+                  pageStart: s.pageStart,
+                  pageEnd: s.pageEnd,
+                  content: SCANNED_PDF_PENDING_OCR,
+                }))
+                console.log(`[PROCESS] ✅ Görsel bölümleme: ${sections.length} bölüm algılandı (OCR arka planda dolduracak).`)
+              }
             }
           } catch (mmErr: any) {
             console.warn(`[PROCESS] ⚠️ Görsel bölümleme başarısız: ${mmErr.message?.substring(0, 120)}`)
@@ -504,19 +569,69 @@ export async function POST(req: NextRequest) {
             )
             
             if (parsedSections && parsedSections.length > 0) {
-              sections = parsedSections.map(s => ({
+              let ranges = parsedSections.map((s) => ({
                 title: s.title,
                 pageStart: s.pageStart,
                 pageEnd: s.pageEnd,
-                content: pageTexts.slice(Math.max(0, s.pageStart - 1), s.pageEnd).join("\n\n"),
-                module: s.title
               }))
-              console.log(`[PROCESS] ✅ Master Engine: ${sections.length} bölüm kusursuz olarak algılandı.`)
+
+              if (SECTION_UNIFIED_ZIRH()) {
+                ranges = applyGlobalZirh(ranges, pageTexts)
+                const validation = validateSectionRanges(ranges, pageTexts)
+                if (!validation.valid) {
+                  console.warn(
+                    `[PROCESS] ⚠️ Master çıktısı Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
+                    validation.errors.slice(0, 5).join("; "),
+                  )
+                  sections = []
+                } else {
+                  sections = sectionsToDetected(ranges, pageTexts)
+                  console.log(`[PROCESS] ✅ Master Engine: ${sections.length} bölüm Global Zırh ile doğrulandı.`)
+                }
+              } else {
+                sections = parsedSections.map((s) => ({
+                  title: s.title,
+                  pageStart: s.pageStart,
+                  pageEnd: s.pageEnd,
+                  content: pageTexts.slice(Math.max(0, s.pageStart - 1), s.pageEnd).join("\n\n"),
+                  module: s.title,
+                }))
+                console.log(`[PROCESS] ✅ Master Engine: ${sections.length} bölüm kusursuz olarak algılandı.`)
+              }
             } else {
               console.warn(`[PROCESS] ⚠️ Master Engine bölüm bulamadı!`)
             }
           } catch (err: any) {
             console.error(`[PROCESS] 🛑 Master Engine hatası:`, err.message)
+          }
+
+          const useSystematicFallback = process.env.SECTION_DETECT_FALLBACK_SYSTEMATIC !== "false"
+          if (sections.length === 0 && useSystematicFallback) {
+            console.log(`[PROCESS] 🔄 Master başarısız — sistematik yedek yol deneniyor (SECTION_DETECT_FALLBACK_SYSTEMATIC)...`)
+            try {
+              const systematic = await detectSectionsSystematic(pageTexts, {
+                geminiFileUri: course.geminiFileUri,
+                geminiKeys,
+                logCourseSlug: slug,
+              })
+              if (systematic && systematic.sections.length > 0) {
+                const accept =
+                  !SECTION_UNIFIED_ZIRH() || systematic.validation.valid === true
+                if (accept) {
+                  sections = sectionsToDetected(systematic.sections, pageTexts)
+                  console.log(
+                    `[PROCESS] ✅ Sistematik yedek: ${sections.length} bölüm (${systematic.titleSource}, doğrulama skoru ${systematic.validation.score})`,
+                  )
+                } else {
+                  console.warn(
+                    `[PROCESS] ⚠️ Sistematik yedek doğrulamadan geçemedi (skor ${systematic.validation.score}) — reddedildi.`,
+                    systematic.validation.errors.slice(0, 3).join("; "),
+                  )
+                }
+              }
+            } catch (sysErr: any) {
+              console.error(`[PROCESS] 🛑 Sistematik yedek hatası:`, sysErr.message)
+            }
           }
         }
 
@@ -559,7 +674,7 @@ export async function POST(req: NextRequest) {
       let glossaryStartPage = -1;
       for (let p = 0; p < Math.min(25, pageTexts.length); p++) {
         const text = pageTexts[p].toLocaleUpperCase("tr-TR");
-        const lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+        const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
         // Genellikle sayfa numaralarından sonraki ilk birkaç satırda KISALTMALAR yazar
         const firstFewLines = lines.slice(0, 5).join(' ');
         if (firstFewLines.includes("KISALTMALAR") || firstFewLines.includes("TANIMLAR")) {
@@ -603,6 +718,8 @@ export async function POST(req: NextRequest) {
 
     console.log(`[PROCESS] ${sections.length} bölüm algılandı (Tüm filtreler sonrası).`)
 
+    assertNoOverlapSections(sections)
+
     // Aranabilir PDF: yerel metin bölüm ham içeriğine yazılır — görsel okuma arka planda yapılır (şema/resim kaçmasın)
     if (pdfSearchability.isSearchable) {
       for (let i = 0; i < sections.length; i++) {
@@ -626,6 +743,41 @@ export async function POST(req: NextRequest) {
     }
 
     for (let i = 0; i < sections.length; i++) {
+      const uploadGate: QualityGateResult = {
+        stage: "upload",
+        pass: true,
+        score: 100,
+        contentHash: course.pdfHash || undefined,
+        timestamp: course.createdAt.toISOString(),
+      }
+
+      const sectionDetectContent = `${sections[i].title}|${sections[i].pageStart}|${sections[i].pageEnd}`
+      const sectionDetectHash = hashContent(sectionDetectContent)
+
+      const sectionDetectGate: QualityGateResult = {
+        stage: "section_detect",
+        pass: true,
+        score: 100,
+        contentHash: sectionDetectHash,
+        prevHash: course.pdfHash || undefined,
+        metrics: {
+          sectionIndex: i + 1,
+          pageStart: sections[i].pageStart,
+          pageEnd: sections[i].pageEnd,
+        },
+        timestamp: new Date().toISOString(),
+      }
+
+      const initialChain: QualityChain = {
+        version: 1,
+        gates: [uploadGate, sectionDetectGate],
+        lastHash: sectionDetectHash,
+      }
+
+      const initialIssues = {
+        qualityChain: initialChain
+      }
+
       await prisma.section.create({
         data: {
           courseId: course.id,
@@ -637,6 +789,7 @@ export async function POST(req: NextRequest) {
           module: sections[i].module || "Genel",
           processed: false,
           notes: null,
+          verificationIssues: JSON.stringify(initialIssues),
         }
       })
     }
