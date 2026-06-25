@@ -489,6 +489,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             }
           } else if (!notesAttemptSuccess) {
             const loopTarget = startingAttempt + MAX_RETRIES - 1;
+            let patchAttempts = 0;
             for (let vAttempt = startingAttempt; vAttempt <= loopTarget; vAttempt++) {
               if (await shouldStop()) break;
               try {
@@ -531,7 +532,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     console.log(`[BG] 📊 Karar Matrisi Çalıştırılıyor: Yapısal Puan=${kontrolorStructuralScore}, Çelişki=${contradictionCount}, Eksik=${missingCount}, Öneri=${suggestionCount}`);
                     
                     // Frankenstein Kuralı: Hata yoğunluğu %15'i aşarsa veya pedagojik skor 75'in altındaysa sıfırdan yazım
-                    const blockCount = Math.max(10, notes.split(/\n\s*\n/).filter(b => b.trim().length > 0).length);
+                    const blockCount = Math.max(5, notes.split(/\n\s*\n/).filter(b => b.trim().length > 0).length);
                     // Öneriler de yamalanabilir defect olarak sayılır — 2 puanlık stil eksikliği için tüm notu baştan yazdırmak israf!
                     const totalDefects = missingCount + contradictionCount + suggestionCount;
                     const defectDensity = totalDefects / blockCount;
@@ -580,6 +581,10 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       } else {
                         console.log(`[BG] ⚠️ Cerrahi Yama başarısız oldu (Evsiz bilgi çözülemedi vb.). Sıfırdan yazıma dönülüyor...`);
                         isSurgicalPatch = false;
+                        if (patchAttempts < 1) {
+                          patchAttempts++;
+                          vAttempt--;
+                        }
                       }
                     } 
                     
@@ -620,7 +625,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
                   const ensembleResult = await runKontrolorEnsemble(
                     effectiveRaw, notes, section.title, fullCourseName, sourceMode,
-                    documentProfile.documentType,
+                    documentProfile.documentType, vAttempt
                   )
                   verification = ensembleResult.verification
                   if (!ensembleResult.pass && verification.score === 100) {
@@ -632,7 +637,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   
                   const mermaidCount = (notes.match(/```mermaid/g) || []).length
                   const tableCount = countMarkdownTables(notes)
-                  const totalVisuals = mermaidCount + tableCount
+                  const ocrVisualDescCount = (notes.match(/\[GÖRSEL:\s*[^\]]+\]/gi) || []).length + (notes.match(/<!--\s*VIS-\d+\s*-->/gi) || []).length
+                  const totalVisuals = mermaidCount + tableCount + ocrVisualDescCount
                   
                   const meetsVisualMin = visualItemCount === 0 || totalVisuals >= Math.ceil(visualItemCount * 0.9)
                   
@@ -1204,8 +1210,19 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                 break
               } catch (e: any) {
                 console.error(`[BG] ⚠️ Flashcard üretimi başarısız:`, e.message)
-                if (fAttempt === 3) console.error(`[BG] ❌ Flashcard üretimi atlandı.`)
-                else await new Promise(r => setTimeout(r, 10000))
+                if (fAttempt === 3) {
+                  console.error(`[BG] ❌ Flashcard üretimi atlandı.`)
+                  try {
+                    await applySectionIssuesPatch({
+                      flashcardsGenerationFailed: true,
+                      currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Flaşkart üretimi başarısız oldu.`
+                    })
+                  } catch (dbErr) {
+                    console.error("[BG] ❌ Flaşkart hata durumunu kaydetme hatası:", dbErr)
+                  }
+                } else {
+                  await new Promise(r => setTimeout(r, 10000))
+                }
               } // end of catch
               } // end of for loop
               await new Promise(r => setTimeout(r, 15000))
@@ -1277,6 +1294,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     const maxAns = Math.max(...Object.values(dist));
                     if (maxAns / totalQ > 0.8) {
                       console.warn(`[BG] ⚠️ Soru dağılımı şüpheli (bir şıkkı çok fazla kullanmış):`, dist);
+                      try {
+                        await applySectionIssuesPatch({
+                          suggestions: [`[SORU DAĞILIMI] Soruların %80'den fazlasının doğru cevabı aynı şık olarak üretilmiştir: ${JSON.stringify(dist)}. Soru şık dağılımının dengelenmesi önerilir.`]
+                        });
+                      } catch (dbErr) {
+                        console.error("[BG] ❌ Soru dağılım uyarısını kaydetme hatası:", dbErr)
+                      }
                     }
                   }
 
@@ -1369,8 +1393,19 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   break
                 } catch (e: any) {
                   console.error(`[BG] ⚠️ Soru üretimi başarısız:`, e.message)
-                  if (qAttempt === 3) console.error(`[BG] ❌ Soru üretimi atlandı.`)
-                  else await new Promise(r => setTimeout(r, 10000))
+                  if (qAttempt === 3) {
+                    console.error(`[BG] ❌ Soru üretimi atlandı.`)
+                    try {
+                      await applySectionIssuesPatch({
+                        questionsGenerationFailed: true,
+                        currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Soru üretimi başarısız oldu.`
+                      })
+                    } catch (dbErr) {
+                      console.error("[BG] ❌ Soru hata durumunu kaydetme hatası:", dbErr)
+                    }
+                  } else {
+                    await new Promise(r => setTimeout(r, 10000))
+                  }
                 }
                 } // end of for loop
                 await new Promise(r => setTimeout(r, 15000))

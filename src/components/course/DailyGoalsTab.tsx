@@ -9,7 +9,7 @@ import { toast } from "sonner"
 import { LoadingSkeleton, EmptyState, cleanExplanationText } from "./shared"
 
 export default
-function DailyGoalsTab({ course, slug, hasExamDate, onSetExamDate }: { course: any; slug: string; hasExamDate?: boolean; onSetExamDate?: () => void }) {
+function DailyGoalsTab({ course, slug, hasExamDate, onSetExamDate, onNavigateToSection }: { course: any; slug: string; hasExamDate?: boolean; onSetExamDate?: () => void; onNavigateToSection?: (sectionId: string) => void }) {
   const [goals, setGoals] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [dailyQuestion, setDailyQuestion] = useState<any>(null)
@@ -183,7 +183,7 @@ function DailyGoalsTab({ course, slug, hasExamDate, onSetExamDate }: { course: a
                     </button>
                   )}
                   {goal.type === "reading" && (
-                    <button onClick={() => document.querySelector<HTMLElement>('[data-tab="notes"]')?.click()} className="text-xs px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded-lg font-bold transition-colors">
+                    <button onClick={() => goal.sectionId ? onNavigateToSection?.(goal.sectionId) : document.querySelector<HTMLElement>('[data-tab="notes"]')?.click()} className="text-xs px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded-lg font-bold transition-colors">
                       Notları Oku
                     </button>
                   )}

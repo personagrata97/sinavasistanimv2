@@ -11,9 +11,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const { courseId, targetExamDate, targetHours } = await req.json()
-    if (!courseId || !targetExamDate) {
-      return NextResponse.json({ error: "courseId and targetExamDate are required" }, { status: 400 })
+    const { courseId, targetExamDate: bodyTargetExamDate, targetHours } = await req.json()
+    if (!courseId) {
+      return NextResponse.json({ error: "courseId is required" }, { status: 400 })
     }
 
     const user = await prisma.user.findUnique({ where: { email: session.user.email } })
@@ -21,11 +21,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 })
     }
 
+    const targetExamDateVal = bodyTargetExamDate || user.targetExamDate || (await prisma.course.findUnique({ where: { id: courseId } }))?.examDate
+    if (!targetExamDateVal) {
+      return NextResponse.json({ error: "Sınav tarihi (targetExamDate) bulunamadı" }, { status: 400 })
+    }
+
+    const resolvedDate = new Date(targetExamDateVal)
+
     // Kullanıcının hedeflerini güncelle
     await prisma.user.update({
       where: { id: user.id },
       data: { 
-        targetExamDate: new Date(targetExamDate),
+        targetExamDate: resolvedDate,
         targetHours: targetHours ? Number(targetHours) : (user.targetHours || undefined)
       }
     })
@@ -90,7 +97,7 @@ export async function POST(req: Request) {
 
     // Yeni planı oluştur
     const items = generateStudySchedule({
-      examDate: new Date(targetExamDate),
+      examDate: resolvedDate,
       userLevel: course.userLevel as any,
       totalSections: course.sections.length,
       sectionTitles: course.sections.map(s => s.title),

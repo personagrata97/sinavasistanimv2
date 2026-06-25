@@ -241,10 +241,19 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
           score, correct, wrong, empty,
           timeUsed: resultData.timeUsed, passed, weakAreas, wrongQuestions
         })
+        
+        // Trigger study plan regeneration to adapt to new mock exam results/weak areas
+        fetch("/api/study-plan/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ courseId })
+        }).catch(e => console.error("Error triggering study plan generation:", e))
+
         if (onReloadCourse) {
           onReloadCourse()
         }
       } catch (error) {
+        console.error("Error saving mock exam results:", error)
       }
     }
   }

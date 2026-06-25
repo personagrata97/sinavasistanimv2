@@ -1,6 +1,79 @@
 import { NextResponse } from 'next/server';
 import puppeteer from 'puppeteer';
 
+async function renderMermaidBlocksInHtml(browser: any, html: string): Promise<string> {
+  const mermaidRegex = /<div class="mermaid">([\s\S]*?)<\/div>/g;
+  let match;
+  const matches: Array<{ fullMatch: string; code: string }> = [];
+  
+  mermaidRegex.lastIndex = 0;
+  while ((match = mermaidRegex.exec(html)) !== null) {
+    matches.push({
+      fullMatch: match[0],
+      code: match[1].trim()
+    });
+  }
+
+  if (matches.length === 0) return html;
+
+  const page = await browser.newPage();
+  const rendererHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+      <script>
+        mermaid.initialize({ startOnLoad: false, theme: 'default' });
+      </script>
+    </head>
+    <body>
+      <div id="graph"></div>
+    </body>
+    </html>
+  `;
+  await page.setContent(rendererHtml);
+
+  let renderedHtml = html;
+
+  for (const item of matches) {
+    try {
+      const decodedCode = item.code
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'");
+
+      const svg = await page.evaluate(async (code: string) => {
+        const uniqueId = 'm_' + Math.random().toString(36).substring(2, 9);
+        try {
+          const { svg } = await (window as any).mermaid.render(uniqueId, code);
+          return svg;
+        } catch (e: any) {
+          return `<pre class="mermaid-error" style="color:red;border:1px solid red;padding:8px;">Akış şeması gösterilemiyor (Hata: ${e.message})</pre>`;
+        }
+      }, decodedCode);
+
+      renderedHtml = renderedHtml.replace(item.fullMatch, `<div class="mermaid-svg-rendered">${svg}</div>`);
+    } catch (err: any) {
+      console.error("[MERMAID_RENDER] Failed to render block:", err);
+      const userFriendlyFallback = `
+        <div class="mermaid-error-container" style="border: 1px solid #fca5a5; background-color: #fef2f2; border-radius: 6px; padding: 12px; margin: 12px 0; page-break-inside: avoid; break-inside: avoid;">
+          <strong style="color: #b91c1c; font-size: 13px;">⚠️ Akış şeması gösterilemiyor</strong>
+          <details style="margin-top: 6px; font-size: 11px; color: #7f1d1d; cursor: pointer;">
+            <summary style="outline: none;">Detayları Göster</summary>
+            <pre style="background: #fee2e2; padding: 8px; border-radius: 4px; overflow-x: auto; margin-top: 4px;">${err.message || 'Bilinmeyen Mermaid hatası'}</pre>
+          </details>
+        </div>
+      `;
+      renderedHtml = renderedHtml.replace(item.fullMatch, userFriendlyFallback);
+    }
+  }
+
+  await page.close();
+  return renderedHtml;
+}
+
 export async function POST(req: Request) {
   try {
     const { html, courseName } = await req.json();
@@ -11,29 +84,30 @@ export async function POST(req: Request) {
 
     console.log(`[PDF] Generating PDF for: ${courseName || 'Course'}...`);
 
-    // Puppeteer'ı başlat
     const browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
-    const page = await browser.newPage();
-    
-    // Tabloların ve Mermaid şemalarının sağdan kesilmemesi için PDF genişliğini A4 oranında büyük bir viewport ile renderla
-    await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 2 }); // Daha yüksek çözünürlük
-    
-    // HTML'i yükle ve ağ isteklerinin tamamen durmasını bekle (Mermaid JS'in çalışması için)
-    await page.setContent(html, { waitUntil: 'networkidle0' as any, timeout: 60000 });
-    
-    // Mermaid diagramlarının çizilmesi için fazladan bekleme payı
-    await new Promise(r => setTimeout(r, 5000));
+    // Render Mermaid server-side inside Puppeteer browser context
+    let processedHtml = html;
+    try {
+      processedHtml = await renderMermaidBlocksInHtml(browser, html);
+    } catch (e) {
+      console.error('[PDF] Failed to pre-render Mermaid blocks:', e);
+    }
 
-    // PDF oluştur (Sağ altta sayfa numarasıyla)
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 2 });
+    
+    // Set html content, we don't need networkidle0 anymore because mermaid is pre-rendered static SVG
+    await page.setContent(processedHtml, { waitUntil: 'load', timeout: 30000 });
+
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
       displayHeaderFooter: true,
-      headerTemplate: '<div></div>', // Üst bilgiyi boş bırak
+      headerTemplate: '<div></div>',
       footerTemplate: `
         <div style="width: 100%; font-size: 10px; padding-right: 15mm; color: #64748b; font-family: 'Inter', sans-serif; text-align: right;">
           <span class="pageNumber"></span> / <span class="totalPages"></span>
@@ -41,7 +115,7 @@ export async function POST(req: Request) {
       `,
       margin: {
         top: '18mm',
-        bottom: '22mm', // Footer'a yer açmak için alt marjı genişlettik
+        bottom: '22mm',
         left: '15mm',
         right: '15mm'
       }

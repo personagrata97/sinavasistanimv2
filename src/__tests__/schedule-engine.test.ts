@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getDaysUntilExam, getUrgencyLevel } from '@/lib/schedule-engine'
+import { getDaysUntilExam, getUrgencyLevel, generateStudySchedule } from '@/lib/schedule-engine'
 
 describe('schedule-engine', () => {
   describe('getDaysUntilExam', () => {
@@ -37,6 +37,42 @@ describe('schedule-engine', () => {
     it('7 gün için orta-yüksek aciliyet dönmeli', () => {
       const urgency = getUrgencyLevel(7)
       expect(urgency).toBeDefined()
+    })
+  })
+
+  describe('generateStudySchedule', () => {
+    it('sınava az süre kaldığında (örneğin 5 gün) okuma gün sayısı oranını azaltmalı', () => {
+      const farExamDate = new Date()
+      farExamDate.setDate(farExamDate.getDate() + 30) // 30 gün sonra
+
+      const nearExamDate = new Date()
+      nearExamDate.setDate(nearExamDate.getDate() + 5) // 5 gün sonra
+
+      const configFar = {
+        examDate: farExamDate,
+        userLevel: 'beginner' as const,
+        totalSections: 10,
+        sectionTitles: Array(10).fill('Bölüm'),
+        sectionIds: Array(10).fill('id'),
+        targetHours: 2,
+      }
+
+      const configNear = {
+        examDate: nearExamDate,
+        userLevel: 'beginner' as const,
+        totalSections: 10,
+        sectionTitles: Array(10).fill('Bölüm'),
+        sectionIds: Array(10).fill('id'),
+        targetHours: 2,
+      }
+
+      const scheduleFar = generateStudySchedule(configFar)
+      const scheduleNear = generateStudySchedule(configNear)
+
+      const readingFar = scheduleFar.filter(item => item.type === 'reading').length
+      const readingNear = scheduleNear.filter(item => item.type === 'reading').length
+
+      expect(readingNear).toBeLessThanOrEqual(readingFar)
     })
   })
 })

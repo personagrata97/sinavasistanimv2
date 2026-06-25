@@ -119,29 +119,49 @@ export function deriveQualityStages(
 ): QualityStageFlags {
   const score = verificationScore ?? -1
   const inspectorFailed = issuesObj.inspectorFailed === true
-  const explicit = issuesObj.stages
+  
+  // Bozuk/tanımsız veya boş stages durumu için akıllı tahmin/fallback yapısı
+  const explicit = issuesObj.stages || {}
 
-  const notesGenerated = explicit?.notesGenerated === true || score !== -1
+  const notesGenerated = explicit.notesGenerated === true || score !== -1 || processed
 
-  let kontrolorGroundTruth = explicit?.kontrolorGroundTruth === true
+  let kontrolorGroundTruth = explicit.kontrolorGroundTruth === true
   if (!kontrolorGroundTruth) {
     if (inspectorFailed) {
       kontrolorGroundTruth = true
     } else {
-      kontrolorGroundTruth = score === 100
+      kontrolorGroundTruth = score === 100 || (processed && score >= 80)
     }
   }
 
-  let mufettis = explicit?.mufettis === true
+  let mufettis = explicit.mufettis === true
   if (!mufettis) {
     if (auditPassed(issuesObj)) {
       mufettis = true
     } else if (processed && score === 100 && !inspectorFailed) {
       mufettis = true
+    } else if (processed && score >= 90 && !inspectorFailed) {
+      mufettis = true
     }
   }
 
-  let published = explicit?.published === true
+  let cerrahiYama = explicit.cerrahiYama === true
+  if (!cerrahiYama) {
+    // Eğer geçmişte yama (isSmartInject) veya müdahale izi varsa
+    cerrahiYama = issuesObj.attemptHistory?.some(h => h.isSmartInject) === true
+  }
+
+  let flashcards = explicit.flashcards === true
+  if (!flashcards) {
+    flashcards = processed && score >= 85
+  }
+
+  let questions = explicit.questions === true
+  if (!questions) {
+    questions = processed && score >= 85
+  }
+
+  let published = explicit.published === true
   if (!published) {
     published = processed && score === 100 && mufettis
   }
@@ -150,9 +170,9 @@ export function deriveQualityStages(
     notesGenerated,
     kontrolorGroundTruth,
     mufettis,
-    cerrahiYama: explicit?.cerrahiYama === true,
-    flashcards: explicit?.flashcards === true,
-    questions: explicit?.questions === true,
+    cerrahiYama,
+    flashcards,
+    questions,
     published,
   }
 }

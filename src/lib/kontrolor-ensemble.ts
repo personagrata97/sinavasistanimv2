@@ -64,6 +64,7 @@ export async function runKontrolorEnsemble(
   courseName: string,
   sourceMode: "strict" | "enriched" = "strict",
   documentType?: DocumentType,
+  attemptNumber: number = 1,
 ): Promise<KontrolorEnsembleResult> {
   const primary = await verifyNotesAgainstSource(
     sourceContent,
@@ -72,6 +73,7 @@ export async function runKontrolorEnsemble(
     courseName,
     sourceMode,
     documentType,
+    attemptNumber,
   )
 
   if (!KONTROLOR_ENSEMBLE()) {

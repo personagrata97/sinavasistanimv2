@@ -383,13 +383,16 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               ))}
             </ul>
             
-            {/* Cerrahi Yama İndikatörü */}
-            <div className="mt-4 pt-3 border-t border-red-500/20 bg-purple-500/10 p-3 rounded-lg flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
-              <div>
-                <div className="text-[10px] font-black text-purple-400 uppercase tracking-widest mb-1">Cerrahi Yama Aktif</div>
-                <div className="text-[10px] text-purple-300/80">Sistem, notları sıfırdan yazmak yerine sadece yukarıdaki eksikleri orijinal kaynak PDF ile doğrulayarak mevcut nota akıllıca zerk ediyor. (AST Injection)</div>
-              </div>
+          </div>
+        )}
+
+        {/* Cerrahi Yama İndikatörü */}
+        {stages.cerrahiYama && (
+          <div className="w-full mt-4 p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-start gap-2 text-left">
+            <Sparkles className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-[10px] font-black text-purple-400 uppercase tracking-widest mb-1">Cerrahi Yama (Smart Patch) Aktif</div>
+              <div className="text-[10px] text-purple-300/80">Sistem, notları sıfırdan yazmak yerine sadece tespit edilen eksikleri orijinal kaynak PDF ile doğrulayarak mevcut nota akıllıca zerk etti (AST Injection).</div>
             </div>
           </div>
         )}

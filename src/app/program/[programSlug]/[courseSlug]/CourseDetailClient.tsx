@@ -1239,7 +1239,7 @@ export default function CourseDetailClient({ params }: { params: Promise<{ progr
               {activeTab === "coverage" && <CoverageTab slug={slug} />}
               {activeTab === "mock_exam" && <MockExamTab slug={slug} programSlug={programSlug} courseName={course.name} pastExamResults={pastExamResults} onReloadCourse={loadCourse} processingStatus={processingStatus} isProfessional={isProfessional} />}
               {activeTab === "achievements" && <AchievementsTab />}
-              {activeTab === "goals" && <DailyGoalsTab course={course} slug={slug} hasExamDate={!!activeExamDate} onSetExamDate={() => setShowExamDateModal(true)} />}
+              {activeTab === "goals" && <DailyGoalsTab course={course} slug={slug} hasExamDate={!!activeExamDate} onSetExamDate={() => setShowExamDateModal(true)} onNavigateToSection={(sectionId: string) => { setSelectedSectionId(sectionId); setActiveTab("notes"); }} />}
             </ErrorBoundary>
           </motion.div>
         </AnimatePresence>

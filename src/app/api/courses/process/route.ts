@@ -94,6 +94,7 @@ interface DetectedSection {
   pageEnd: number
   content: string
   module?: string
+  confidence?: string
 }
 
 // ==================== KARAKTER BAZLI CHUNK BOYUTU ====================
@@ -484,6 +485,7 @@ export async function POST(req: NextRequest) {
       const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").split(",").filter(k => k.trim())
 
       let sections: DetectedSection[] = []
+      let isSingleSectionFallback = false
       let tocAttempts = 0
       const MAX_TOC_ATTEMPTS = 1
 
@@ -503,7 +505,7 @@ export async function POST(req: NextRequest) {
               if (SECTION_UNIFIED_ZIRH()) {
                 await populatePageTextsWithOcr(course.pdfPath || "", ranges, pageTexts, course.name)
                 ranges = applyGlobalZirh(ranges, pageTexts)
-                const validation = validateSectionRanges(ranges, pageTexts)
+                const validation = validateSectionRanges(ranges, pageTexts, { minSections: totalPages <= 60 ? 1 : 2 })
                 if (!validation.valid) {
                   console.warn(
                     `[PROCESS] ⚠️ Taranmış PDF Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
@@ -577,7 +579,7 @@ export async function POST(req: NextRequest) {
 
               if (SECTION_UNIFIED_ZIRH()) {
                 ranges = applyGlobalZirh(ranges, pageTexts)
-                const validation = validateSectionRanges(ranges, pageTexts)
+                const validation = validateSectionRanges(ranges, pageTexts, { minSections: totalPages <= 60 ? 1 : 2 })
                 if (!validation.valid) {
                   console.warn(
                     `[PROCESS] ⚠️ Master çıktısı Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
@@ -651,6 +653,7 @@ export async function POST(req: NextRequest) {
           content: "",
           module: "1"
         }];
+        isSingleSectionFallback = true;
       } else {
         releaseProcessing(slug)
         await prisma.course.update({ where: { slug }, data: { status: "error" } })
@@ -774,8 +777,15 @@ export async function POST(req: NextRequest) {
         lastHash: sectionDetectHash,
       }
 
-      const initialIssues = {
+      const initialIssues: any = {
         qualityChain: initialChain
+      }
+      if (isSingleSectionFallback) {
+        initialIssues.singleSectionFallback = true
+        initialIssues.reason = "Bölüm algılama başarısız oldu, kısa belge koruma kalkanı devrede."
+      }
+      if (sections[i].confidence === "low") {
+        initialIssues.issues = [`[SINIR UYARISI] "${sections[i].title}" bölüm sınırının tespiti düşüktür. Lütfen sayfa aralıklarını (${sections[i].pageStart}-${sections[i].pageEnd}) kontrol edin.`]
       }
 
       await prisma.section.create({

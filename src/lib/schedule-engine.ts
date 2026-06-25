@@ -43,7 +43,39 @@ export function generateStudySchedule(config: ScheduleConfig): ScheduleItem[] {
     }]
   }
 
-  const dist = LEVEL_DISTRIBUTION[config.userLevel]
+  let dist = { ...LEVEL_DISTRIBUTION[config.userLevel] }
+
+  // Sınava kalan süreye göre ağırlıkları dinamik olarak kaydır/ayarla
+  if (totalDays <= 7) {
+    // Sınava son 7 gün kala: Okuma fazını çok düşük tut, pratik ve denemelere odaklan
+    dist = {
+      reading: Math.max(0.05, dist.reading * 0.2), // Okumayı minimal yap
+      questions: dist.questions * 1.2,
+      flashcards: dist.flashcards * 0.8,
+      review: dist.review + (dist.reading * 0.4),
+      mock_exam: dist.mock_exam + (dist.reading * 0.4),
+    }
+  } else if (totalDays <= 14) {
+    // Sınava son 14 gün kala: Okuma fazını azalt, deneme ve pratik ağırlığını artır
+    dist = {
+      reading: Math.max(0.15, dist.reading * 0.5),
+      questions: dist.questions * 1.1,
+      flashcards: dist.flashcards,
+      review: dist.review + (dist.reading * 0.25),
+      mock_exam: dist.mock_exam + (dist.reading * 0.25),
+    }
+  }
+
+  // Dağılımın toplamını 1.0 yapmak için normalize edelim
+  const sum = dist.reading + dist.questions + dist.flashcards + dist.review + dist.mock_exam
+  if (sum > 0) {
+    dist.reading /= sum
+    dist.questions /= sum
+    dist.flashcards /= sum
+    dist.review /= sum
+    dist.mock_exam /= sum
+  }
+
   const schedule: ScheduleItem[] = []
 
   // Günlük maksimum süre (dk)

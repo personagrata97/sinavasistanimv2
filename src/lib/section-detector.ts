@@ -9,7 +9,7 @@ import { shouldUseSingleSectionModeFromProfile } from "@/lib/document-processing
  * 4) Doğrulama kapısı — geçmezse sonraki başlık kaynağı denenir
  */
 
-export type SectionRange = { title: string; pageStart: number; pageEnd: number }
+export type SectionRange = { title: string; pageStart: number; pageEnd: number; confidence?: string }
 
 export type SectionValidationResult = {
   valid: boolean
@@ -422,10 +422,16 @@ export function extractTitlesFromProcedureBody(pageTexts: string[]): string[] {
   return titles
 }
 
-function titleMatchesAtPage(title: string, pageText: string, headerLines = 8): boolean {
+function titleMatchesAtPage(title: string, pageText: string, headerLines = 15): boolean {
   const cleanTitleStr = cleanSectionTitle(title)
   const strippedNum = cleanTitleStr.replace(/^\d+\.\s*/, "")
-  const firstBlock = pageText.split("\n").slice(0, headerLines).join("\n")
+  
+  const lines = pageText.split("\n").slice(0, headerLines)
+  const filteredLines = lines.filter(line => {
+    const wordCount = line.trim().split(/\s+/).filter(w => w.length > 0).length
+    return wordCount > 0 && wordCount <= 15
+  })
+  const firstBlock = filteredLines.join("\n")
 
   if (fuzzyIncludes(firstBlock, cleanTitleStr)) return true
   if (strippedNum.length >= 4 && fuzzyIncludes(firstBlock, strippedNum)) return true
@@ -512,8 +518,8 @@ export function anchorTitlesToPages(
   titles: string[],
   pageTexts: string[],
   tocPages: Set<number>
-): Array<{ title: string; pageStart: number }> {
-  const anchored: Array<{ title: string; pageStart: number }> = []
+): Array<{ title: string; pageStart: number; confidence?: string }> {
+  const anchored: Array<{ title: string; pageStart: number; confidence?: string }> = []
   let searchFrom = 0
 
   for (const rawTitle of titles) {
@@ -521,12 +527,22 @@ export function anchorTitlesToPages(
     if (!title || isBibliographyOrSkipTitle(title)) continue
 
     let foundPage = -1
+    let confidence: string | undefined = undefined
 
     for (let p = searchFrom; p < pageTexts.length; p++) {
       if (tocPages.has(p)) continue
-      if (titleMatchesAtPage(title, pageTexts[p])) {
+      // İlk 8 satırda bulunursa -> high
+      if (titleMatchesAtPage(title, pageTexts[p], 8)) {
         foundPage = p + 1
         searchFrom = p
+        confidence = "high"
+        break
+      }
+      // 9-15 satırda bulunursa -> medium
+      if (titleMatchesAtPage(title, pageTexts[p], 15)) {
+        foundPage = p + 1
+        searchFrom = p
+        confidence = "medium"
         break
       }
     }
@@ -537,13 +553,14 @@ export function anchorTitlesToPages(
         if (titleMatchesAnywhere(title, pageTexts[p])) {
           foundPage = p + 1
           searchFrom = p
+          confidence = "low"
           break
         }
       }
     }
 
     if (foundPage !== -1) {
-      anchored.push({ title: cleanSectionTitle(title), pageStart: foundPage })
+      anchored.push({ title: cleanSectionTitle(title), pageStart: foundPage, confidence })
     }
   }
 
@@ -564,7 +581,7 @@ export function assertNoOverlapSections<T extends { pageStart: number; pageEnd: 
 }
 
 export function buildSectionRangesFromAnchors(
-  anchored: Array<{ title: string; pageStart: number }>,
+  anchored: Array<{ title: string; pageStart: number; confidence?: string }>,
   totalPages: number,
   bibliographyPageStart: number
 ): SectionRange[] {
@@ -579,7 +596,7 @@ export function buildSectionRangesFromAnchors(
     } else {
       pageEnd = Math.max(pageStart, Math.min(bibliographyPageStart - 1, totalPages))
     }
-    sections.push({ title: anchored[i].title, pageStart, pageEnd })
+    sections.push({ title: anchored[i].title, pageStart, pageEnd, confidence: anchored[i].confidence })
   }
   return sections
 }
@@ -650,7 +667,7 @@ export function validateSectionRanges(
   const totalPages = pageTexts.length
   const { maxSectionPageRatio: maxPageRatio, maxSectionCharRatio: maxCharRatio } =
     resolveSectionValidationLimits(totalPages, options)
-  const minSections = options?.minSections ?? 2
+  const minSections = options?.minSections ?? (totalPages <= 60 ? 1 : 2)
 
   if (sections.length < minSections) {
     errors.push(`Yetersiz bölüm sayısı: ${sections.length} (min ${minSections})`)
@@ -757,13 +774,14 @@ export function applyGlobalZirh(
 export function sectionsToDetected(
   sections: SectionRange[],
   pageTexts: string[]
-): Array<{ title: string; pageStart: number; pageEnd: number; content: string; module: string }> {
+): Array<{ title: string; pageStart: number; pageEnd: number; content: string; module: string; confidence?: string }> {
   return sections.map((s) => ({
     title: s.title,
     pageStart: s.pageStart,
     pageEnd: s.pageEnd,
     content: pageTexts.slice(Math.max(0, s.pageStart - 1), s.pageEnd).join("\n\n"),
     module: s.title,
+    confidence: s.confidence,
   }))
 }
 

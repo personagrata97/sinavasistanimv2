@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { startWorkerLoop } from "@/lib/job-processor"
+import { getServerSession } from "next-auth"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
+import { getProgramAccessFromSession, canAccessProgram } from "@/lib/program-access"
 
 export const dynamic = "force-dynamic"
 
@@ -12,8 +15,35 @@ export async function GET(request: NextRequest) {
     return new Response("Slug required", { status: 400 })
   }
 
+  const session = await getServerSession(authOptions)
+  if (!session?.user?.email) {
+    return new Response("Yetkilendirme gerekli", { status: 401 })
+  }
+
+  const course = await prisma.course.findUnique({
+    where: { slug },
+    include: { program: true }
+  })
+
+  if (!course) {
+    return new Response("Course not found", { status: 404 })
+  }
+
+  const accessCtx = await getProgramAccessFromSession(session, async (id) => {
+    return prisma.user.findUnique({
+      where: { id },
+      select: { role: true, allowedProgramSlugs: true }
+    })
+  })
+
+  if (course.program?.slug && !canAccessProgram(course.program.slug, accessCtx)) {
+    return new Response("Unauthorized program access", { status: 403 })
+  }
+
   // Ensure worker is running
   startWorkerLoop().catch(console.error)
+
+  const courseId = course.id
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -35,18 +65,18 @@ export async function GET(request: NextRequest) {
 
       while (!isClosed) {
         try {
-          const course = await prisma.course.findUnique({
-            where: { slug },
+          const currentCourse = await prisma.course.findUnique({
+            where: { id: courseId },
             select: { status: true, updatedAt: true }
           })
           
-          if (!course) {
+          if (!currentCourse) {
             sendEvent({ error: "Course not found" })
             break
           }
 
           const sections = await prisma.section.findMany({
-            where: { courseId: (await prisma.course.findUnique({where: {slug}}))?.id },
+            where: { courseId },
             orderBy: { order: "asc" },
             select: {
               id: true,
@@ -77,7 +107,7 @@ export async function GET(request: NextRequest) {
           }
 
           sendEvent({
-            status: course.status,
+            status: currentCourse.status,
             progress,
             totalSections: total,
             completedSections: completed,
@@ -87,10 +117,10 @@ export async function GET(request: NextRequest) {
             sections
           })
 
-          if (course.status === "ready" || course.status === "error" || course.status === "paused") {
+          if (currentCourse.status === "ready" || currentCourse.status === "error" || currentCourse.status === "paused") {
             // Terminal duruma ulaşıldı — son bir event gönderip döngüyü kapat.
             // Bu döngü kapanmazsa sunucu her 2 saniyede DB sorgusu yaparak CPU'yu yakar.
-            console.log(`[SSE] Terminal durum tespit edildi (${course.status}). Stream kapatılıyor.`)
+            console.log(`[SSE] Terminal durum tespit edildi (${currentCourse.status}). Stream kapatılıyor.`)
             break
           }
 

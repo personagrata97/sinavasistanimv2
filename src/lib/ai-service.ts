@@ -1624,11 +1624,21 @@ ${disc.quiz}
     ? `\n⚠️ KAPALILIK VE KAPSAM SINIRI (ÇOK KRİTİK):\n- Bu bölümden hemen sonraki bölümün başlığı "${nextSectionTitle}"'dır.\n- Metin içerisinde bu başlığı veya bu başlığın içeriğinin başladığını görürsen okumayı KESİNLİKLE o noktada kes ve sonrasını notlarına karıştırma.\n- Notları sadece ve sadece "${sectionTitle}" bölümüne ait bilgilerle sınırla. Bir sonraki konunun içeriğini bu nota sızdırma!\n`
     : ""
 
+  // Pre-filter numbers for grounding (Soru 04)
+  const numericValues = Array.from(content.matchAll(/\b\d{3,}\b/g)).map(m => m[0]);
+  const uniqueNumerics = Array.from(new Set(numericValues)).slice(0, 30);
+  const numericGroundingInstruction = uniqueNumerics.length > 0
+    ? `\n🚨 KANIT VE SAYISAL GROUNDING (Sayısal Kanıt Zorunluluğu):
+Aşağıdaki sayısal değerler/kanun numaraları kaynak metinde tespit edilmiştir. Bu sayıları ders notunda geçirirken kaynak metindeki bağlamlarına %100 sadık kal, yanlış veya uydurma bağlamlarla eşleştirme:
+[Sayısal Değerler Listesi]: ${uniqueNumerics.join(", ")}\n`
+    : "";
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
 ${sourceModeInstruction}${documentTypeInstruction}
 ${glossaryInstruction}
 ${nextSectionInstruction}
+${numericGroundingInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
 
@@ -1904,22 +1914,25 @@ export async function generateFlashcards(
 
     const levelCardStyle: Record<string, string> = {
       beginner: `
-        - Zorluk dağılımı: %50 kolay, %30 orta, %20 zor
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
         - Kolay kartlarda temel kavram tanımları sor
         - Orta kartlarda basit karşılaştırmalar yap
+        - Zor kartlarda formül uygulamaları ve vaka soruları ekle
         - Cevaplarda günlük hayattan örnekler ver
       `,
       intermediate: `
-        - Zorluk dağılımı: %20 kolay, %50 orta, %30 zor
-        - Orta kartlarda çeldirici kavram farkları sor
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
+        - Kolay kartlarda temel kavram tanımları sor
+        - Orta kartlarda basit karşılaştırmalar yap
         - Zor kartlarda formül uygulamaları ve vaka soruları ekle
-        - Cevaplarda sınav ipuçları ver
+        - Cevaplarda günlük hayattan örnekler ver
       `,
       advanced: `
-        - Zorluk dağılımı: %10 kolay, %30 orta, %60 zor
-        - Zor kartlarda detaylı mevzuat referansları sor
-        - Çeldirici kavramları ayrıntılı açıkla
-        - Her kartta sınav stratejisi ipucu ver
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
+        - Kolay kartlarda temel kavram tanımları sor
+        - Orta kartlarda basit karşılaştırmalar yap
+        - Zor kartlarda formül uygulamaları ve vaka soruları ekle
+        - Cevaplarda günlük hayattan örnekler ver
       `,
     }
 
@@ -2105,22 +2118,25 @@ export async function generateQuestions(
 
     const levelQuestionStyle: Record<string, string> = {
       beginner: `
-        - Zorluk dağılımı: %20 kolay, %50 orta, %30 zor
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
         - Kolay sorularda bile çeldirici şıklar olsun
         - Orta sorularda vaka senaryoları kullan
+        - Zor sorularda detaylı mevzuat referansları, formül ve vaka uygulamaları kullan
         - Açıklamalarda her yanlış şıkkın NEDEN yanlış olduğunu detaylı açıkla
       `,
       intermediate: `
-        - Zorluk dağılımı: %10 kolay, %40 orta, %50 zor
-        - Vaka tabanlı senaryolar ağırlıklı olsun
-        - Çeldiriciler birbirine ÇOK benzesin, ince farkları ölçsün
-        - Açıklamalarda her şıkkı teker teker analiz et
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
+        - Kolay sorularda bile çeldirici şıklar olsun
+        - Orta sorularda vaka senaryoları kullan
+        - Zor sorularda detaylı mevzuat referansları, formül ve vaka uygulamaları kullan
+        - Açıklamalarda her yanlış şıkkın NEDEN yanlış olduğunu detaylı açıkla
       `,
       advanced: `
-        - Zorluk dağılımı: %5 kolay, %25 orta, %70 zor
-        - Ağırlıklı vaka, hesaplama ve çok ince detay soruları
-        - Şıklar arasında minimal fark olsun, dikkatsiz olanı yanıltsın
-        - Açıklamalarda mevzuat detaylarına referans ver
+        - Zorluk dağılımı: %30 kolay, %40 orta, %30 zor
+        - Kolay sorularda bile çeldirici şıklar olsun
+        - Orta sorularda vaka senaryoları kullan
+        - Zor sorularda detaylı mevzuat referansları, formül ve vaka uygulamaları kullan
+        - Açıklamalarda her yanlış şıkkın NEDEN yanlış olduğunu detaylı açıkla
       `,
     }
 
@@ -2546,7 +2562,8 @@ export async function verifyNotesAgainstSource(
   courseName: string,
   sourceMode: "strict" | "enriched" = "strict",
   documentType?: DocumentType,
-): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[]; groundTruthQuestions?: string[] }> {
+  attemptNumber: number = 1,
+): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[]; groundTruthQuestions?: string[]; groundTruthBypassedAfterRetry?: boolean }> {
   const preserveHeadings = documentType ? requiresHeadingPreservation(documentType) : false
   const headingVerificationBlock = preserveHeadings ? `
 🚨 BAŞLIK SADAKATİ DENETİMİ (MEVZUAT/PROSEDÜR — ZORUNLU):
@@ -2617,6 +2634,7 @@ Bu alanlar metnin pedagojik puanından TAMAMEN BAĞIMSIZ olarak, saf bilgi doğr
     - EĞER DÜŞÜLEN ŞERH HATALIYSA (yani yapay zeka yanlış bir bilgiyi doğru zannederek şerh düşmüşse), "contradiction" olarak işaretle ve 'description' kısmına tam olarak şu formatta yaz: "Sen (Not Üretici) şöyle bir şerh düşmüşsün: [...]. Ancak ben kaynak metni/yasal durumu incelediğimde doğrusunun bu olduğunu görüyorum: [...]. Acaba ben mi yanılıyorum? Lütfen 'acaba Müfettiş haklı olabilir mi?' diye düşünerek kaynak metni ve yasal bilgiyi tekrar araştır, tekrar kontrol et. Eğer ben haklıysam şerhini/notunu buna göre düzelt, inatlaşma."
     - 🚨 TRIVIAL (Önemsiz/Şekilsel) HATALAR İSTİSNASI: Kaynaktaki basit harf eksikliği, imla hatası veya İngilizce-Türkçe kelime farkı (Örn: 'Standard' yerine 'Standart', 'Asynchronous' yerine 'Asynchrous') için YAZARIN ŞERH (DÜZELTME NOTU) DÜŞMEMESİ GEREKİR. Eğer yazar bu kelimeleri kaynak metindeki hatalı haliyle aynen yazmış ve şerh düşmemişse, DOĞRU OLANI YAPMIŞTIR. Bunu kesinlikle "hata aynen kopyalanmış ve şerh düşülmemiş" diye eleştirme veya contradiction/hata olarak Raporlama! ✅
 ${preserveHeadings ? `- Mevzuat/prosedür belgelerinde kaynak ana başlıklarının notta ## ile aynen korunması zorunludur — eksik/birleştirilmiş başlıklar "issues"a yazılır ❌` : `- İçeriğin farklı sırayla organize edilmesi ✅`}
+- Ders notunun en altında "🧪 Kendini Test Et" adında en az 2-3 adet mini test sorusu içeren bir bölüm bulunmalıdır. Eğer bu bölüm notta KESİNLİKLE yoksa "missingTopics" kısmına "🧪 Kendini Test Et sorusu eksik" yaz, pedagojik skordan 5 puan kır.
 
 ⚠️ MUTLAK DOĞRULUK KURALI: 
 Eksikleri ve hataları sadece "missingTopics" veya "issues" alanlarına aktar. Kaynak metinde bulunmayan dış konuları "suggestions" (öneri) olarak yazma!
@@ -2644,6 +2662,7 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
     // not KESİNLİKLE %100 sayılamaz. Aksi halde denetlenmemiş not canlıya sızar.
     const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, courseName);
 
+    let groundTruthBypassed = false;
     if (!groundTruth.passed) {
       if (groundTruth.totalQuestions > 0 && groundTruth.failedQuestions.length > 0) {
         // Bilinen başarısızlık: bazı sorular notla cevaplanamadı → orana göre ceza (asla 100 kalmaz)
@@ -2654,11 +2673,18 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
         const gtTopics = groundTruth.failedQuestions.map(q => `Eksik Detay (Ground Truth Testi Başarısız): ${q}`);
         missingTopics.push(...gtTopics);
       } else {
-        // Test hiç çalışmadı (API hatası / soru üretilemedi) → güvenlik gereği not %100 sayılmaz.
-        score = Math.min(score, 90);
-        missingTopics.push(
-          "Ground Truth doğrulama testi tamamlanamadı (API hatası veya kontrol sorusu üretilemedi). Güvenlik gereği not %100 sayılmadı, tekrar denenecek."
-        );
+        // Test hiç çalışmadı (API hatası / soru üretilemedi) -> 2. veya sonraki denemede bypass et
+        if (attemptNumber >= 2) {
+          groundTruthBypassed = true;
+          console.warn(`[GT] ⚠️ Ground Truth API hatası ardışık denemede alındı, bypass ediliyor (Attempt #${attemptNumber})`);
+          if (!result.suggestions) result.suggestions = [];
+          result.suggestions.push("Ground Truth doğrulama testi API hatası nedeniyle bypass edildi.");
+        } else {
+          score = Math.min(score, 90);
+          missingTopics.push(
+            "Ground Truth doğrulama testi tamamlanamadı (API hatası veya kontrol sorusu üretilemedi). Güvenlik gereği not %100 sayılmadı, tekrar denenecek."
+          );
+        }
       }
     }
 
@@ -2667,7 +2693,8 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
       missingTopics: missingTopics,
       issues: result.issues || [],
       suggestions: result.suggestions || [],
-      groundTruthQuestions: groundTruth?.askedQuestions || []
+      groundTruthQuestions: groundTruth?.askedQuestions || [],
+      groundTruthBypassedAfterRetry: groundTruthBypassed
     }
   } catch (e: any) {
     console.error("[VERIFY] ⚠ Parse/API hatası:", e.message)
