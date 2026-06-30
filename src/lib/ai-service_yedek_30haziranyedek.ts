@@ -1179,23 +1179,46 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
         const logKeyIndex = currentKeyIndex
 
         try {
-          const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
-            geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
-          )
-          
-          prisma.apiUsageLog.create({
-            data: {
-              apiKey: `Key #${logKeyIndex + 1}`,
-              keyIndex: logKeyIndex,
-              model: model.id,
-              operation: mode,
-              stage: logStage,
-              courseSlug: logContext.substring(0, 150),
-              status: "SUCCESS",
-              durationMs: Date.now() - startTime
+        let response: any = null
+        let requestSuccess = false
+        let requestAttempt = 0
+        const maxRequestAttempts = 3
+
+        while (!requestSuccess && requestAttempt < maxRequestAttempts) {
+          requestAttempt++
+          try {
+            response = await axios.post(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
+              geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
+            )
+            requestSuccess = true
+          } catch (e: any) {
+            const errMsg = e.message || ""
+            const errData = e.response?.data?.error?.message || ""
+            const is503 = errMsg.includes("503") || errData.includes("503") || errMsg.includes("Service Unavailable")
+            
+            if (is503 && requestAttempt < maxRequestAttempts) {
+              const backoffMs = requestAttempt * 1500 // 1.5s, 3s bekle
+              console.log(`[AI_ENGINE] ⚠️ Key #${logKeyIndex + 1} anlık 503 aldı, ${backoffMs/1000}s sonra hızlı deneme #${requestAttempt + 1} yapılacak...`)
+              await new Promise(r => setTimeout(r, backoffMs))
+            } else {
+              throw e // Diğer hatalarda veya maksimum deneme aşımında dış catch bloğuna fırlat
             }
-          }).catch(() => {})
+          }
+        }
+
+        prisma.apiUsageLog.create({
+          data: {
+            apiKey: `Key #${logKeyIndex + 1}`,
+            keyIndex: logKeyIndex,
+            model: model.id,
+            operation: mode,
+            stage: logStage,
+            courseSlug: logContext.substring(0, 150),
+            status: "SUCCESS",
+            durationMs: Date.now() - startTime
+          }
+        }).catch(() => {})
 
           const parts = response.data?.candidates?.[0]?.content?.parts || []
           const textParts = parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text)
