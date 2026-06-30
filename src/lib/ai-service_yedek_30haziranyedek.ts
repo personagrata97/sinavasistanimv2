@@ -503,7 +503,9 @@ export async function withApiRetry<T>(
       }
       
       if (is503 || is429 || is403) {
-        suspendGeminiKey(currentKey)
+        if (!is503) {
+          suspendGeminiKey(currentKey)
+        }
         const nextKey = rotateToNextKey(modelId)
         if (nextKey) currentKey = nextKey
         
@@ -1043,7 +1045,9 @@ Kurallar:
 
         const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503"
         if (isQuotaError) {
-          suspendedKeys.set(logKeyIndex, Date.now())
+          if (errStatus !== "SERVER_ERROR_503") {
+            suspendedKeys.set(logKeyIndex, Date.now())
+          }
           rotateToNextKey(activeModel)
         }
       }
@@ -1231,11 +1235,11 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           const isSuspended = errStatus === "FORBIDDEN_403" || errData.includes("API key not valid")
           if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now())
 
-          // TIMEOUT'u da kota hatası gibi değerlendirip key rotasyonuna sokuyoruz!
+          // TIMEOUT ve 503'ü de kota hatası gibi değerlendirip key rotasyonuna sokuyoruz!
           const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || errStatus === "TIMEOUT" || isSuspended
           if (isQuotaError) {
             quotaHit = true
-            // Timeout ise key'i banlamaya (suspendedKeys) gerek yok, sadece diğerine geç
+            // Timeout veya 503 ise key'i banlamaya (suspendedKeys) gerek yok, sadece diğerine geç
             if (isSuspended || errStatus === "RATE_LIMIT_429") {
               suspendedKeys.set(currentKeyIndex, Date.now())
             }

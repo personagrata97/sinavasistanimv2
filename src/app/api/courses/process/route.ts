@@ -120,11 +120,11 @@ async function populatePageTextsWithOcr(
   }
   const uniquePages = Array.from(new Set(pagesToOcr))
 
-  console.log(`[PROCESS] 📷 Taranmış PDF sınır doğrulama: ${uniquePages.length} adet sınır sayfası için OCR başlatılıyor...`)
+  console.log(`[PROCESS] 📷 Taranmış PDF sınır doğrulama: ${uniquePages.length} adet sınır sayfası için OCR başlatılıyor (Sıralı)...`)
 
   const { extractPerfectMarkdownOCR } = await import("@/lib/ai-service")
 
-  const promises = uniquePages.map(async (pageNo) => {
+  for (const pageNo of uniquePages) {
     try {
       const ocrText = await extractPerfectMarkdownOCR(pdfPath, pageNo, pageNo, `${courseName} (Sınır OCR p${pageNo})`)
       const pageIdx = pageNo - 1
@@ -134,9 +134,9 @@ async function populatePageTextsWithOcr(
     } catch (err: any) {
       console.warn(`[PROCESS] ⚠️ Sayfa ${pageNo} OCR hatası:`, err.message)
     }
-  })
-
-  await Promise.all(promises)
+    // Google API 503 yoğunluk hatasını önlemek için her sayfa arasında 2 saniye bekle
+    await new Promise(r => setTimeout(r, 2000))
+  }
 }
 
 /** Son birkaç dakikada bu derse ait API hareketi var mı? Yoksa arka plan işi kopmuş olabilir. */
