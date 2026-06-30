@@ -11,7 +11,7 @@ export const PROCESS_TRIGGER_DEBOUNCE_MS = 60_000
 export const RECENT_API_ACTIVITY_MS = 4 * 60_000
 export const MAX_NOTES_GENERATION_RETRIES = 5
 export const MAX_SECTION_OUTER_RETRIES = 6
-export const MAX_QUOTA_FAILURES_PER_SECTION = 2
+export const MAX_QUOTA_FAILURES_PER_SECTION = 10
 export const MAX_OCR_ROUTE_ATTEMPTS = 2
 /** OCR parça başına: 1 ilk deneme + 2 yeniden deneme */
 export const MAX_CHUNK_OCR_ATTEMPTS = 3
