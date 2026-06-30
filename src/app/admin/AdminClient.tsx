@@ -1347,9 +1347,22 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                       {(() => {
                                         const nameToParse = log.courseFullName || log.courseSlug || "";
                                         const parts = nameToParse.includes(" > ") ? nameToParse.split(" > ") : nameToParse.split(" - ");
-                                        const program = parts.length > 1 ? parts[0] : "-";
-                                        const ders = parts.length > 2 ? parts[1] : (parts.length === 2 ? parts[1] : parts[0] || "-");
-                                        const konu = parts.length > 2 ? parts.slice(2).join(" > ") : "-";
+                                        
+                                        let program = "-";
+                                        let ders = "-";
+                                        let konu = "-";
+
+                                        if (parts.length >= 3) {
+                                          program = parts[0];
+                                          ders = parts[1];
+                                          konu = parts.slice(2).join(" > ");
+                                        } else if (parts.length === 2) {
+                                          // 2 parçalı yapılarda ilki Ders, ikincisi Konudur
+                                          ders = parts[0];
+                                          konu = parts[1];
+                                        } else {
+                                          ders = parts[0] || "-";
+                                        }
                                         
                                         return (
                                           <>
