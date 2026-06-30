@@ -1411,14 +1411,9 @@ function splitContentIntoChunks(content: string, maxChunkLength = 18000): string
 
     chunks.push(remaining.substring(0, splitIdx).trim());
 
-    // OVERLAP (Girdi Örtüşmesi): Sonraki parça, önceki parçanın son 500 karakterini de görsün ki tablolar/cümleler kopmasın.
-    // Cümlenin tam başından başlaması için 500 karakter geriye gidip ilk boşluktan/satırdan sonrasını alıyoruz.
-    let nextStartIdx = Math.max(0, splitIdx - 600);
-    const safeSpaceIdx = remaining.indexOf(" ", nextStartIdx);
-    if (safeSpaceIdx !== -1 && safeSpaceIdx < splitIdx) {
-      nextStartIdx = safeSpaceIdx;
-    }
-    remaining = remaining.substring(nextStartIdx).trim();
+    // Örtüşmeyi kaldırıyoruz: Konular zaten başlık veya paragraf sınırlarından bölündüğü için
+    // bir sonraki parça tam olarak splitIdx noktasından kesintisiz başlar. Mükerrerliği önler.
+    remaining = remaining.substring(splitIdx).trim();
   }
 
   if (remaining.length > 0) {
