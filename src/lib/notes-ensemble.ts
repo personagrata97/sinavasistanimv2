@@ -17,6 +17,7 @@ export async function generateCourseNotesEnsemble(
   documentNoteStyle?: string,
   documentType?: DocumentType,
   nextSectionTitle?: string,
+  sectionConfidence?: string,
 ): Promise<{ notes: string; ensembleMode: "consensus" | "noteA_fallback" }> {
   console.log(`[NOTES_ENSEMBLE] 🎨 Çift üretim başlatılıyor (Not A ve Not B)...`)
 
@@ -37,6 +38,7 @@ export async function generateCourseNotesEnsemble(
     documentNoteStyle,
     documentType,
     nextSectionTitle,
+    sectionConfidence,
   )
 
   // Not A ve Not B istekleri arasına 5 saniye bekleme süresi
@@ -61,6 +63,7 @@ export async function generateCourseNotesEnsemble(
     alternativeStyle,
     documentType,
     nextSectionTitle,
+    sectionConfidence,
   )
 
   // Not B ve Birleştirme istekleri arasına 5 saniye bekleme süresi

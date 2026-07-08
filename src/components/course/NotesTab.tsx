@@ -188,6 +188,10 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
         const el = document.getElementById(`section-card-${initialSectionId}`)
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "start" })
+          el.classList.add("ring-2", "ring-sky-500", "shadow-[0_0_20px_rgba(14,165,233,0.3)]", "transition-all", "duration-500")
+          setTimeout(() => {
+            el.classList.remove("ring-2", "ring-sky-500", "shadow-[0_0_20px_rgba(14,165,233,0.3)]")
+          }, 1500)
         }
       }, 300)
     }
@@ -839,6 +843,10 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
                     } else {
                       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }
+                    el.classList.add("ring-2", "ring-sky-500", "shadow-[0_0_20px_rgba(14,165,233,0.3)]", "transition-all", "duration-500")
+                    setTimeout(() => {
+                      el.classList.remove("ring-2", "ring-sky-500", "shadow-[0_0_20px_rgba(14,165,233,0.3)]")
+                    }, 1500)
                   }, 150);
                 }
               }}

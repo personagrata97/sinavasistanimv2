@@ -627,6 +627,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       noteStyle,
                       documentProfile.documentType,
                       nextSectionTitle,
+                      isLowConfidence ? "low" : undefined
                     );
                     notes = ensembleResult.notes;
                     await applySectionIssuesPatch({ ensembleMode: ensembleResult.ensembleMode });
@@ -1372,6 +1373,96 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         break; // Kota hatası riskini önlemek için döngüden çık
                       }
                       telafiAttempt++;
+                    }
+
+                    // DAĞILIM KONTROLÜ VE TELAFİSİ (Soru 09 - Adım 3)
+                    const totalQForDiff = questions.length;
+                    if (totalQForDiff >= 3) {
+                      const easyCount = questions.filter(q => (q.difficulty || "medium").toLowerCase() === "easy").length;
+                      const mediumCount = questions.filter(q => {
+                        const d = (q.difficulty || "medium").toLowerCase();
+                        return d === "medium" || d === "normal";
+                      }).length;
+                      const hardCount = questions.filter(q => {
+                        const d = (q.difficulty || "medium").toLowerCase();
+                        return d === "hard" || d === "difficult";
+                      }).length;
+
+                      const easyPct = easyCount / totalQForDiff;
+                      const mediumPct = mediumCount / totalQForDiff;
+                      const hardPct = hardCount / totalQForDiff;
+
+                      const easyDiff = Math.abs(easyPct - 0.3);
+                      const mediumDiff = Math.abs(mediumPct - 0.4);
+                      const hardDiff = Math.abs(hardPct - 0.3);
+
+                      if (easyDiff > 0.15 || mediumDiff > 0.15 || hardDiff > 0.15) {
+                        console.log(`[BG] [DAĞILIM KONTROLÜ] ⚠️ Zorluk dağılımı hedef dışı (Sapma > %15): Kolay %${(easyPct*100).toFixed(0)}, Orta %${(mediumPct*100).toFixed(0)}, Zor %${(hardPct*100).toFixed(0)}`);
+                        let missingDifficulty: "easy" | "medium" | "hard" = "medium";
+                        let maxGap = 0;
+                        if (0.3 - easyPct > maxGap) {
+                          maxGap = 0.3 - easyPct;
+                          missingDifficulty = "easy";
+                        }
+                        if (0.4 - mediumPct > maxGap) {
+                          maxGap = 0.4 - mediumPct;
+                          missingDifficulty = "medium";
+                        }
+                        if (0.3 - hardPct > maxGap) {
+                          maxGap = 0.3 - hardPct;
+                          missingDifficulty = "hard";
+                        }
+
+                        if (maxGap > 0.05) {
+                          console.log(`[BG] [DAĞILIM TELAFİ] Eksik zorluk seviyesi tespit edildi: "${missingDifficulty}". Ek üretim tetikleniyor...`);
+                          try {
+                            const extraQuestions = await generateQuestions(
+                              finalContent + `\n\n⚠️ KESİN DAĞILIM DENGELENMESİ TALİMATI: Üreteceğin tüm soruların zorluk seviyesi (difficulty) KESİNLİKLE "${missingDifficulty}" olmalıdır. Diğer zorluk derecelerinde kesinlikle soru üretme!`,
+                              section.title,
+                              fullCourseName,
+                              course.userLevel,
+                              aiMode,
+                              undefined,
+                              section.pageStart,
+                              section.pageEnd,
+                              section.importance || undefined,
+                              effectiveRaw,
+                              course.documentType
+                            );
+
+                            if (extraQuestions && extraQuestions.length > 0) {
+                              // NORMALİZASYON: Şıkları 'A) ', 'B) ' formatına zorla
+                              const normalizedExtra = extraQuestions.map((q: any) => {
+                                if (q.options && Array.isArray(q.options)) {
+                                  q.options = q.options.map((opt: string) => {
+                                    return opt.replace(/^[A-Ea-e][.)]\s*/, "").trim();
+                                  }).map((opt: string, index: number) => {
+                                    const letter = String.fromCharCode(65 + index);
+                                    return `${letter}) ${opt}`;
+                                  });
+                                }
+                                return q;
+                              });
+
+                              const extraAdversarial = await validateQuestionsAdversarial(finalContent, normalizedExtra);
+                              if (extraAdversarial.questions.length > 0) {
+                                const combined = [...questions, ...extraAdversarial.questions];
+                                const sortedByGoal = combined.sort((a, b) => {
+                                  const aDiff = (a.difficulty || "medium").toLowerCase();
+                                  const bDiff = (b.difficulty || "medium").toLowerCase();
+                                  if (aDiff === missingDifficulty && bDiff !== missingDifficulty) return -1;
+                                  if (bDiff === missingDifficulty && aDiff !== missingDifficulty) return 1;
+                                  return 0;
+                                });
+                                questions = sortedByGoal.slice(0, originalCount);
+                                console.log(`[BG] [DAĞILIM TELAFİ] ✅ Dengeleme tamamlandı. Yeni zorluk sayıları: Kolay: ${questions.filter(q => (q.difficulty || "medium").toLowerCase() === "easy").length}, Orta: ${questions.filter(q => (q.difficulty || "medium").toLowerCase() === "medium" || (q.difficulty || "medium").toLowerCase() === "normal").length}, Zor: ${questions.filter(q => (q.difficulty || "medium").toLowerCase() === "hard" || (q.difficulty || "medium").toLowerCase() === "difficult").length}`);
+                              }
+                            }
+                          } catch (dağılımErr: any) {
+                            console.error(`[BG] [DAĞILIM TELAFİ] Dengeleme üretimi başarısız:`, dağılımErr.message);
+                          }
+                        }
+                      }
                     }
 
                     const qContract = await runStageWithContract(qualityChain, "questions", async () => ({

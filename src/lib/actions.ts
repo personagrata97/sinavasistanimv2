@@ -421,6 +421,9 @@ export async function refineSectionNotesAction(sectionId: string) {
     });
     const nextSectionTitle = nextSec?.title || undefined;
 
+    const parsedIssues = section.verificationIssues ? JSON.parse(section.verificationIssues) : {}
+    const isLowConfidence = parsedIssues.issues?.some((iss: string) => iss.includes("[SINIR UYARISI]")) || parsedIssues.confidence === "low"
+
     const notes = await generateCourseNotes(
       enrichedContent, section.title, fullCourseName, course.userLevel,
       aiMode, section.pageStart, section.pageEnd,
@@ -428,13 +431,15 @@ export async function refineSectionNotesAction(sectionId: string) {
       getDocumentNoteInstructions(documentProfile),
       documentProfile.documentType,
       nextSectionTitle,
+      isLowConfidence ? "low" : undefined
     )
 
     // Verify notes - KÖKLÜ VE TUTARLI ÇÖZÜM: Sayfa çakışmalarını ve mükerrerlikleri tamamen engellemek için,
     // not doğrulama aşamasında PDF dosyasını (fileUri) pas geçerek SADECE veritabanındaki izole rawContent kullanılır!
     const verification = await verifyNotesAgainstSource(
       section.rawContent, notes, section.title, fullCourseName, sourceMode,
-      documentProfile.documentType,
+      documentProfile.documentType, 1,
+      isLowConfidence ? "low" : undefined
     )
 
     // Save back to DB

@@ -125,9 +125,18 @@ function DailyGoalsTab({ course, slug, hasExamDate, onSetExamDate, onNavigateToS
               {showExplanation && (
                 <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-4 p-4 rounded-xl bg-black/20 border border-white/5">
                   <div className="text-xs font-bold text-slate-400 mb-1">Detaylı Çözüm</div>
-                  <div className="text-[13px] text-slate-300 leading-relaxed markdown-notes">
+                  <div className="text-[13px] text-slate-300 leading-relaxed markdown-notes mb-3">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanExplanationText(dailyQuestion.explanation)}</ReactMarkdown>
                   </div>
+                  {selectedOption !== dailyQuestion.correct && dailyQuestion.sectionId && (
+                    <button
+                      onClick={() => onNavigateToSection?.(dailyQuestion.sectionId)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-bold transition-all text-white border border-sky-500/20 cursor-pointer"
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      Bu Konuyu Tekrar Et
+                    </button>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

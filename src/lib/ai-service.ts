@@ -503,12 +503,25 @@ export async function withApiRetry<T>(
       }
       
       if (is503 || is429 || is403) {
-        if (!is503) {
+        if (!is503 && currentKey) {
           suspendGeminiKey(currentKey)
         }
+        const prevKeyIndex = currentKey ? geminiKeys.findIndex(k => k.trim() === currentKey!.trim()) : -1;
         const nextKey = rotateToNextKey(modelId)
         if (nextKey) currentKey = nextKey
-        
+        const newKeyIndex = currentKey ? geminiKeys.findIndex(k => k.trim() === currentKey!.trim()) : -1;
+
+        // ApiUsageLog'a key rotasyon olayını kaydet (Soru 12 - Kalan Adım 3)
+        writeApiUsageLog({
+          apiKey: `Key #${prevKeyIndex + 1} -> Key #${newKeyIndex + 1}`,
+          keyIndex: prevKeyIndex >= 0 ? prevKeyIndex : null,
+          model: modelId,
+          operation: "KEY_ROTATION",
+          stage: operationName,
+          status: is503 ? "SERVER_ERROR_503" : is429 ? "RATE_LIMIT_429" : "FORBIDDEN_403",
+          errorDetail: `Hata nedeniyle rotasyon yapıldı: ${msg.substring(0, 200)}`,
+        }).catch(err => console.error("[AI_ENGINE] Rotation log write failed:", err));
+
         const waitMs = Math.pow(2, attempt) * 1000 // 2s, 4s, 8s...
         console.log(`[AI_ENGINE] 🔄 ${waitMs/1000}s bekleniyor ve key rotasyonu yapılıyor...`)
         await new Promise(r => setTimeout(r, waitMs))
@@ -1464,6 +1477,7 @@ export async function generateCourseNotes(
   documentNoteStyle?: string,
   documentType?: DocumentType,
   nextSectionTitle?: string,
+  sectionConfidence?: string,
 ): Promise<string> {
   const isBibliography = sectionTitle.toLocaleLowerCase('tr-TR').includes("kaynakça") || sectionTitle.toLocaleLowerCase('tr-TR').includes("referans") || sectionTitle.toLocaleLowerCase('tr-TR').includes("bibliography")
   const isGlossary = isGlossarySectionTitle(sectionTitle)
@@ -1501,6 +1515,7 @@ export async function generateCourseNotes(
           documentNoteStyle,
           documentType,
           nextSectionTitle,
+          sectionConfidence,
         )
         if (idx === 0) {
           mergedNotes = chunkResult
@@ -1661,11 +1676,19 @@ Aşağıdaki sayısal değerler/kanun numaraları kaynak metinde tespit edilmiş
 [Sayısal Değerler Listesi]: ${uniqueNumerics.join(", ")}\n`
     : "";
 
+  const lowConfidenceBlock = sectionConfidence === "low" ? `
+⚠️ GÜVEN SKORU DÜŞÜK SINIR BİLGİSİ (ÇOK KRİTİK):
+- Bu bölümün sayfa sınırı kesin değildir.
+- Sayfanın başında veya sonunda önceki/sonraki konuya ait görünen geçiş cümleleri varsa bunları kesinlikle bu ders notuna dahil etme.
+- Sadece ve sadece bu bölümün doğrudan başlığıyla ilgili içeriği işle.
+` : "";
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
 ${sourceModeInstruction}${documentTypeInstruction}
 ${glossaryInstruction}
 ${nextSectionInstruction}
+${lowConfidenceBlock}
 ${numericGroundingInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
@@ -2680,7 +2703,8 @@ Eğer not çok sıkıcı, blok metin halinde, tablosuz, okunması zor veya yarı
 Bu alanlar metnin pedagojik puanından TAMAMEN BAĞIMSIZ olarak, saf bilgi doğruluğunu raporlar.
 - KISMİ ANLATIM VE EKSİKLER: Kaynak metinde DETAYLI AÇIKLANMIŞ bir konu veya bir kavramın alt maddeleri (örn: 5 özellikten 2'si unutulmuşsa) eksik bırakılmışsa bunları "missingTopics" listesine yaz.
 - KRİTİK BİLGİ HATALARI: Rakam, oran, süre, tarih, ceza miktarı veya mevzuat numarası YANLIŞ yazılmışsa bunları "issues" listesine yaz.
-- ŞERH DENETİMİ VE MÜFETTİŞ SORGUSU: Kaynak metindeki hataları düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN.
+    - ŞERH DENETİMİ VE MÜFETTİŞ SORGUSU: Kaynak metindeki hataları düzeltmek amacıyla not düşülmesi/şerh eklenmesi (örn: "Kaynakta 610 sayılı kanun yazıyor ancak doğrusu 6102 sayılı kanundur") harika bir pedagojik yaklaşımdır. Ancak DÜŞÜLEN BU ŞERHİN DOĞRULUĞUNU KENDİ BİLGİ BİRİKİMİNLE TEYİT ETMELİSİN.
+    - KESİN FORMAT KURALI: Notta kullanılan her düzeltme şerhinin (not/uyarı) birebir şu sabit formatta yazıldığını doğrula: "(⚠️ Önemli Detay: İşbu notun orijinal dokümanında [Hatalı Bilgi] olarak geçse de, doğrusu [Doğru Bilgi]'dir.)". Bu formatın milim dışına çıkan (kelime sırası, parantez veya emoji sapması dahil) her türlü şerh yazımını "issues" listesine ekle.
     - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle. 
     - EĞER BİR ŞERHİN DOĞRULUĞUNDAN EN UFAK BİR ŞÜPHE DUYARSAN şerhi doğrudan reddet, passed değerini false yap, ve bunu bir "contradiction" olarak raporla.
     - Eğer düşülen şerh doğru bir yasal güncelleme ise, bunu KESİNLİKLE "Contradiction" veya "Uydurma" olarak İŞARETLEME! Şerh doğruysa sorunsuzca geçirt.
@@ -2792,6 +2816,7 @@ Sadece ve sadece yukarıda listelenen 3 spesifik konuya odaklan. Kaynak metindek
 2. BİLGİ HATASI/ÇARPITMA (Contradiction): Süreler, limitler veya kurallar ders notuna aktarılırken yanlış veya çarpıtılmış şekilde yazılmış mı (örn: 3 yıl yerine 5 yıl)?
 3. UYDURMA (Fabrication — TERS YÖN): Ders notunda bu 3 konuyla ilgili geçen AMA kaynak metinde KARŞILIĞI HİÇ BULUNMAYAN somut bir iddia (rakam, süre, oran, ceza, kurum, kanun/madde no, istisna) var mı? Kaynakta dayanağı olmayan böyle bir bilgi UYDURMADIR → "contradiction" tipinde ve "CRITICAL" olarak işaretle. (Benzetme, hikaye, yeniden ifade UYDURMA DEĞİLDİR; sadece kaynakta olmayan olgusal/sayısal iddialar.)
 4. DÜZELTME ŞERHLERİ (ÇOK ÖNEMLİ İSTİSNA): Eğer ders notunda orijinal kaynak metindeki sorunlu/eski/hatalı bir YASAL VEYA KESİN BİLGİ aynen korunmuş ve yazılmışsa, ANCAK hemen yanına "*(Not: Mevzuata göre doğrusu...)*" veya benzeri bir açıklama eklenerek şerh düşülmüşse; 
+   - KESİN FORMAT KURALI: Notta kullanılan her düzeltme şerhinin (not/uyarı) birebir şu sabit formatta yazıldığını doğrula: "(⚠️ Önemli Detay: İşbu notun orijinal dokümanında [Hatalı Bilgi] olarak geçse de, doğrusu [Doğru Bilgi]'dir.)". Bu formatın milim dışına çıkan (kelime sırası, parantez veya emoji sapması dahil) her türlü şerh yazımını "contradiction" tipinde ve "CRITICAL" olarak raporla.
    - Öncelikle bu şerhin (açıklamanın) kendi içinde yasal/olgusal olarak DOĞRU olup olmadığını denetle.
    - EĞER BİR ŞERHİN DOĞRULUĞUNDAN EN UFAK BİR ŞÜPHE DUYARSAN şerhi doğrudan reddet, passed değerini false yap, ve bunu bir "contradiction" olarak raporla.
    - Eğer düşülen şerh doğru bir yasal güncelleme ise, bunu KESİNLİKLE "Contradiction" veya "Uydurma" olarak İŞARETLEME! Şerh doğruysa sorunsuzca geçirt.

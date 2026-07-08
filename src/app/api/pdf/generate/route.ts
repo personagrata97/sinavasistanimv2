@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import puppeteer from 'puppeteer';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
 
 // Mermaid.js'i yerel dosyadan bir kez oku ve bellekte tut (CDN bağımlılığını kaldırır)
 let _mermaidScript: string | null = null;
@@ -94,6 +95,16 @@ async function renderMermaidBlocksInHtml(browser: any, html: string): Promise<st
 
 export async function POST(req: Request) {
   try {
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rl = await rateLimit(`pdf:${clientIp}`, 10, 60_000);
+    if (!rl.success) {
+      console.warn(`[PDF] 🚫 Rate limit aşıldı: ${clientIp} (resetIn: ${rl.resetIn}ms)`);
+      return NextResponse.json(
+        { error: "Çok fazla istek gönderdiniz. Lütfen bir dakika bekleyin." },
+        { status: 429, headers: getRateLimitHeaders(rl.remaining, rl.resetIn, 10) } as any,
+      );
+    }
+
     const { html, courseName } = await req.json();
 
     if (!html) {

@@ -20,8 +20,28 @@ export type OcrPostProcessResult = {
   }
 }
 
-const VISUAL_SECTION_RE = /\[GÖRSEL İÇERİKLER\]/i
+const VISUAL_SECTION_PATTERNS = [
+  /\[GÖRSEL İÇERİKLER\]/i,
+  /##?\s*Görsel İçerikler/i,
+  /\[GÖRSELLER\]/i
+]
+
 const VISUAL_BLOCK_SPLIT = /(?=\n(?:[-*]|\d+\.)\s)/
+
+function findVisualSection(body: string) {
+  for (const pattern of VISUAL_SECTION_PATTERNS) {
+    if (pattern.test(body)) {
+      const match = body.match(new RegExp(`${pattern.source}[\\s\\S]*`, "i"))
+      return {
+        hasSection: true,
+        pattern,
+        sectionBody: match ? match[0] : "",
+        matchedHeader: pattern.exec(body)?.[0] || ""
+      }
+    }
+  }
+  return { hasSection: false, pattern: null, sectionBody: "", matchedHeader: "" }
+}
 
 function stripOcrStamps(text: string): string {
   return text
@@ -31,8 +51,10 @@ function stripOcrStamps(text: string): string {
 
 /** OCR çıktısını sarar — extractPerfectMarkdownOCR gövdesine dokunmaz */
 export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResult {
+  const cleanBody = stripOcrStamps(rawMarkdown)
+  const { hasSection, pattern, sectionBody, matchedHeader } = findVisualSection(cleanBody)
+
   if (!OCR_POST_PROCESS()) {
-    const body = stripOcrStamps(rawMarkdown)
     return {
       markdown: rawMarkdown,
       visualCount: 0,
@@ -40,23 +62,21 @@ export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResul
       metrics: {
         visualInventoryCount: 0,
         assignedVisIds: 0,
-        hasVisualSection: VISUAL_SECTION_RE.test(body),
+        hasVisualSection: hasSection,
         charLength: rawMarkdown.length,
       },
     }
   }
 
-  let body = stripOcrStamps(rawMarkdown)
-  const hasVisualSection = VISUAL_SECTION_RE.test(body)
+  let body = cleanBody
   const visualItems: VisualInventoryItem[] = []
 
-  if (hasVisualSection) {
-    const sectionMatch = body.match(/\[GÖRSEL İÇERİKLER\][\s\S]*/i)
-    const sectionBody = sectionMatch ? sectionMatch[0] : ""
+  if (hasSection && pattern) {
+    const escapedHeader = matchedHeader.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const blocks = sectionBody
       .split(VISUAL_BLOCK_SPLIT)
       .map((b) => b.trim())
-      .filter((b) => b.length > 20 && !/^\[GÖRSEL İÇERİKLER\]/i.test(b))
+      .filter((b) => b.length > 20 && !new RegExp(`^${escapedHeader}`, "i").test(b))
 
     let idx = 0
     for (const block of blocks) {
@@ -71,7 +91,7 @@ export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResul
         /(\n(?:[-*]|\d+\.)\s[^\n]+)/g,
         (match, _g1, offset) => {
           const before = body.slice(Math.max(0, offset - 80), offset)
-          if (!/\[GÖRSEL İÇERİKLER\]/i.test(before) && !VISUAL_SECTION_RE.test(before)) return match
+          if (!new RegExp(escapedHeader, "i").test(before) && !pattern.test(before)) return match
           visCounter++
           if (visCounter > visualItems.length) return match
           const id = `VIS-${String(visCounter).padStart(3, "0")}`
@@ -88,7 +108,7 @@ export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResul
   const markdown = stamps + body.trimStart()
 
   const visualCount = visualItems.length
-  if (visualCount < THRESHOLDS.OCR_VISUAL_MIN_ITEMS && hasVisualSection && visualCount === 0) {
+  if (visualCount < THRESHOLDS.OCR_VISUAL_MIN_ITEMS && hasSection && visualCount === 0) {
     console.warn("[OCR_POST] Görsel bölüm var ama ayrıştırılmış öğe bulunamadı")
   }
 
@@ -99,7 +119,7 @@ export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResul
     metrics: {
       visualInventoryCount: visualCount,
       assignedVisIds: visualItems.length,
-      hasVisualSection,
+      hasVisualSection: hasSection,
       charLength: markdown.length,
     },
   }

@@ -317,6 +317,21 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               )
             })()}
           </div>
+
+          {issuesObj.ensembleMode === "noteA_fallback" && (
+            <div className="mt-3 flex justify-center">
+              <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[9px] font-bold uppercase tracking-wider">
+                Bu not tekli üretimle oluşturuldu (çift üretim konsensüsü başarısız oldu)
+              </div>
+            </div>
+          )}
+          {issuesObj.ensembleMode === "consensus" && (
+            <div className="mt-3 flex justify-center">
+              <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-bold uppercase tracking-wider">
+                Çift üretim konsensüsü ile birleştirildi
+              </div>
+            </div>
+          )}
           
           {/* Live Operation Radar */}
           {isProcessing && (
