@@ -988,6 +988,16 @@ export default function NotesTab({ course, slug, isAdmin, isProfessional, onRelo
 
                         return (
                           <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* Single Section Fallback Warning Badge */}
+                            {issues.singleSectionFallback && (
+                              <span 
+                                title={`Başarısız kaynaklar: ${Array.isArray(issues.failedSources) ? issues.failedSources.join(", ") : ""}`}
+                                className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide uppercase bg-orange-500/10 text-orange-500 border border-orange-500/20 flex items-center gap-1"
+                              >
+                                <AlertCircle className="w-2.5 h-2.5" /> Bölümleme Başarısız (Tek Bölüm)
+                              </span>
+                            )}
+
                             {/* Deneme Badge */}
                             {showAttempt && (
                               <span className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide uppercase bg-amber-500/10 text-amber-500/90 border border-amber-500/20">

@@ -2475,7 +2475,7 @@ Sadece JSON array döndür:
 }
 
 
-function normalizeForComparison(str: string): string {
+export function normalizeForComparison(str: string): string {
   return str
     .toLocaleLowerCase("tr-TR")
     .replace(/[^a-z0-9ıışğüçöâîû]/g, "");
@@ -2595,6 +2595,7 @@ export async function verifyNotesAgainstSource(
   sourceMode: "strict" | "enriched" = "strict",
   documentType?: DocumentType,
   attemptNumber: number = 1,
+  sectionConfidence?: string,
 ): Promise<{ score: number; missingTopics: string[]; issues: string[]; suggestions: string[]; groundTruthQuestions?: string[]; groundTruthBypassedAfterRetry?: boolean }> {
   const isGlossary = isGlossarySectionTitle(sectionTitle)
   const glossaryPromptBlock = isGlossary ? `
@@ -2603,7 +2604,7 @@ export async function verifyNotesAgainstSource(
   - "🧪 Kendini Test Et" veya "Bölüm Özeti" kısımlarının eksik olduğunu KESİNLİKLE missingTopics veya issues alanına yazma, puan kırma!
   - Bu bölümü sadece ve sadece kaynaktaki kısaltmaların ve tanımların tamamının eksiksiz ve doğru bir şekilde, anlaşılır tablolar/maddeler halinde notta listelenip listelenmediğine göre değerlendir.
   ` : `
-  - Ders notunun en altında "🧪 Kendini Test Et" adında en az 2-3 adet mini test sorusu içeren bir bölüm bulunmalıdır. Eğer bu bölüm notta KESİNLİKLE yoksa "missingTopics" kısmına "🧪 Kendini Test Et sorusu eksik" yaz, pedagojik skordan 5 puan kır.
+  - Eğer ders notu yeterince uzunsa (>500 kelime/word) ve en altında "🧪 Kendini Test Et" adında mini test soruları içeren bir bölüm yoksa, "missingTopics" kısmına "🧪 Kendini Test Et sorusu eksik" yaz ve pedagojik skordan 5 puan kır. Bölüm çok kısaysa (tanım listesi, kısa maddeler vb.) bu kontrolü atla.
   `
   const glossaryScoreBlock = isGlossary ? `
   (⚠️ ÖNEMLİ İSTİSNA: Eğer mevcut bölüm bir "Kısaltmalar", "Tanımlar" veya "Sözlük" bölümü ise bu kısımların ("Bölüm Özeti", "Ekstra Dikkat Edilmesi Gereken Hususlar" vb.) notta KESİNLİKLE bulunmaması gerekir. Bu tür sözlük bölümlerini sadece kısaltmalar/tanımlar listesinin/tablosunun tamlığına ve okunabilirliğine göre değerlendirip yüksek puan ver.)
@@ -2628,8 +2629,16 @@ Her birinin ders notunda ## başlık olarak AYNI sıra ve AYNI metinle (numara d
 - Pedagojik zenginleştirme sınırlı olmalı; kaynakta olmayan somut iddia uydurma sayılır.
 `
 
+  const lowConfidenceBlock = sectionConfidence === "low" ? `
+⚠️ GÜVEN SKORU DÜŞÜK SINIR BİLGİSİ:
+- Bu bölümün kaynak sınırı düşük güvenilirliklidir.
+- Sınır bölgesindeki olası küçük sızıntıları (örneğin önceki/sonraki konulardan sızan 1-2 cümle) kritik hata veya çelişki olarak değerlendirme, puan kırma.
+  ` : ""
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 Sen bir sınav materyali KALİTE KONTROLÖRÜSÜN (Kontrolör). Görevin, üretilen ders notlarını yasal kaynak dökümanla karşılaştırıp yasal süreler, cezalar, limitler ve kritik mevzuat kavramları bazında hiçbir eksiğin kalmadığını doğrulamaktır.
+
+${lowConfidenceBlock}
 
 ${sourceModeBlock}
 

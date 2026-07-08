@@ -523,6 +523,21 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      const programSlug = course.program?.slug || ""
+      const aiMode = course.program?.aiMode || "general"
+      const staticMeta = getCourseBySlug(slug)
+      const processingProfile = getDocumentProcessingProfile({
+        slug,
+        name: course.name,
+        sourceKind: staticMeta?.sourceKind,
+        sourceKindLabel: staticMeta?.sourceKindLabel,
+        gridGroup: staticMeta?.gridGroup,
+        programSlug,
+        aiMode,
+        totalPages: isScannedPdf ? totalPages : pageTexts.length,
+      })
+      const isSingleMode = processingProfile.mode === "single"
+
       let sections: DetectedSection[] = []
       let isSingleSectionFallback = false
       let tocAttempts = 0
@@ -544,7 +559,7 @@ export async function POST(req: NextRequest) {
               if (SECTION_UNIFIED_ZIRH()) {
                 await populatePageTextsWithOcr(course.pdfPath || "", ranges, pageTexts, course.name)
                 ranges = applyGlobalZirh(ranges, pageTexts)
-                const validation = validateSectionRanges(ranges, pageTexts, { minSections: totalPages <= 60 ? 1 : 2 })
+                const validation = validateSectionRanges(ranges, pageTexts, { minSections: isSingleMode ? 1 : (totalPages <= 60 ? 1 : 2) })
                 if (!validation.valid) {
                   console.warn(
                     `[PROCESS] ⚠️ Taranmış PDF Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
@@ -581,23 +596,9 @@ export async function POST(req: NextRequest) {
           console.log(`[PROCESS] 📷 Tek bölüm modu: tüm kitap (${totalPages} sayfa) OCR ile işlenecek.`)
         }
       } else {
-        const programSlug = course.program?.slug || ""
-        const aiMode = course.program?.aiMode || "general"
-        const staticMeta = getCourseBySlug(slug)
-        const processingProfile = getDocumentProcessingProfile({
-          slug,
-          name: course.name,
-          sourceKind: staticMeta?.sourceKind,
-          sourceKindLabel: staticMeta?.sourceKindLabel,
-          gridGroup: staticMeta?.gridGroup,
-          programSlug,
-          aiMode,
-          totalPages: pageTexts.length,
-        })
-
         console.log(`[PROCESS] ${formatProcessingProfileLog(processingProfile, slug)}`)
 
-        if (processingProfile.mode === "single") {
+        if (isSingleMode) {
           sections = buildSingleSectionFromPages(pageTexts, course.name)
         } else {
           console.log(`[PROCESS] 🧠 Master Vision & Semantic Bölüm Algılama başlatılıyor...`)
@@ -618,7 +619,7 @@ export async function POST(req: NextRequest) {
 
               if (SECTION_UNIFIED_ZIRH()) {
                 ranges = applyGlobalZirh(ranges, pageTexts)
-                const validation = validateSectionRanges(ranges, pageTexts, { minSections: totalPages <= 60 ? 1 : 2 })
+                const validation = validateSectionRanges(ranges, pageTexts, { minSections: isSingleMode ? 1 : (totalPages <= 60 ? 1 : 2) })
                 if (!validation.valid) {
                   console.warn(
                     `[PROCESS] ⚠️ Master çıktısı Global Zırh doğrulamasından geçemedi (skor ${validation.score}):`,
@@ -828,6 +829,7 @@ export async function POST(req: NextRequest) {
         }
         if (isSingleSectionFallback) {
           initialIssues.singleSectionFallback = true
+          initialIssues.failedSources = ["procedure-body", "procedure-toc", "toc-parse", "body-regex", "ai-text-title"]
           initialIssues.reason = "Bölüm algılama başarısız oldu, kısa belge koruma kalkanı devrede."
         }
         if (sections[i].confidence === "low") {

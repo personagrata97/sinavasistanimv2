@@ -144,6 +144,24 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
         KONTROLÖR VE MÜFETTİŞ RAPOR DETAYI
       </div>
 
+      {Boolean(issuesObj.singleSectionFallback) && (
+        <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-start gap-3 mb-6">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-bold text-sm text-orange-300">Otomatik Bölümleme Başarısız</h4>
+            <p className="text-xs opacity-90 mt-1 text-slate-300">
+              Bu ders için otomatik bölüm tespiti kaynakları (TOC, Regex desenleri ve AI) başarısız oldu veya yetersiz bölüm sayısı verdi.
+              Bölüm, kısa belge koruma kalkanı veya dinamik sayfa aralığı bölücüsü ile tek bir büyük ünite olarak işlendi.
+            </p>
+            {Array.isArray(issuesObj.failedSources) && (
+              <div className="text-[10px] opacity-75 mt-2">
+                <strong>Hata Veren Algoritmalar:</strong> {(issuesObj.failedSources as string[]).join(", ")}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Circular Score Ring & Status */}
       <div className="flex flex-col items-center justify-center p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04] mb-6 relative">
         <div className="relative inline-flex items-center justify-center mb-3">

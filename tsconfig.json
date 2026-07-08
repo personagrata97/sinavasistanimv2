@@ -39,6 +39,7 @@
     "fix_*.ts",
     "fix_logs*.ts",
     "check-db.ts",
-    "check-issues.ts"
+    "check-issues.ts",
+    "**/*_yedek_*"
   ]
 }

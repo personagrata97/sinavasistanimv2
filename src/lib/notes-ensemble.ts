@@ -17,7 +17,7 @@ export async function generateCourseNotesEnsemble(
   documentNoteStyle?: string,
   documentType?: DocumentType,
   nextSectionTitle?: string,
-): Promise<string> {
+): Promise<{ notes: string; ensembleMode: "consensus" | "noteA_fallback" }> {
   console.log(`[NOTES_ENSEMBLE] 🎨 Çift üretim başlatılıyor (Not A ve Not B)...`)
 
   // 1. Not A üretimi (Standart Stil)
@@ -92,10 +92,16 @@ Nihai birleştirilmiş ders notunu doğrudan Markdown formatında döndür (Baş
 
   try {
     const mergedNotes = await callAI(mergePrompt, 1, "notes_generation")
-    return repairMermaidInText(mergedNotes || noteA)
+    return {
+      notes: repairMermaidInText(mergedNotes || noteA),
+      ensembleMode: mergedNotes ? "consensus" : "noteA_fallback"
+    }
   } catch (err: any) {
     console.warn(`[NOTES_ENSEMBLE] ⚠️ Konsensüs birleştirme başarısız oldu, yedek olarak Not A kullanılıyor:`, err.message)
-    return repairMermaidInText(noteA)
+    return {
+      notes: repairMermaidInText(noteA),
+      ensembleMode: "noteA_fallback"
+    }
   }
 }
 

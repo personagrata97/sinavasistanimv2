@@ -96,6 +96,7 @@ export async function runKontrolorEnsemble(
   sourceMode: "strict" | "enriched" = "strict",
   documentType?: DocumentType,
   attemptNumber: number = 1,
+  sectionConfidence?: string,
 ): Promise<KontrolorEnsembleResult> {
   const primary = await verifyNotesAgainstSource(
     sourceContent,
@@ -105,6 +106,7 @@ export async function runKontrolorEnsemble(
     sourceMode,
     documentType,
     attemptNumber,
+    sectionConfidence,
   )
 
   if (!KONTROLOR_ENSEMBLE()) {

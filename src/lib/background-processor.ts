@@ -612,14 +612,24 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   if (!isSurgicalPatch) {
                     await ensureFileUrisForNotes()
                     const { generateCourseNotesEnsemble } = await import("@/lib/notes-ensemble")
-                    notes = await generateCourseNotesEnsemble(
+                    const parsedIssues = section.verificationIssues ? JSON.parse(section.verificationIssues) : {}
+                    const isLowConfidence = parsedIssues.issues?.some((iss: string) => iss.includes("[SINIR UYARISI]")) || parsedIssues.confidence === "low"
+                    
+                    let noteStyle = getDocumentNoteInstructions(documentProfile)
+                    if (isLowConfidence) {
+                      noteStyle = `${noteStyle || ""}\n\n⚠️ GÜVEN SKORU DÜŞÜK SINIR TALİMATI: Bu bölümün sayfa sınırı kesin değildir; sayfanın başında veya sonunda önceki/sonraki konuya ait görünen cümleler varsa bunları nota dahil etme, sadece bu bölümün doğrudan başlığıyla ilgili içeriği işle.`
+                    }
+
+                    const ensembleResult = await generateCourseNotesEnsemble(
                       enrichedContent, section.title, fullCourseName, course.userLevel,
                       aiMode, section.pageStart, section.pageEnd,
                       undefined, sourceMode,
-                      getDocumentNoteInstructions(documentProfile),
+                      noteStyle,
                       documentProfile.documentType,
                       nextSectionTitle,
                     );
+                    notes = ensembleResult.notes;
+                    await applySectionIssuesPatch({ ensembleMode: ensembleResult.ensembleMode });
                   }
 
                   const { dedupParagraphs } = await import("@/lib/content-dedup")
@@ -630,9 +640,14 @@ export async function processInBackground(slug: string, course: any, forceRetry:
 
                   console.log(`[BG] Not Doğrulanıyor (Deneme #${vAttempt})...`)
                   try { await applySectionIssuesPatch({ currentMicroPhase: `${sIdx + 1 + alreadyDone}/${totalSections}. Aşama 3: Kalite Kontrolörü Tarafından İnceleniyor (Tur #${vAttempt})` }) } catch { }
+                  
+                  const parsedIssues = section.verificationIssues ? JSON.parse(section.verificationIssues) : {}
+                  const isLowConfidence = parsedIssues.issues?.some((iss: string) => iss.includes("[SINIR UYARISI]")) || parsedIssues.confidence === "low"
+                  
                   const ensembleResult = await runKontrolorEnsemble(
                     effectiveRaw, notes, section.title, fullCourseName, sourceMode,
-                    documentProfile.documentType, vAttempt
+                    documentProfile.documentType, vAttempt,
+                    isLowConfidence ? "low" : undefined
                   )
                   verification = ensembleResult.verification
                   if (!ensembleResult.pass && verification.score === 100) {
@@ -752,6 +767,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   kontrolorGroundTruth: verification.score === 100,
                   mufettis: false,
                   fullyApproved: false,
+                  timestamp: new Date().toISOString(),
                 }
                 attemptHistory.push(historyEntry)
 
@@ -1061,7 +1077,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   score: 0,
                   missingTopics: [],
                   issues: [isQuotaErr ? "Kota hatası — deneme sayılmadı" : "Doğrulama yapılamadı"],
-                  suggestions: []
+                  suggestions: [],
+                  timestamp: new Date().toISOString(),
                 })
 
                 if (vAttempt === 5 && !notes) throw notesErr
