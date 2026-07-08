@@ -1090,9 +1090,7 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
 
   await ensureDailyCountersHydrated()
 
-  const activeKey = getNextGeminiKey(MODEL_ID)
-
-  if (activeKey) {
+  if (geminiKeys.length > 0) {
     let temperature = 0.1
     if (mode === "notes_generation") {
       const isStrict = prompt.includes("🔒 STRICT KAYNAK MODU")
@@ -1259,10 +1257,10 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           if (isSuspended) suspendedKeys.set(currentKeyIndex, Date.now())
 
           // TIMEOUT ve 503'ü de kota hatası gibi değerlendirip key rotasyonuna sokuyoruz!
-          const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || errStatus === "TIMEOUT" || isSuspended
+          const isQuotaError = errStatus === "RATE_LIMIT_429" || errStatus === "SERVER_ERROR_503" || errStatus === "TIMEOUT" || errStatus === "ERROR" || isSuspended
           if (isQuotaError) {
             quotaHit = true
-            // Timeout veya 503 ise key'i banlamaya (suspendedKeys) gerek yok, sadece diğerine geç
+            // Timeout, 503 veya genel ağ hatalarında key'i banlamaya (suspendedKeys) gerek yok, sadece diğerine geç
             if (isSuspended || errStatus === "RATE_LIMIT_429") {
               suspendedKeys.set(currentKeyIndex, Date.now())
             }
@@ -1483,8 +1481,8 @@ export async function generateCourseNotes(
       let lastChunkTail = ""
       for (let idx = 0; idx < chunks.length; idx++) {
         if (idx > 0) {
-          console.log(`[AUTO-CHUNKING] ⏱️ Key ve limit koruması: Parçalar arasında 61 saniye bekleniyor...`)
-          await new Promise(r => setTimeout(r, 61000))
+          console.log(`[AUTO-CHUNKING] ⏱️ Key ve limit koruması: Parçalar arasında 10 saniye bekleniyor...`)
+          await new Promise(r => setTimeout(r, 10000))
         }
         console.log(`[AUTO-CHUNKING] 👉 Parça ${idx + 1}/${chunks.length} üretiliyor...`)
         const chunkResult = await generateCourseNotes(

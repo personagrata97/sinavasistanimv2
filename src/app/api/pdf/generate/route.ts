@@ -1,5 +1,23 @@
 import { NextResponse } from 'next/server';
 import puppeteer from 'puppeteer';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+// Mermaid.js'i yerel dosyadan bir kez oku ve bellekte tut (CDN bağımlılığını kaldırır)
+let _mermaidScript: string | null = null;
+function getMermaidScript(): string {
+  if (!_mermaidScript) {
+    try {
+      const mermaidPath = join(process.cwd(), 'public', 'js', 'mermaid.min.js');
+      _mermaidScript = readFileSync(mermaidPath, 'utf-8');
+      console.log(`[PDF] ✅ Mermaid.js yerel dosyadan yüklendi (${(_mermaidScript.length / 1024).toFixed(0)} KB)`);
+    } catch (err) {
+      console.error('[PDF] ⚠️ Yerel mermaid.min.js bulunamadı, boş script kullanılacak:', err);
+      _mermaidScript = ''; // Graceful fallback
+    }
+  }
+  return _mermaidScript;
+}
 
 async function renderMermaidBlocksInHtml(browser: any, html: string): Promise<string> {
   const mermaidRegex = /<div class="mermaid">([\s\S]*?)<\/div>/g;
@@ -21,7 +39,7 @@ async function renderMermaidBlocksInHtml(browser: any, html: string): Promise<st
     <!DOCTYPE html>
     <html>
     <head>
-      <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+      <script>${getMermaidScript()}</script>
       <script>
         mermaid.initialize({ startOnLoad: false, theme: 'default' });
       </script>

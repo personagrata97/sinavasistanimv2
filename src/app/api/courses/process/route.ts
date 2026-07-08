@@ -73,6 +73,7 @@ import {
   sectionsLookValid,
   shouldApplyProcessTriggerDebounce,
 } from "@/lib/quota-guard"
+import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit"
 import {
   mergeVerificationIssues,
   stringifyMergedVerificationIssues,
@@ -155,6 +156,17 @@ async function hasRecentCourseApiActivity(slug: string): Promise<boolean> {
 export async function POST(req: NextRequest) {
   try {
     await pauseOrphanedProcessingOnBoot()
+
+    // ── Rate Limiting: IP başına dakikada max 10 istek ──
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+    const rl = await rateLimit(`process:${clientIp}`, 10, 60_000)
+    if (!rl.success) {
+      console.warn(`[PROCESS] 🚫 Rate limit aşıldı: ${clientIp} (resetIn: ${rl.resetIn}ms)`)
+      return NextResponse.json(
+        { error: "Çok fazla istek gönderdiniz. Lütfen bir dakika bekleyin." },
+        { status: 429, headers: getRateLimitHeaders(rl.remaining, rl.resetIn, 10) },
+      )
+    }
 
     const body = await req.json()
     const session = await getServerSession(authOptions)

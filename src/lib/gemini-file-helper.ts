@@ -24,9 +24,9 @@ export async function ensureGeminiFileUris(
   try {
     const { GoogleAIFileManager } = await import("@google/generative-ai/server")
 
-    for (let i = 0; i < geminiKeys.length; i++) {
-      const key = geminiKeys[i].trim()
-      const fileManager = new GoogleAIFileManager(key)
+    const tasks = geminiKeys.map(async (key, i) => {
+      const trimmedKey = key.trim()
+      const fileManager = new GoogleAIFileManager(trimmedKey)
       
       let isStale = false
       if (uriMap[String(i)]) {
@@ -56,12 +56,13 @@ export async function ensureGeminiFileUris(
           uriMap[String(i)] = uploadResult.file.uri
           updated = true
           console.log(`[FILE_URI] ✅ Key #${i + 1} için PDF başarıyla yüklendi: ${uploadResult.file.uri}`)
-          await new Promise(r => setTimeout(r, 1000))
         } catch (err: any) {
           console.error(`[FILE_URI] ❌ Key #${i + 1} için PDF yükleme başarısız: ${err.message}`)
         }
       }
-    }
+    })
+
+    await Promise.all(tasks)
   } catch (importErr: any) {
     console.error("[FILE_URI] ❌ GoogleAIFileManager yüklenemedi:", importErr.message)
   }

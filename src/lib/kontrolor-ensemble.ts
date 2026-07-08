@@ -3,6 +3,7 @@ import { verifyNotesAgainstSource, callAI, extractCleanJson } from "@/lib/ai-ser
 import { verifyClaimsInNotes } from "@/lib/claim-ledger"
 import { THRESHOLDS, calculateDynamicPenalty } from "@/lib/threshold-calibration"
 import type { DocumentType } from "@/lib/document-processing-profile"
+import { splitSourceIntoAuditChunks } from "@/lib/mufettis-exhaustive"
 
 export type EnsembleVote = {
   name: string
@@ -24,8 +25,9 @@ export type KontrolorEnsembleResult = {
   }
 }
 
-async function verifyStrictAtomPrompt(
-  sourceContent: string,
+/** Tek bir kaynak parçası için atomik doğrulama çalıştırır */
+async function verifyStrictAtomChunk(
+  sourceChunk: string,
   generatedNotes: string,
   sectionTitle: string,
   courseName: string,
@@ -36,7 +38,7 @@ Sen ATOMİK DOĞRULUK denetçisisin. Yalnızca kanun numarası, madde, tarih, s�
 Pedagojik kaliteyi DEĞERLENDİRME.
 
 KAYNAK:
-${sourceContent.slice(0, 8000).replace(/"/g, "'")}
+${sourceChunk.replace(/"/g, "'")}
 
 NOT:
 ${generatedNotes.slice(0, 8000).replace(/"/g, "'")}
@@ -54,6 +56,35 @@ JSON:
   } catch {
     return { pass: false, score: -1, issues: ["Atomik denetim API hatası"] }
   }
+}
+
+/** Uzun kaynak metinleri parçalara bölerek atomik doğrulama yapar ve sonuçları birleştirir */
+async function verifyStrictAtomPrompt(
+  sourceContent: string,
+  generatedNotes: string,
+  sectionTitle: string,
+  courseName: string,
+): Promise<{ pass: boolean; score: number; issues: string[] }> {
+  // 8000 karakter altındaki metinler için doğrudan tek çağrı
+  if (sourceContent.length <= 8000) {
+    return verifyStrictAtomChunk(sourceContent.slice(0, 8000), generatedNotes, sectionTitle, courseName)
+  }
+
+  // Uzun metinleri parçala (her parça max 8000 karakter)
+  const chunks = splitSourceIntoAuditChunks(sourceContent, 8000)
+  console.log(`[KONTROLOR] 📦 Atomik doğrulama: ${sourceContent.length} karakter → ${chunks.length} parçaya bölündü`)
+
+  const results = await Promise.all(
+    chunks.map((chunk) => verifyStrictAtomChunk(chunk, generatedNotes, sectionTitle, courseName))
+  )
+
+  // Sonuçları birleştir: en düşük skor + tüm issue'lar
+  const allIssues = results.flatMap((r) => r.issues)
+  const validScores = results.filter((r) => r.score >= 0).map((r) => r.score)
+  const minScore = validScores.length > 0 ? Math.min(...validScores) : 0
+  const pass = results.every((r) => r.pass)
+
+  return { pass, score: minScore, issues: allIssues }
 }
 
 /** Byzantine: 3 oy — standart kontrolör, atomik prompt, claim ledger */
