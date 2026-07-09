@@ -94,6 +94,7 @@ async function renderMermaidBlocksInHtml(browser: any, html: string): Promise<st
 }
 
 export async function POST(req: Request) {
+  let browser: any = null;
   try {
     const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     const rl = await rateLimit(`pdf:${clientIp}`, 10, 60_000);
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
 
     console.log(`[PDF] Generating PDF for: ${courseName || 'Course'}...`);
 
-    const browser = await puppeteer.launch({
+    browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
@@ -150,7 +151,6 @@ export async function POST(req: Request) {
       }
     });
 
-    await browser.close();
     console.log(`[PDF] PDF successfully generated (${pdfBuffer.length} bytes).`);
 
     return new NextResponse(pdfBuffer as any, {
@@ -163,5 +163,14 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error('[PDF] Generation Error:', error);
     return NextResponse.json({ error: 'PDF oluşturulurken bir hata oluştu' }, { status: 500 });
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+        console.log("[PDF] 🛑 Puppeteer tarayıcısı kapatıldı (finally).");
+      } catch (closeErr) {
+        console.error("[PDF] ⚠️ Puppeteer tarayıcısı kapatılamadı:", closeErr);
+      }
+    }
   }
 }

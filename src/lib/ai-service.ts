@@ -491,7 +491,7 @@ export async function withApiRetry<T>(
     } catch (e: unknown) {
       attempt++
       const msg = e instanceof Error ? e.message : String(e)
-      const is503 = msg.includes("503") || msg.includes("Service Unavailable") || msg.includes("500") || msg.includes("502") || msg.includes("fetch failed") || msg.includes("socket hang up")
+      const is503 = msg.includes("503") || msg.includes("Service Unavailable") || msg.includes("500") || msg.includes("502") || msg.includes("fetch failed") || msg.includes("socket hang up") || msg.toLowerCase().includes("timeout") || msg.includes("ENOTFOUND") || msg.includes("ETIMEDOUT") || msg.includes("EAI_AGAIN")
       const is429 = msg.includes("429") || msg.includes("quota")
       const is403 = msg.includes("403") || msg.includes("Forbidden") || msg.includes("PERMISSION_DENIED")
       
