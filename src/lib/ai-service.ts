@@ -1872,6 +1872,14 @@ B) Seçenek 2
 METİN:
 ${truncated.replace(/"/g, "'")}
 
+${!isGlossary && !isBibliography ? `
+📋 KRİTİK KAVRAM LİSTESİ (SİSTEM META-VERİSİ — Notun en sonuna ekle):
+Notun tamamını yazdıktan sonra, EN SON SATIR olarak aşağıdaki formatta bu bölümdeki kritik sayısal değerleri, yasal süreleri ve kanun maddelerini listele.
+Format: [KRİTİK_KAVRAMLAR]kavram1:değer1, kavram2:değer2, ...[/KRİTİK_KAVRAMLAR]
+Örnek: [KRİTİK_KAVRAMLAR]bildirim süresi:10 gün, idari para cezası:50.000 TL, ilgili madde:Madde 18, oran:%5[/KRİTİK_KAVRAMLAR]
+⚠️ Sadece metinde geçen SAYISAL değerleri, süreleri, oranları ve kanun/madde numaralarını listele. Sözel tanımları buraya YAZMA.
+⚠️ Bu satır sadece sistem meta-verisidir, öğrenci görmeyecektir.
+` : ''}
 
 Ders notunu Markdown formatında yaz (JSON değil). Yukarıdaki kurallara %100 uy!
 `

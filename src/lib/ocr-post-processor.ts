@@ -49,6 +49,21 @@ function stripOcrStamps(text: string): string {
     .replace(/^\[VISUAL_OCR_COMPLETE\][^\n]*\n?/m, "")
 }
 
+/**
+ * OCR çıktısından SADECE görsel içerik bloğunu ([GÖRSEL İÇERİKLER] ve altı) çıkarır.
+ * Hibrit birleştirmede kullanılır: dijital metin katmanı zaten mevcutken,
+ * OCR çıktısından yalnızca şema/tablo/resim açıklamalarını alıp dijital metne eklemek için.
+ * Dönen string boşsa, OCR çıktısında görsel bloğu yoktur.
+ */
+export function extractVisualBlockOnly(rawOcrMarkdown: string): string {
+  const cleanBody = stripOcrStamps(rawOcrMarkdown)
+  const { hasSection, sectionBody } = findVisualSection(cleanBody)
+  if (!hasSection || !sectionBody || sectionBody.trim().length < 30) {
+    return ""
+  }
+  return sectionBody.trim()
+}
+
 /** OCR çıktısını sarar — extractPerfectMarkdownOCR gövdesine dokunmaz */
 export function postProcessOcrMarkdown(rawMarkdown: string): OcrPostProcessResult {
   const cleanBody = stripOcrStamps(rawMarkdown)

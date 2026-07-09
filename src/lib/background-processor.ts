@@ -37,7 +37,7 @@ import {
   runStageWithContract,
   type QualityChain,
 } from "@/lib/quality-contract"
-import { postProcessOcrMarkdown } from "@/lib/ocr-post-processor"
+import { postProcessOcrMarkdown, extractVisualBlockOnly } from "@/lib/ocr-post-processor"
 import { runKontrolorEnsemble } from "@/lib/kontrolor-ensemble"
 import { evaluatePublishGate } from "@/lib/publish-gate"
 import { validateQuestionsAdversarial, validateFlashcardsAdversarial } from "@/lib/question-adversarial"
@@ -310,7 +310,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           // Tüm PDF'ler (aranabilir dahil): extractPerfectMarkdownOCR — şema/resim yakalamak için zorunlu.
           // Devam Ettir: [MARKDOWN_OCR_SUCCESS] damgası varsa atlanır (yeniden OCR israfı yok).
           if (course.pdfPath && shouldRunMarkdownOcr(section.rawContent)) {
-            console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...`);
+            // HİBRİT BİRLEŞTİRME: Sayfa yarı metin yarı resimse, dijital metni koruyup
+            // OCR çıktısından sadece görsel bloğunu alarak mükerrerliği sıfırlıyoruz.
+            const preOcrDigitalText = (!isPendingOcrContent(section.rawContent) && section.rawContent.length > 200)
+              ? section.rawContent
+              : null
+
+            console.log(`[BG] 🚀 Markdown OCR Katmanı: ${section.title} (Sayfa ${section.pageStart}-${section.pageEnd}) için PDF parçalanarak işleniyor...${preOcrDigitalText ? ` (Hibrit mod: ${preOcrDigitalText.length} karakter dijital metin korunacak)` : ""}`);
             const ocrPhasePrefix = `${sIdx + 1 + alreadyDone}/${totalSections}.`;
             const touchHeartbeat = async (microPhase: string) => {
               try {
@@ -347,10 +353,30 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                 );
                 if (pristineMarkdown && pristineMarkdown.includes("[MARKDOWN_OCR_SUCCESS]") && pristineMarkdown.includes("[VISUAL_OCR_COMPLETE]")) {
                   const ocrPost = postProcessOcrMarkdown(pristineMarkdown)
-                  section.rawContent = ocrPost.markdown
+
+                  // ==================== HİBRİT BİRLEŞTİRME KARARI ====================
+                  // Eğer sayfa dijital metin katmanına sahipse (preOcrDigitalText), OCR çıktısının
+                  // tamamını almak yerine SADECE [GÖRSEL İÇERİKLER] bloğunu ayıklayıp dijital
+                  // metnin sonuna ekliyoruz. Böylece metin kısmı asla dublike olmaz,
+                  // resim ve şema açıklamaları ise eksiksiz yakalanır.
+                  if (preOcrDigitalText) {
+                    const visualBlock = extractVisualBlockOnly(pristineMarkdown)
+                    if (visualBlock) {
+                      section.rawContent = `${preOcrDigitalText.trim()}\n\n${visualBlock}`
+                      console.log(`[BG] 🔗 HİBRİT BİRLEŞTİRME: Dijital metin (${preOcrDigitalText.length} kar) + OCR görsel bloğu (${visualBlock.length} kar) birleştirildi. Mükerrerlik sıfır.`)
+                    } else {
+                      // OCR'da görsel bloğu yoksa dijital metni olduğu gibi koru
+                      section.rawContent = preOcrDigitalText
+                      console.log(`[BG] ℹ️ HİBRİT MOD: OCR'da görsel bloğu bulunamadı. Dijital metin olduğu gibi korundu.`)
+                    }
+                  } else {
+                    // Taranmış/scanned sayfa: OCR çıktısının tamamını kullan (mevcut davranış)
+                    section.rawContent = ocrPost.markdown
+                  }
+
                   const ocrContract = await runStageWithContract(qualityChain, "ocr_complete", async () => ({
                     pass: true,
-                    contentForHash: ocrPost.markdown,
+                    contentForHash: section.rawContent,
                     metrics: ocrPost.metrics,
                   }))
                   qualityChain = ocrContract.chain
@@ -631,6 +657,24 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     );
                     notes = ensembleResult.notes;
                     await applySectionIssuesPatch({ ensembleMode: ensembleResult.ensembleMode });
+
+                    // ==================== KAVRAMSAL ATOM ÇIKARIMI (Soru 07) ====================
+                    // Not üretim promptu, kritik sayısal kavramları [KRİTİK_KAVRAMLAR]...[/KRİTİK_KAVRAMLAR]
+                    // etiketi içinde döndürür. Bu etiketi çekip claim-ledger'a kaydediyoruz,
+                    // ardından not metninden tamamen siliyoruz (öğrenci görmez).
+                    const conceptTagMatch = notes.match(/\[KRİTİK_KAVRAMLAR\]([\s\S]*?)\[\/KRİTİK_KAVRAMLAR\]/)
+                    if (conceptTagMatch) {
+                      const conceptsRaw = conceptTagMatch[1].trim()
+                      const conceptPairs = conceptsRaw.split(",").map(p => p.trim()).filter(p => p.includes(":"))
+                      if (conceptPairs.length > 0) {
+                        console.log(`[BG] 📋 KAVRAM ÇIKARIMI: ${conceptPairs.length} kritik kavram tespit edildi: ${conceptPairs.slice(0, 5).join(", ")}${conceptPairs.length > 5 ? "..." : ""}`)
+                        try {
+                          await applySectionIssuesPatch({ claimLedgerConcepts: conceptPairs })
+                        } catch { /* ignore */ }
+                      }
+                      // Etiketi not metninden tamamen sil — öğrenci görmez
+                      notes = notes.replace(/\n?\[KRİTİK_KAVRAMLAR\][\s\S]*?\[\/KRİTİK_KAVRAMLAR\]\n?/g, "").trimEnd()
+                    }
                   }
 
                   const { dedupParagraphs } = await import("@/lib/content-dedup")
@@ -1373,6 +1417,87 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         break; // Kota hatası riskini önlemek için döngüden çık
                       }
                       telafiAttempt++;
+                    }
+
+                    // ==================== YEREL BYZANTİNE DOĞRULAMASI (Soru 09) ====================
+                    // API çağrısı YAPMADAN, soruların doğru cevaplarındaki sayısal değerleri
+                    // kaynak metinle (rawContent) yerel regex karşılaştırmasıyla doğrular.
+                    // Çelişen sorular elenir — sıfır kota maliyeti.
+                    if (questions.length > 0) {
+                      const beforeLocalCount = questions.length
+                      // Kaynak metinden tüm sayısal değerleri çıkar (süreler, oranlar, kanun maddeleri)
+                      const sourceNumbers = new Set<string>()
+                      const numberPatterns = [
+                        /\b(\d{1,3}(?:\.\d{3})*(?:,\d+)?)\s*(?:TL|lira|₺)/gi,  // Para birimleri
+                        /[%‰]\s*(\d+(?:[.,]\d+)?)/g,                              // Oranlar (%5, %10)
+                        /(\d+(?:[.,]\d+)?)\s*[%‰]/g,                              // Oranlar (5%, 10‰)
+                        /(\d+)\s*(?:gün|ay|yıl|saat|hafta|iş\s*günü)/gi,          // Süreler
+                        /[Mm]adde\s*(\d+)/g,                                       // Kanun maddeleri
+                        /(\d{4,})\b/g,                                             // 4+ haneli sayılar (kanun no vb.)
+                      ]
+                      for (const pattern of numberPatterns) {
+                        for (const match of effectiveRaw.matchAll(pattern)) {
+                          if (match[1]) sourceNumbers.add(match[1].replace(/\./g, ""))
+                          // Tam eşleşmeyi de ekle
+                          sourceNumbers.add(match[0].replace(/\./g, "").replace(/\s+/g, " ").trim())
+                        }
+                      }
+
+                      // Claim Ledger kavramlarını da kaynak olarak ekle
+                      try {
+                        const claimIssues = JSON.parse(section.verificationIssues || "{}")
+                        const claimConcepts: string[] = claimIssues.claimLedgerConcepts || []
+                        for (const concept of claimConcepts) {
+                          const [, value] = concept.split(":")
+                          if (value) sourceNumbers.add(value.trim().replace(/\./g, ""))
+                        }
+                      } catch { /* ignore */ }
+
+                      if (sourceNumbers.size > 0) {
+                        questions = questions.filter((q: any) => {
+                          // Doğru cevap şıkkını bul
+                          const correctLetter = (q.correct || q.correctOption || q.correctAnswer || "")
+                            .substring(0, 1).toUpperCase()
+                          const correctOption = q.options?.find((opt: string) =>
+                            opt.trim().startsWith(`${correctLetter})`)
+                          )
+                          if (!correctOption) return true // Şık bulunamazsa eleme
+
+                          // Doğru şıkta geçen sayıları çıkar
+                          const optionNumbers: string[] = []
+                          for (const pattern of numberPatterns) {
+                            for (const match of correctOption.matchAll(pattern)) {
+                              if (match[1]) optionNumbers.push(match[1].replace(/\./g, ""))
+                            }
+                          }
+
+                          // Sadece SAYISAL değer içeren doğru cevapları kontrol et
+                          // Sayısal değer yoksa soruyu eleme (sözel sorular geçer)
+                          if (optionNumbers.length === 0) return true
+
+                          // Doğru şıktaki sayılar kaynak metinde var mı kontrol et
+                          for (const num of optionNumbers) {
+                            // Kaynakta bu sayı veya yakın eşdeğeri var mı?
+                            const numNorm = num.replace(/,/g, "").replace(/\s/g, "")
+                            const existsInSource = Array.from(sourceNumbers).some(sn => {
+                              const snNorm = sn.replace(/,/g, "").replace(/\s/g, "")
+                              return snNorm.includes(numNorm) || numNorm.includes(snNorm)
+                            })
+                            if (!existsInSource && numNorm.length >= 2) {
+                              console.warn(`[BG] [YEREL BYZ] ⚠️ Soru elendi — doğru şıktaki "${num}" değeri kaynakta bulunamadı: "${q.text?.substring(0, 80)}..."`)
+                              return false
+                            }
+                          }
+                          return true
+                        })
+
+                        const eliminated = beforeLocalCount - questions.length
+                        if (eliminated > 0) {
+                          console.log(`[BG] [YEREL BYZ] 🛡️ Yerel Byzantine doğrulaması: ${eliminated} soru elendi (kaynak metinle çelişen sayısal değerler). Kalan: ${questions.length}`)
+                        } else {
+                          console.log(`[BG] [YEREL BYZ] ✅ Tüm sorular yerel doğrulamadan geçti.`)
+                        }
+                      }
                     }
 
                     // DAĞILIM KONTROLÜ VE TELAFİSİ (Soru 09 - Adım 3)
