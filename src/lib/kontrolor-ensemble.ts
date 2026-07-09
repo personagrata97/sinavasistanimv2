@@ -41,7 +41,7 @@ KAYNAK:
 ${sourceChunk.replace(/"/g, "'")}
 
 NOT:
-${generatedNotes.slice(0, 8000).replace(/"/g, "'")}
+${generatedNotes.replace(/"/g, "'")}
 
 JSON:
 {"score":0-100,"issues":["..."]}`

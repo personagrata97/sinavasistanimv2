@@ -66,7 +66,7 @@ export function normalizeTextualNumbers(text: string): string {
   let i = 0
   while (i < wordsWithPunc.length) {
     const token = wordsWithPunc[i]
-    const tokenLower = token.toLowerCase()
+    const tokenLower = token.toLocaleLowerCase("tr-TR")
 
     if (values[tokenLower] !== undefined) {
       const run: string[] = [tokenLower]
@@ -77,7 +77,7 @@ export function normalizeTextualNumbers(text: string): string {
           j++
           continue
         }
-        const nextTokenLower = nextToken.toLowerCase()
+        const nextTokenLower = nextToken.toLocaleLowerCase("tr-TR")
         if (values[nextTokenLower] !== undefined) {
           run.push(nextTokenLower)
           j++
@@ -98,7 +98,7 @@ export function normalizeTextualNumbers(text: string): string {
 }
 
 function normalizeAtomValue(type: ClaimAtomType, value: string): string {
-  const v = value.trim().toLowerCase().replace(/\s+/g, " ")
+  const v = value.trim().toLocaleLowerCase("tr-TR").replace(/\s+/g, " ")
   if (type === "oran") return v.replace(",", ".").replace(/%/g, "").trim()
   if (type === "kanun") return v.replace(/\D/g, "")
   return v

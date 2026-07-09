@@ -124,8 +124,8 @@ export async function GET(request: NextRequest) {
             break
           }
 
-          // Poll every 2 seconds
-          await new Promise(resolve => setTimeout(resolve, 2000))
+          // Poll every 4 seconds to reduce SQLite pool load
+          await new Promise(resolve => setTimeout(resolve, 4000))
         } catch (error) {
           console.error("[SSE] Error in stream loop:", error)
           await new Promise(resolve => setTimeout(resolve, 5000))

@@ -88,7 +88,7 @@ NOT B:
 ${noteB}
 
 KAYNAK METİN REFERANSI:
-${content.slice(0, 10000)}
+${content}
 
 Nihai birleştirilmiş ders notunu doğrudan Markdown formatında döndür (Başka hiçbir açıklama yazma):
 `

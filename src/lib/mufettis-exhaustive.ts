@@ -49,7 +49,8 @@ BÖLÜM: "${sectionTitle}"
 GÖREV: Sen bir sınav hazırlık eksik bilgi denetim uzmanısın. Aşağıdaki KAYNAK METİN parçasındaki kritik yasal süreleri, limitleri, oranları, cezaları ve kuralları incele.
 Bunların hangileri DERS NOTLARINDA eksik bırakılmış (atlanmış)? Pedagojik zenginleştirme yorumlarını atla. Sadece sınavda çıkabilecek yasal/somut eksiklikleri bul.
 
-⚠️ KAPSAM KURALI: Sadece kaynak metinde bulunan bilgilere odaklan. Kaynakta bulunmayan dış bilgileri (örn. kaynakta yazmayan KVKK yasal süreleri, idari para cezaları vb.) ders notunda eksik olarak nitelendirme ve bunlar için puan kırma.
+  ⚠️ KAPSAM KURALI: Sadece kaynak metinde bulunan bilgilere odaklan. Kaynakta bulunmayan dış bilgileri (örn. kaynakta yazmayan KVKK yasal süreleri, idari para cezaları vb.) ders notunda eksik olarak nitelendirme ve bunlar için puan kırma.
+  ⚠️ GÖRSEL/TABLO BİLGİ KABULÜ: Ders notlarında Markdown tabloları, listeler veya Mermaid akış şemaları içine yerleştirilmiş süreler, limitler ve adımlar eksiksiz bilgi olarak kabul edilecektir. Bilginin düz paragraf yerine bu kompakt formatlarda sunulmasını detay eksikliği (omission) olarak raporlama.
 
 KAYNAK METİN:
 ${sourceChunk}
@@ -95,8 +96,9 @@ GÖREV: Sen bir sınav hazırlık bilgi doğruluğu denetim uzmanısın. Aşağ�
 DERS NOTLARINDA bu kaynak parçasıyla doğrudan ÇELİŞEN (yanlış yazılmış süre/oran/kanun no) bilgi var mı?
 Ayrıca ders notlarında kaynak dökümanın genelinde hiç geçmeyen, tamamen uydurulmuş (fabrikasyon) süreler, limitler veya kurallar var mı?
 
-⚠️ KURAL (ÇOK ÖNEMLİ): DERS NOTLARI tüm bölümü kapsadığından, bu KAYNAK METİN parçasında yer almayan fakat bölümün diğer sayfalarında/kısımlarında yer alabilecek kavramları (örneğin diğer kısaltmaları veya tanımları) kesinlikle "uydurulmuş/kaynakta geçmeyen bilgi" olarak RAPORLAMA! Sadece ve sadece bu kaynak parçasıyla doğrudan çelişen bilgileri veya kaynak dökümanın tamamında asla bulunamayacak bariz uydurma rakamları/süreleri raporla.
-⚠️ KAPSAM KURALI: Sadece kaynak metinde bulunan bilgilere odaklan. Kaynakta bulunmayan dış bilgileri (örn. KVKK'nın detaylı cezaları vb.) ders notunda eksik olarak nitelendirme ve bunlar için puan kırma.
+  ⚠️ KURAL (ÇOK ÖNEMLİ): DERS NOTLARI tüm bölümü kapsadığından, bu KAYNAK METİN parçasında yer almayan fakat bölümün diğer sayfalarında/kısımlarında yer alabilecek kavramları (örneğin diğer kısaltmaları veya tanımları) kesinlikle "uydurulmuş/kaynakta geçmeyen bilgi" olarak RAPORLAMA! Sadece ve sadece bu kaynak parçasıyla doğrudan çelişen bilgileri veya kaynak dökümanın tamamında asla bulunamayacak bariz uydurma rakamları/süreleri raporla.
+  ⚠️ BENZETME İSTİSNASI (ÇOK KRİTİK): Ders notları içinde "💡 Somut Benzetme:" başlığıyla yer alan ve soyut kavramları açıklamak için tasarlanmış olan kurgusal senaryoları/karakterleri (örn. Ahmet, Mehmet, Zeliha Ltd vb.) KESİNLİKLE "kaynak dışı uydurma/halüsinasyon" (issues) olarak raporlama. Ancak bu senaryolar içindeki yasal süre ve limitlerin doğruluğunu denetle (kurgusal süre sınırları uydurulmuşsa çelişki olarak raporla).
+  ⚠️ KAPSAM KURALI: Sadece kaynak metinde bulunan bilgilere odaklan. Kaynakta bulunmayan dış bilgileri (örn. KVKK'nın detaylı cezaları vb.) ders notunda eksik olarak nitelendirme ve bunlar için puan kırma.
 
 KAYNAK METİN:
 ${sourceChunk}

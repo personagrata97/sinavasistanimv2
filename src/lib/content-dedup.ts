@@ -90,7 +90,7 @@ export function dedupParagraphs(notesContent: string, similarityThreshold = 0.70
     if (!trimmed) continue;
     
     // Eğer çok kısaysa (başlıklar, listeler vs.), doğrudan ekle
-    if (trimmed.length < 40) {
+    if (trimmed.length < 15) {
       uniqueParagraphs.push(trimmed);
       continue;
     }

@@ -1734,14 +1734,19 @@ ${memoryTechniqueInstruction}
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"
 
-🎯 TEMEL STRATEJİ - "EKSİKSİZ, GÖRSEL, AKILDA KALICI":
-1. Kaynak metindeki ve PDF'teki HER BİLGİYİ nota dahil et. HİÇBİR kavram, terim, tanım, oran, süre, formül, istisna, kural ATLANMAYACAK.
-2. ETİKETLEME (ÇOK ÖNEMLİ): Her ana başlığın yanına konunun ait olduğu sınav modülünü köşeli parantez içinde yaz ${disc.labelExample}.
-3. DÜZ YAZI YAZMA: Her bilgiyi görsel bir formatta sun:
-   - Karşılaştırmalar → **Markdown Tablosu** (en az 2-3 tablo olmalı)
-${!isGlossary ? `   - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid düğüm kimliklerinde (ID) ASLA Türkçe karakter veya boşluk kullanma. Örn: \`A_Sirketi["İhraççı Şirket"] --> B_Kurulu["Kurul"]\`. Bu kurala uymazsan UI çöker! ⚠️ OK ETİKETİ KURALI: Dal etiketleri MUTLAKA \`-->|"Evet"|\` formatında yaz; ASLA \`-- "Evet" -->\` kullanma.)` : ''}
-   - Önemli bilgiler → **Emoji kutucukları** (⚠️, 💡, 📌, 🔑)
-   - Listeler → **Madde işaretli liste**
+  🎯 TEMEL STRATEJİ - "EKSİKSİZ, KONTROLLÜ VE AKILDA KALICI KISALIK":
+  1. Kaynak metindeki ve PDF'teki HER BİLGİYİ nota dahil et. HİÇBİR kavram, terim, tanım, oran, süre, formül, istisna, kural ATLANMAYACAK.
+  2. ETİKETLEME (ÇOK ÖNEMLİ): Her ana başlığın yanına konunun ait olduğu sınav modülünü köşeli parantez içinde yaz ${disc.labelExample}.
+  3. BİLGİNİN YAPISINA GÖRE FORMATLANDIRMA (KISALIK VE ANLAŞILIRLIK KİLİDİ):
+     - [TİP A] Sayısal ve Resmi Bilgiler (Süreler, Oranlar, Cezalar, Kanun Maddeleri): DÜZ YAZI ile uzun paragraflar halinde yazılmayacak. Kesinlikle kompakt Markdown Tabloları veya maddeli listeler halinde sunulacak.
+     - [TİP B] Kavramsal Farklar / Soyut İlişkiler: Açıklamalar kısa tutulacak ve gerekirse teori ile yan yana duran kurgusal hikaye/senaryolar sadece "💡 Somut Benzetme:" başlığıyla eklenecek. (Kritik Kısıt: Somut benzetmelerin içine KESİNLİKLE uydurma süre sınırları veya sayısal limitler yazılmayacak, sayılar sadece tablolarda/orijinal ifadelerde bulunabilir.)
+     - [TİP C] Adımlar ve Süreçler: Kronolojik yasal prosedürler ve karar ağaçları düz paragrafla anlatılmayacak; doğrudan modern Mermaid.js diyagramları ile çizilecek.
+     - [TİP D] Risk Noktaları: Sınav tuzakları "### 🪤 Ekstra Dikkat Edilmesi Gereken Hususlar" başlığı altında Wrong->Correct şeklinde özetlenecek.
+  4. GÖRSELLEŞTİRME KURALLARI:
+     - Karşılaştırmalar → **Markdown Tablosu** (en az 2-3 tablo olmalı)
+${!isGlossary ? `     - Süreçler, hiyerarşiler, ilişkiler → **Mermaid.js diyagramı** (en az 2-3 diyagram olmalı. ⚠️ KESİN KURAL: Mermaid düğüm kimliklerinde (ID) ASLA Türkçe karakter veya boşluk kullanma. Örn: \`A_Sirketi["İhraççı Şirket"] --> B_Kurulu["Kurul"]\`. Bu kurala uymazsan UI çöker! ⚠️ OK ETİKETİ KURALI: Dal etiketleri MUTLAKA \`-->|"Evet"|\` formatında yaz; ASLA \`-- "Evet" -->\` kullanma.)` : ''}
+     - Önemli bilgiler → **Emoji kutucukları** (⚠️, 💡, 📌, 🔑)
+     - Listeler → **Madde işaretli liste**
 4. TEMİZLİK: Parantez içindeki kaynakça referanslarını (örn: (ISO 27001, Madde 7.5), (SPK Tebliğ No: III-56.1)) notlardan tamamen temizle. Sadece anlamlı bilgiyi bırak (MD5, SHA-1 gibi teknik standart adları kalabilir).
 5. VURGULAR: Önemli kelimeleri **kalın**, terimleri *eğik* yap.
 6. ${preserveHeadings
@@ -2702,6 +2707,9 @@ ${sourceContent.replace(/"/g, "'")}
 ${generatedNotes.replace(/"/g, "'")}
 
 🎯 DEĞERLENDİRME KRİTERLERİ:
+
+⚠️⚠️⚠️ BENZETME İSTİSNASI (ÇOK KRİTİK):
+Ders notları içinde "💡 Somut Benzetme:" başlığıyla yer alan ve soyut kavramları açıklamak için tasarlanmış olan kurgusal senaryoları/karakterleri (örn. Ahmet, Mehmet, Zeliha Ltd vb.) KESİNLİKLE "kaynak dışı uydurma/halüsinasyon" (issues) olarak işaretleme, bunlardan dolayı puan kırma. Ancak bu senaryolar içindeki yasal süre ve limitlerin doğruluğunu kesin olarak denetle (kurgusal süre sınırları uydurulmuşsa issues'a ekle).
 
 ⚠️⚠️⚠️ DÜŞÜK İÇERİK TESPİTİ (ÖNCELİKLİ KURAL — İLK BUNU KONTROL ET!):
 Değerlendirmeye başlamadan ÖNCE kaynak metni analiz et ve aşağıdaki durumlardan biri geçerliyse İÇERİK YOĞUNLUĞUNU "DÜŞÜK" olarak işaretle:
