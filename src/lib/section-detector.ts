@@ -721,6 +721,30 @@ export function validateSectionRanges(
     }
   }
 
+  // ==================== SAYFA MUTABAKATI (Page Gap Reconciliation - Soru 03 / Risk 2) ====================
+  // Bölümlerin kapsadığı sayfaların kesintisiz ve eksiksiz olduğunu doğrular.
+  if (sections.length > 0) {
+    const coveredPages = new Set<number>()
+    let minPage = totalPages
+    let maxPage = 1
+    for (const sec of sections) {
+      minPage = Math.min(minPage, sec.pageStart)
+      maxPage = Math.max(maxPage, sec.pageEnd)
+      for (let p = sec.pageStart; p <= sec.pageEnd; p++) {
+        coveredPages.add(p)
+      }
+    }
+    const missing: number[] = []
+    for (let p = minPage; p <= maxPage; p++) {
+      if (!coveredPages.has(p)) {
+        missing.push(p)
+      }
+    }
+    if (missing.length > 0) {
+      errors.push(`Bölümler arasında kayıp/atlanmış sayfalar var (Bu sayfalar hiçbir bölüme atanmamış): ${missing.join(", ")}`)
+    }
+  }
+
   const bibPage = findBibliographyPageStart(pageTexts)
   const last = sections[sections.length - 1]
   if (last && bibPage <= totalPages && last.pageEnd >= bibPage) {

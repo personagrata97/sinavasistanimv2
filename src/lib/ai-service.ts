@@ -686,6 +686,7 @@ export function getDisciplineExamples(
   * Benzetmeleri YALNIZCA "${moduleLabel}" modülündeki ve kaynak metindeki kavramlara üret.
   * Konu dışı SPL/SPK kalıp örnekleri (ihraççı, pay senedi, portföy, vadeli işlem) KESİNLİKLE YASAK.
   * Örnek: KVKK modülünde veri sorumlusu/açık rıza; kambiyo modülünde ihracat bedeli/döviz; gümrük modülünde beyan/rejim — ders adına uygun terimler kullan.
+  * Somut Benzetme Şablonu (KVKK için): "Veri Sorumlusu için: Dershanedeki öğrenci kayıtlarını tutan ve bu verilerin nasıl işleneceğine karar veren dershane sahibi (Veri Sorumlusu), bu verileri sisteme giren memur ise Veri İşleyendir."
       `,
       stories: `
   Örnek format (içerik "${moduleLabel}" kapsamından ve kaynak metinden türetilmeli):
@@ -708,6 +709,7 @@ export function getDisciplineExamples(
       analogies: `
   * Pay Senedi için: "Bir şirketin mülkiyet ortaklığını simgeleyen tapu senedi benzeri değerli evrak."
   * Portföy Çeşitlendirmesi için: "Tüm yumurtaları aynı sepete koymamak; riski dağıtmak için farklı enstrümanlara yatırım yapmak."
+  * Somut Benzetme Şablonu (Muhasebe için): "Maddi Duran Varlıklar için: Şirketin faaliyetlerinde kullanılmak üzere alınan ve hemen satılmayan bina, makine veya taşıtlar (Maddi Duran Varlıklar), satılmak için alınan mallar ise Stoklardır."
       `,
       stories: `
   Örn: "Gama Portföy AŞ fon yöneticisi parayı hisse senetleri arasında paylaştırdı → Risk dağılımı → Bir hisse düşerken diğeri yükseldi → Portföy değeri korundu."
@@ -844,6 +846,22 @@ export function stitchOcrMarkdownChunks(previous: string, next: string): string 
     const head = nextLines.slice(0, n).join("\n").trim()
     if (tail.length > 10 && tail === head) {
       return [...prevLines.slice(0, -n), ...nextLines].join("\n")
+    }
+  }
+
+  // ==================== ESNEK (FUZZY) DİKİŞ KATMANI ====================
+  // Katı eşleşmeler başarısız olursa, boşluk ve noktalama sapmalarını yok sayan
+  // esnek bir temiz dize karşılaştırması yaparız. Yanlış eşleşmeleri önlemek için
+  // minimum esnek eşleşme uzunluğunu 100 karakter olarak sınırlarız.
+  const cleanForStitch = (str: string) => str.toLowerCase().replace(/[^a-z0-9ıışşğğüüööçç]/gi, "")
+  const minFuzzyOverlap = 100
+  const maxFuzzySearch = Math.min(2000, prev.length, nxt.length)
+  for (let len = maxFuzzySearch; len >= minFuzzyOverlap; len--) {
+    const suffix = prev.slice(-len)
+    const prefix = nxt.slice(0, len)
+    if (cleanForStitch(suffix) === cleanForStitch(prefix)) {
+      console.log(`[STITCH] 🩹 Esnek Dikiş (Fuzzy) başarılı: ${len} karakterlik örtüşme dikildi.`)
+      return prev + nxt.slice(len)
     }
   }
 
