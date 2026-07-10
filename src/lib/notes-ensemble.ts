@@ -73,7 +73,7 @@ export async function generateCourseNotesEnsemble(
   console.log(`[NOTES_ENSEMBLE] 🤝 Üretimler tamamlandı. Konsensüs birleştirme yapılıyor...`)
 
   // 3. Konsensüs Birleştirme
-  const mergePrompt = `
+  const mergePrompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 Görevin, aynı kaynak metinden türetilmiş iki farklı ders notunu (Not A ve Not B) tek bir kusursuz ders notu olarak birleştirmektir.
 
 ÇOK KRİTİK KURALLAR:

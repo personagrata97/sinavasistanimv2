@@ -15,6 +15,15 @@ export const API_OPERATION_LABELS: Record<string, string> = {
   mufettis: "Derin denetim (Müfettiş)",
   cerrahi_yama: "Cerrahi yama (AST)",
   verification: "Mantıksal Doğrulama (Solver AI)",
+  key_rotation: "API Anahtarı Değişimi",
+  "key rotation": "API Anahtarı Değişimi",
+  master_section_detect: "Bölüm Sınırları Tespiti",
+  "master section detect": "Bölüm Sınırları Tespiti",
+  detectsectionsmastervisionandsemantic: "Bölüm Sınırları Tespiti (Vizyon/Semantik)",
+  detectsectionsmultimodal: "Bölüm Sınırları Tespiti (Görsel Tarama)",
+  detectsectiontitlesonlytextai: "Bölüm Başlıkları Tespiti (Metin AI)",
+  detectsectiontitlesonlymultimodal: "Bölüm Başlıkları Tespiti (Görsel Tarama)",
+  anchortitlestopageswithai: "Başlık Sayfa Eşleştirme"
 }
 
 export function getApiOperationLabel(operation: string): string {
