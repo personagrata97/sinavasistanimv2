@@ -1,8 +1,29 @@
 import { prisma } from "./prisma"
 import { processInBackground } from "@/lib/background-processor"
 import { getCourseBySlug } from "./course-data"
+import { clearCancelSignal } from "./process-registry"
 
 let isWorkerRunning = false
+
+async function safeUpdateJob(id: string, data: any) {
+  try {
+    const jobExists = await prisma.job.findUnique({ where: { id } })
+    if (!jobExists) {
+      console.log(`[WORKER] ⚠️ Görev veritabanında bulunamadı (silinmiş olabilir), güncelleme atlanıyor: ID=${id}`)
+      return null
+    }
+    return await prisma.job.update({
+      where: { id },
+      data,
+    })
+  } catch (err: any) {
+    if (err.code === 'P2025' || err.message?.includes("record that were required but not found")) {
+      console.log(`[WORKER] ⚠️ Görev güncellenirken bulunamadı (silinmiş olabilir): ID=${id}`)
+      return null
+    }
+    throw err
+  }
+}
 
 export async function enqueueCourseProcessJob(slug: string, forceRetry: boolean = false) {
   if (forceRetry) {
@@ -86,6 +107,9 @@ export async function startWorkerLoop() {
         data: { status: "processing", lockedAt: new Date() }
       })
 
+      // Clear residual cancel signal before starting processing
+      clearCancelSignal(job.courseSlug)
+
       console.log(`[WORKER] ⚙️ İşlemeye başlandı: ${job.courseSlug}`)
 
       try {
@@ -103,38 +127,29 @@ export async function startWorkerLoop() {
         // Check if the course status is actually "ready" or "paused"
         const checkCourse = await prisma.course.findUnique({ where: { slug: job.courseSlug } })
         if (checkCourse?.status === "ready") {
-          await prisma.job.update({
-            where: { id: job.id },
-            data: { status: "completed" }
-          })
+          await safeUpdateJob(job.id, { status: "completed" })
           console.log(`[WORKER] ✅ İşlem TAMAMLANDI: ${job.courseSlug}`)
         } else if (checkCourse?.status === "error") {
           throw new Error("Course hit an error status during processing")
         } else if (checkCourse?.status === "paused") {
-          await prisma.job.update({
-            where: { id: job.id },
-            data: { status: "failed", error: "İşlem duraklatıldı veya kullanıcı sayfadan ayrıldı." }
+          await safeUpdateJob(job.id, {
+            status: "failed",
+            error: "İşlem duraklatıldı veya kullanıcı sayfadan ayrıldı."
           })
           console.log(`[WORKER] ⏸️ İşlem DURAKLATILDI, görev sonlandırıldı: ${job.courseSlug}`)
         } else if (checkCourse?.status === "processing" || checkCourse?.status === "uploading") {
-          await prisma.job.update({
-            where: { id: job.id },
-            data: { status: "pending", lockedAt: null },
-          })
+          await safeUpdateJob(job.id, { status: "pending", lockedAt: null })
           console.log(`[WORKER] ⏳ Kurs hâlâ işleniyor — görev yeniden kuyruğa alındı: ${job.courseSlug}`)
         } else {
-          await prisma.job.update({
-            where: { id: job.id },
-            data: { status: "completed" },
-          })
+          await safeUpdateJob(job.id, { status: "completed" })
           console.log(`[WORKER] ✅ Görev sonlandırıldı (kurs durumu: ${checkCourse?.status}): ${job.courseSlug}`)
         }
 
       } catch (err: any) {
         console.error(`[WORKER] ❌ Görev hata aldı (${job.courseSlug}):`, err)
-        await prisma.job.update({
-          where: { id: job.id },
-          data: { status: "failed", error: err.message || "Unknown error" }
+        await safeUpdateJob(job.id, {
+          status: "failed",
+          error: err.message || "Unknown error"
         })
       }
     }
@@ -143,3 +158,4 @@ export async function startWorkerLoop() {
     console.log(`[WORKER] 💤 Kuyruk boş, işçi motoru uyku moduna geçti.`)
   }
 }
+
