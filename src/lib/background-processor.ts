@@ -537,6 +537,24 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                 let enrichedContent = effectiveRaw;
                 // 🚨 SÖZLÜK BYPASS KALDIRILDI: Tüm metinler Müfettiş denetimine girmek zorundadır.
                 if (lastVerification) {
+                  // Pozitif Kapsama Kilidi: Notta eksik kavram kontrolü
+                  const claimConcepts: string[] = sectionIssuesObj.claimLedgerConcepts || []
+                  if (claimConcepts.length > 0 && notes) {
+                    const { checkConceptCoverage } = await import("@/lib/coverage-check")
+                    const coverage = checkConceptCoverage(claimConcepts, notes, "", "")
+                    if (coverage.missingInNotes.length > 0) {
+                      console.log(`[BG] 🚨 POZİTİF KAPSAMA KİLİDİ: ${coverage.missingInNotes.length} kavram notta eksik tespit edildi! Geri bildirime ekleniyor:`, coverage.missingInNotes)
+                      if (!lastVerification.missingTopics) lastVerification.missingTopics = []
+                      for (const concept of coverage.missingInNotes) {
+                        const feedbackMsg = `[KAVRAM EKSİK] "${concept}" kavramı ve açıklaması ders notlarında eksiktir, kesinlikle nota eklenmelidir.`
+                        if (!lastVerification.missingTopics.includes(feedbackMsg)) {
+                          lastVerification.missingTopics.push(feedbackMsg)
+                        }
+                      }
+                      lastVerification.score = Math.min(lastVerification.score, 85)
+                    }
+                  }
+
                   const feedbackItems: string[] = [];
                   if (lastVerification.missingTopics?.length > 0) {
                     feedbackItems.push("ATLANAN KONULAR (Kesinlikle ekle):\n- " + lastVerification.missingTopics.join("\n- "));
@@ -1384,14 +1402,33 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     // Dinamik Telafi Döngüsü (Max 2 Attempts)
                     let telafiAttempt = 0;
                     const maxRecoveryAttempts = 2;
-                    while (questions.length < originalCount && telafiAttempt < maxRecoveryAttempts) {
-                      const missingCount = originalCount - questions.length;
-                      console.log(`[BG] [TELAFİ] 🔄 Solver tarafından ${missingCount} soru elendi. Telafi döngüsü başlatılıyor (Deneme #${telafiAttempt + 1})...`);
+
+                    const claimConcepts: string[] = sectionIssuesObj.claimLedgerConcepts || []
+                    const { checkConceptCoverage } = await import("@/lib/coverage-check")
+
+                    let currentCoverage = checkConceptCoverage(
+                      claimConcepts,
+                      finalContent,
+                      questions.map(q => (q.text || q.question || "") + " " + (q.options || []).join(" ")).join(" "),
+                      flashcards.map(c => (c.front || "") + " " + (c.back || "")).join(" ")
+                    )
+
+                    while ((questions.length < originalCount || currentCoverage.missingInQA.length > 0) && telafiAttempt < maxRecoveryAttempts) {
+                      const missingCount = Math.max(1, originalCount - questions.length);
+                      console.log(`[BG] [TELAFİ] 🔄 Telafi döngüsü başlatılıyor (Deneme #${telafiAttempt + 1}). Eksik Soru: ${originalCount - questions.length}, Eksik Kavram: ${currentCoverage.missingInQA.length}`);
                       
                       const existingQuestionTexts = questions.map(q => q.text);
                       try {
+                        let telafiContent = finalContent + `\n\n⚠️ KESİN KURAL: Aşağıdaki soruların aynısını veya çok benzerlerini KESİNLİKLE üretme (Mevcut Sorular):\n- ${existingQuestionTexts.join("\n- ")}`
+                        
+                        if (currentCoverage.missingInQA.length > 0) {
+                          const targetedPrompt = `\n\n⚠️ HEDEFLİ ÜRETİM TALİMATI: Şu kavramlar hiçbir soruda/flashcard'da test edilmemiş: ${currentCoverage.missingInQA.join(", ")}. SADECE bu kavramları doğrudan test eden sorular üret.`
+                          telafiContent += targetedPrompt
+                          console.log(`[BG] [TELAFİ] 🎯 Hedefli telafi devrede. Eksik kavramlar hedefleniyor:`, currentCoverage.missingInQA)
+                        }
+
                         const telafiQuestions = await generateQuestions(
-                          finalContent + `\n\n⚠️ KESİN KURAL: Aşağıdaki soruların aynısını veya çok benzerlerini KESİNLİKLE üretme (Mevcut Sorular):\n- ${existingQuestionTexts.join("\n- ")}`,
+                          telafiContent,
                           section.title,
                           fullCourseName,
                           course.userLevel,
@@ -1408,7 +1445,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                           console.log(`[BG] [TELAFİ] 🔍 ${telafiQuestions.length} adet yeni telafi sorusu üretildi. Solver doğrulamasından geçiriliyor...`);
                           const telafiAdversarial = await validateQuestionsAdversarial(finalContent, telafiQuestions);
                           if (telafiAdversarial.questions.length > 0) {
-                            questions = [...questions, ...telafiAdversarial.questions].slice(0, originalCount);
+                            // Hedefli üretilen soruları öncelikli korumak için başa ekle
+                            questions = [...telafiAdversarial.questions, ...questions].slice(0, originalCount);
                             console.log(`[BG] [TELAFİ] ✅ Telafi başarılı. Toplam geçerli soru sayısı: ${questions.length}/${originalCount}`);
                           }
                         }
@@ -1416,6 +1454,14 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                         console.error(`[BG] [TELAFİ] Telafi soru üretimi başarısız oldu (Kota veya API Hatası):`, telafiErr.message);
                         break; // Kota hatası riskini önlemek için döngüden çık
                       }
+
+                      // Recalculate coverage for next iteration
+                      currentCoverage = checkConceptCoverage(
+                        claimConcepts,
+                        finalContent,
+                        questions.map(q => (q.text || q.question || "") + " " + (q.options || []).join(" ")).join(" "),
+                        flashcards.map(c => (c.front || "") + " " + (c.back || "")).join(" ")
+                      )
                       telafiAttempt++;
                     }
 

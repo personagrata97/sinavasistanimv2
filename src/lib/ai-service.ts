@@ -2592,6 +2592,7 @@ ${JSON.stringify(questions)}
 GÖREV: Yukarıdaki soruları SADECE ve SADECE "ÜRETİLEN DERS NOTU"na bakarak cevapla. Kendi bilgini KESİNLİKLE kullanma!
 Eğer bir sorunun cevabı notta EKSİKSE, YANLIŞSA veya HİÇ YOKSA o soruyu "foundInNotes": false olarak işaretle.
 ⚠️ KANIT ZORUNLULUĞU (KOPYA ÇEKMEYİ ÖNLER): Bir soruyu "foundInNotes": true işaretleyebilmen için, cevabı içeren cümleyi NOTTAN BİREBİR (kelimesi kelimesine) "evidenceQuote" alanına kopyalamak ZORUNLUDUR. Notta birebir böyle bir cümle/veri YOKSA — kendi genel bilginden "muhtemelen doğrudur" DEME — "foundInNotes": false işaretle ve evidenceQuote'u boş bırak.
+⚠️ KANIT KAYNAĞI KISITI: evidenceQuote'u "💡 Somut Benzetme:" ile başlayan bölümlerden ALMA. Sınav soruları resmi/teknik ifadeleri test etmeli, kurgusal senaryonun anlatım cümlelerini değil. Kanıt tabloda, listede veya ana (benzetme dışı) metinde bulunmalıdır.
 
 Sadece şu formatta JSON döndür:
 {

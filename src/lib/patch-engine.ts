@@ -150,6 +150,8 @@ Bu hedef blokta çelişkili veya yanlış bir bilgi var. Bu bloğu DÜZELTEREK b
 
 🚨 GİZLİLİK KURALI (STEALTH MODE): Eklediğin veya değiştirdiğin metnin başına ASLA "Ayrıca", "Ek olarak", "Bunun yanı sıra", "Belirtmek gerekir ki", "Özetle", "Not:" gibi yapay geçiş kelimeleri KOYMA. Önceki metnin %100 organik bir parçası gibi davran, sonradan yama yapıldığını ASLA belli etme. Üslup, format ve tonlama hedef blokla BİREBİR aynı olmalıdır.
 
+📐 FORMAT SADAKATİ: Hedef blok bir tablo satırıysa yeni içerik de tablo satırı formatında olmalı; hedef blok "💡 Somut Benzetme:" ile başlıyorsa eklenen metin de sadece kavramsal olmalı, KESİNLİKLE sayısal süre/limit/oran içermemeli (sayılar sadece tablo/madde formatındaki bloklara eklenebilir).
+
 ⚠️ GEÇİCİ TEST KURALI: Eklediğin veya değiştirdiğin tüm metinleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap.
 
 SADECE MARKDOWN KODUNU DÖNDÜR. (Başına ve sonuna json vs yazma).`;
@@ -196,6 +198,8 @@ GÖREV:
 Bu hedef bloğu YENİDEN YAZMA. Sadece bu bilgileri anlatan, bu bloğun altına eklenecek YENİ BİR metin üret. DİKKAT: Hedef blok bir tablo ise yeni bir tablo satırı, bir liste ise yeni bir liste maddesi, bir hikaye/senaryo ise senaryonun devamı niteliğinde, akademik bir metinse akademik bir paragraf üret. Sadece YENİ EKLENECEK markdown metnini ver.${succeedingBlockText ? " Ürettiğin yeni metin, hem kendisinden önceki HEDEF BLOK ile hem de kendisinden sonra gelen HEDEFTEN HEMEN SONRA GELEN BLOK ile dilsel, anlamsal ve akış olarak kusursuz bir köprü oluşturmalıdır." : ""}
 
 🚨 GİZLİLİK KURALI (STEALTH MODE): Eklediğin veya değiştirdiğin metnin başına ASLA "Ayrıca", "Ek olarak", "Bunun yanı sıra", "Belirtmek gerekir ki", "Özetle", "Not:" gibi yapay geçiş kelimeleri KOYMA. Önceki metnin %100 organik bir parçası gibi davran, sonradan yama yapıldığını ASLA belli etme. Üslup, format ve tonlama hedef blokla BİREBİR aynı olmalıdır.
+
+📐 FORMAT SADAKATİ: Hedef blok bir tablo satırıysa yeni içerik de tablo satırı formatında olmalı; hedef blok "💡 Somut Benzetme:" ile başlıyorsa eklenen metin de sadece kavramsal olmalı, KESİNLİKLE sayısal süre/limit/oran içermemeli (sayılar sadece tablo/madde formatındaki bloklara eklenebilir).
 
 ⚠️ GEÇİCİ TEST KURALI: Eklediğin veya değiştirdiğin tüm metinleri MUTLAKA <span style="color: #22c55e; font-weight: bold;">...</span> etiketleri arasına alarak yeşil renkli yap.
 

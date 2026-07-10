@@ -80,6 +80,7 @@ Görevin, aynı kaynak metinden türetilmiş iki farklı ders notunu (Not A ve N
 1. OLGUSAL TUTARLILIK (HALÜSİNASYON ENGELİ): Not A ve Not B'deki tüm süreler (gün, ay), oranlar (%), kanun/madde referansları ve cezalar kaynak metinle eşleşmelidir. İki not arasında çelişen bir rakam varsa, aşağıdaki KAYNAK METNE bakarak doğrusunu yaz.
 2. EKSİKSİZLİK: Her iki notta da geçen tüm önemli konu başlıklarını, tanımları ve kuralları birleştirilmiş nota dahil et. Notlardan birinde geçip diğerinde atlanmış olan yasal kuralları da atlamadan ekle.
 3. FORMAT: Markdown başlık yapısını (##, ###) ve varsa Mermaid diyagramları ile tabloları eksiksiz koru.
+4. BENZETME KORUNUMU: Not A veya Not B'de "💡 Somut Benzetme:" ile işaretli bir bölüm varsa, birleştirilmiş notta bu etiketi ve içeriğini KORU — silme, ana metinle karıştırma. Bu bölümlere KESİNLİKLE sayısal süre/limit/oran ekleme; birleştirme sırasında da bu kısıt geçerlidir.
 
 NOT A:
 ${noteA}

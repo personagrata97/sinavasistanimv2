@@ -173,7 +173,7 @@ export function verifyClaimsInNotes(
 ): ClaimLedgerResult {
   const atoms = extractClaimAtoms(sourceContent)
   const normalizedNotes = normalizeTextualNumbers(notes)
-  const notesLower = normalizedNotes.toLowerCase()
+  const notesLower = normalizedNotes.toLocaleLowerCase("tr-TR")
   const verified: ClaimAtom[] = []
   const missing: ClaimAtom[] = []
 
