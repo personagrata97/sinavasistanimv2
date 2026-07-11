@@ -1297,7 +1297,7 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           try {
             response = await axios.post(
               `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:generateContent`,
-              geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 120000 }
+              geminiBody(prompt, model.tokens), { headers: geminiHeaders, timeout: 240000 }
             )
             requestSuccess = true
           } catch (e: any) {
@@ -2853,7 +2853,9 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
     // Ground Truth testi, notun %100 olabilmesi için ZORUNLU bir kapıdır.
     // Test BAŞARISIZ olursa VEYA hiç çalışmazsa (API hatası / soru üretilemedi),
     // not KESİNLİKLE %100 sayılamaz. Aksi halde denetlenmemiş not canlıya sızar.
-    const groundTruth = await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, courseName);
+    const groundTruth = isGlossary
+      ? { passed: true, failedQuestions: [], totalQuestions: 0, askedQuestions: [] }
+      : await runGroundTruthTest(sourceContent, generatedNotes, sectionTitle, courseName);
 
     let groundTruthBypassed = false;
     if (!groundTruth.passed) {

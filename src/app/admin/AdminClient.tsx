@@ -1357,9 +1357,28 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                           ders = parts[1];
                                           konu = parts.slice(2).join(" > ");
                                         } else if (parts.length === 2) {
-                                          // 2 parçalı yapılarda ilki Ders, ikincisi Konudur
-                                          ders = parts[0];
-                                          konu = parts[1];
+                                          const op = (log.operation || "").trim().toLowerCase();
+                                          const isCourseLevel = [
+                                            "ocr_extraction",
+                                            "ocr_extraction_chunk",
+                                            "section_titles_text",
+                                            "section_titles_multimodal",
+                                            "key_rotation",
+                                            "master_section_detect",
+                                            "detectsectionsmastervisionandsemantic",
+                                            "detectsectionsmultimodal",
+                                            "detectsectiontitlesonlytextai",
+                                            "detectsectiontitlesonlymultimodal",
+                                            "anchortitlestopageswithai"
+                                          ].includes(op) || op.includes("rotation");
+
+                                          if (isCourseLevel) {
+                                            program = parts[0];
+                                            ders = parts[1];
+                                          } else {
+                                            ders = parts[0];
+                                            konu = parts[1];
+                                          }
                                         } else {
                                           ders = parts[0] || "-";
                                         }
