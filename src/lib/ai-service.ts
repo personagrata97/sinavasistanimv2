@@ -2883,6 +2883,10 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
       }
     }
 
+    if (score >= 90 && missingTopics.length === 0 && (result.issues || []).length === 0) {
+      score = 100;
+    }
+
     return {
       score: score,
       missingTopics: missingTopics,
