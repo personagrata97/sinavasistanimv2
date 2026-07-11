@@ -2846,8 +2846,14 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
   const raw = await callAI(prompt, 1, "kontrolor")
   try {
     const result = extractCleanJson(raw) as any
-    let score = result.score || 0;
     const missingTopics = result.missingTopics || [];
+    const issues = result.issues || [];
+
+    // Objektif ve matematiksel puan hesaplama: Kusursuz not 100 puanla başlar, hatalar oranında düşer.
+    let score = 100;
+    score -= missingTopics.length * 15;
+    score -= issues.length * 10;
+    score = Math.max(0, Math.min(score, 100));
 
     // ==================== GROUND TRUTH ENTEGRASYONU (Madde 2 — SIZDIRMAZ RED) ====================
     // Ground Truth testi, notun %100 olabilmesi için ZORUNLU bir kapıdır.
@@ -2883,14 +2889,10 @@ TÜM TESPİTLERİNİ, CÜMLELERİNİ VE ÇIKTILARINI KESİNLİKLE TÜRKÇE DİL�
       }
     }
 
-    if (score >= 90 && missingTopics.length === 0 && (result.issues || []).length === 0) {
-      score = 100;
-    }
-
     return {
       score: score,
       missingTopics: missingTopics,
-      issues: result.issues || [],
+      issues: issues,
       suggestions: result.suggestions || [],
       groundTruthQuestions: groundTruth?.askedQuestions || [],
       groundTruthBypassedAfterRetry: groundTruthBypassed
