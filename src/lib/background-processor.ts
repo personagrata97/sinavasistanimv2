@@ -3,7 +3,7 @@ import {
   isPendingOcrContent,
   shouldRunMarkdownOcr,
 } from "@/lib/pdf-engine"
-import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError } from "@/lib/ai-service"
+import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError, setActiveSectionIdForStatus } from "@/lib/ai-service"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
 import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
 import {
@@ -263,6 +263,7 @@ export async function processInBackground(slug: string, course: any, forceRetry:
         // Bölüm işleme ana try-catch bloğu
         try {
           console.log(`[BG] [${sIdx + 1 + alreadyDone}/${totalSections}] ${section.title} - İŞLEME BAŞLADI (Deneme #${sectionRetries + 1}/${maxSectionRetries})`)
+          setActiveSectionIdForStatus(section.id)
 
           const skipOcr = course.pdfPath && !shouldRunMarkdownOcr(section.rawContent)
           const openingPhase = skipOcr

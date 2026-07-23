@@ -133,6 +133,36 @@ function parseKeyIndexFromLog(apiKey: string | null | undefined, keyIndex: numbe
 
 // ==================== AI ENGINE SETUP ====================
 
+// ==================== REAL-TIME UI STATUS LOGGING ====================
+let activeSectionIdForStatus: string | null = null
+
+export function setActiveSectionIdForStatus(id: string | null) {
+  activeSectionIdForStatus = id
+}
+
+export async function updateActiveSectionMicroPhase(phase: string) {
+  if (!activeSectionIdForStatus) return
+  try {
+    const section = await prisma.section.findUnique({
+      where: { id: activeSectionIdForStatus },
+      select: { verificationIssues: true }
+    })
+    if (section) {
+      let issuesObj: any = {}
+      try {
+        issuesObj = JSON.parse(section.verificationIssues || "{}")
+      } catch (e) {}
+      issuesObj.currentMicroPhase = phase
+      await prisma.section.update({
+        where: { id: activeSectionIdForStatus },
+        data: { verificationIssues: JSON.stringify(issuesObj) }
+      })
+    }
+  } catch (e) {
+    // Ignore database write locks gracefully
+  }
+}
+
 // PRIMARY: Gemini (High Quota & Quality) — Multi-key rotation
 const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 const geminiKeys = (process.env.GEMINI_API_KEYS || geminiKey || "").split(",").filter(k => k.trim())
@@ -453,6 +483,7 @@ function rotateToNextKey(modelId: string): string | null {
   const result = getNextGeminiKey(modelId)
   if (result) {
     console.log(`[AI_ENGINE] 🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length}'e geçildi (RPM: ${getKeyRpmCount(currentKeyIndex, modelId)}/${RPM_LIMIT}, RPD: ${getKeyDailyCount(currentKeyIndex, modelId)}/${RPD_LIMIT})`)
+    updateActiveSectionMicroPhase(`🔑 Key rotasyonu: Key #${currentKeyIndex + 1}/${geminiKeys.length} deniyor...`).catch(() => {})
   }
   return result
 }
@@ -938,6 +969,7 @@ Kurallar:
 
     console.log(`[MARKDOWN_OCR] Chunk işleniyor: Sayfa ${chunkStartIdx + 1} - ${chunkEndIdx + 1} (${chunkPageCount} sayfa, örtüşme: ${PAGE_OVERLAP} sayfa)`);
     await report(`PDF Metne Çevriliyor — sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1}`);
+    updateActiveSectionMicroPhase(`🚀 Markdown OCR: Sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1} metne çevriliyor...`).catch(() => {})
 
     const newPdf = await PDFDocument.create();
     const pageIndicesToCopy = Array.from({length: chunkPageCount}, (_, k) => chunkStartIdx + k);
@@ -961,6 +993,7 @@ Kurallar:
         await report(
           `Yoğunluk sınırı — ${Math.round(backoffMs / 1000)} sn bekleniyor (deneme ${chunkAttempt}/${MAX_CHUNK_OCR_ATTEMPTS})`,
         );
+        updateActiveSectionMicroPhase(`⏱️ OCR Yoğunluk Sınırı: ${Math.round(backoffMs / 1000)}sn bekleniyor...`).catch(() => {})
         await new Promise((r) => setTimeout(r, backoffMs));
       }
 
@@ -988,6 +1021,7 @@ Kurallar:
           durationMs: 0,
         });
         await report(`Anahtarlar dinleniyor — ${waitSec} sn`);
+        updateActiveSectionMicroPhase(`⏱️ Anahtarlar dinleniyor: ${waitSec}sn bekleniyor...`).catch(() => {})
         chunkAttempt--;
         await new Promise((r) => setTimeout(r, waitSec * 1000));
         continue;
@@ -1012,12 +1046,14 @@ Kurallar:
         await cleanupStaleOcrFiles(currentKey);
 
         console.log(`[MARKDOWN_OCR] 📤 Sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1} buluta yükleniyor...`);
+        updateActiveSectionMicroPhase(`📤 Sayfa ${chunkStartIdx + 1}-${chunkEndIdx + 1} buluta yükleniyor (Key #${currentKeyIndex + 1})...`).catch(() => {})
         const uploadResult = await fileManager.uploadFile(tempChunkPath, {
           mimeType: "application/pdf",
           displayName: `ocr_temp_chunk_${Date.now()}_${chunkStartIdx}_${chunkEndIdx}`,
         });
         uploadedFile = uploadResult.file;
         console.log(`[MARKDOWN_OCR] 📤 Bulut yüklemesi başarılı: ${uploadedFile.uri}`);
+        updateActiveSectionMicroPhase(`📤 Bulut yüklemesi başarılı: OCR yapılıyor (Key #${currentKeyIndex + 1})...`).catch(() => {})
       } catch (uploadErr: any) {
         console.warn(`[MARKDOWN_OCR] ⚠️ Bulut yüklemesi başarısız oldu, Base64 (inlineData) fallback devreye giriyor: ${uploadErr.message}`);
       }
@@ -1254,6 +1290,7 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
         consecutiveWaitCycles++
         const waitSec = getSecondsUntilKeyAvailable(MODEL_ID)
         console.log(`[AI_ENGINE] ⏳ Uygun key yok (RPM/askı). ${waitSec}sn bekleniyor... (döngü ${consecutiveWaitCycles})`)
+        updateActiveSectionMicroPhase(`⏳ Uygun key yok, ${waitSec}sn dinlendiriliyor...`).catch(() => {})
         await new Promise(r => setTimeout(r, waitSec * 1000))
         continue
       }
@@ -1348,6 +1385,9 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
           else if (errMsg.includes("503") || errData.includes("503")) errStatus = "SERVER_ERROR_503"
           else if (errMsg.includes("timeout") || errMsg.includes("ECONNABORTED")) errStatus = "TIMEOUT"
           else if (errMsg.includes("403") || errData.includes("403")) errStatus = "FORBIDDEN_403"
+
+          // Real-time status update on key failure
+          updateActiveSectionMicroPhase(`⚠️ Key #${currentKeyIndex + 1} Hatası (${errStatus})! Yeni key'e geçiliyor...`).catch(() => {})
 
           prisma.apiUsageLog.create({
             data: {
