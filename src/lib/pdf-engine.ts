@@ -52,6 +52,19 @@ export function detectXObjectImageCount(buffer: Buffer): number {
   }
 }
 
+export function detectXObjectImagesPerPage(buffer: Buffer): number[] {
+  try {
+    const content = buffer.toString("binary")
+    const pages = content.split(/\/Type\s*\/Page\b/g).slice(1)
+    return pages.map((pageStr) => {
+      const matches = pageStr.match(/\/Subtype\s*\/Image\b/g)
+      return matches ? matches.length : 0
+    })
+  } catch (e) {
+    return []
+  }
+}
+
 export async function getPdfPageCount(buffer: Buffer): Promise<number> {
   const libCount = await new Promise<number>((resolve, reject) => {
     const parser = new PDFParser()
@@ -294,17 +307,23 @@ export function prepareSearchablePdfSectionContent(rawContent: string): string {
 }
 
 // Non-searchable PDF durumunu kontrol et (upload route'dan çağrılır)
-export function checkPdfQuality(pageTexts: string[], totalPages: number): {
+export function checkPdfQuality(pageTexts: string[], totalPages: number, pdfBuffer?: Buffer): {
   isNonSearchable: boolean;
   isPartiallySearchable: boolean;
-  message: string | null
+  message: string | null;
+  embeddedImageCount: number;
 } {
   void totalPages
   const assessment = assessPdfSearchability(pageTexts)
+  const imageCount = pdfBuffer ? detectXObjectImageCount(pdfBuffer) : 0
+  const isPartial = assessment.isPartiallySearchable || (imageCount > 0 && assessment.isSearchable)
   return {
     isNonSearchable: assessment.isNonSearchable,
-    isPartiallySearchable: assessment.isPartiallySearchable,
-    message: assessment.message,
+    isPartiallySearchable: isPartial,
+    embeddedImageCount: imageCount,
+    message: imageCount > 0 && assessment.isSearchable
+      ? `PDF metin tabanlı ancak ${imageCount} adet gömülü şema/görsel içeriyor. Görsel sayfaları OCR ile desteklenecek.`
+      : assessment.message,
   }
 }
 

@@ -34,14 +34,43 @@ export async function GET(
     const examConfig = getExamConfig(programSlug)
     const takeCount = examParams?.questionCount ?? 25
 
+    const user = await prisma.user.findUnique({ where: { email: session.user.email }, select: { id: true } })
+    const userAnswers = user ? await prisma.userQuestionAnswer.findMany({
+      where: { userId: user.id },
+      select: { questionId: true }
+    }) : []
+    const answeredQuestionIds = new Set(userAnswers.map(a => a.questionId))
+
     if (!course.blueprint) {
-      // 1. Önce examReserve: true olan soruları çek
-      let pool = await prisma.question.findMany({
-        where: { courseId: course.id, reported: false, examReserve: true },
+      // 1. Önce examReserve: true ve kullanıcının DAHA ÖNCE GÖRMEDİĞİ soruları çek
+      let reserveUnseen = await prisma.question.findMany({
+        where: {
+          courseId: course.id,
+          reported: false,
+          examReserve: true,
+          id: { notIn: Array.from(answeredQuestionIds) }
+        },
         include: { section: { select: { title: true } } }
       })
 
-      // 2. Yeterli değilse genel havuzdan tamamla
+      let pool = reserveUnseen
+
+      // 2. Yeterli değilse examReserve: true diğer sorularla tamamla
+      if (pool.length < takeCount) {
+        const existingIds = new Set(pool.map(q => q.id))
+        const reserveAll = await prisma.question.findMany({
+          where: {
+            courseId: course.id,
+            reported: false,
+            examReserve: true,
+            id: { notIn: Array.from(existingIds) }
+          },
+          include: { section: { select: { title: true } } }
+        })
+        pool = [...pool, ...reserveAll]
+      }
+
+      // 3. Hâlâ yeterli değilse genel havuzdaki diğer sorularla tamamla
       if (pool.length < takeCount) {
         const existingIds = new Set(pool.map(q => q.id))
         const fallback = await prisma.question.findMany({

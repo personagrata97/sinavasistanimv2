@@ -19,15 +19,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 })
     }
 
-    // Rate limiting (IP + user bazlı)
+    // Rate limiting (IP + user dakikalık limit)
     const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "unknown"
     const rateLimitKey = `chat:${session.user.email}:${ip}`
     const limit = await rateLimit(rateLimitKey, 20, 60_000)
     if (!limit.success) {
-      logger.warn("Rate limit aşıldı", "chat", { email: session.user.email, ip })
+      logger.warn("Dakikalık rate limit aşıldı", "chat", { email: session.user.email, ip })
       return NextResponse.json(
         { error: "Çok fazla istek gönderdiniz. Lütfen 1 dakika bekleyin." },
         { status: 429, headers: getRateLimitHeaders(limit.remaining, limit.resetIn, 20) }
+      )
+    }
+
+    // Günlük kota katmanı: 150 mesaj/gün (Ortak Gemini kotasını korumak için)
+    const dailyLimitKey = `chat_daily:${session.user.email}`
+    const dailyLimit = await rateLimit(dailyLimitKey, 150, 24 * 60 * 60_000)
+    if (!dailyLimit.success) {
+      logger.warn("Günlük chat kotası aşıldı", "chat", { email: session.user.email })
+      return NextResponse.json(
+        { error: "Bugünkü sohbet hakkınız (150 mesaj) doldu. Yarın tekrar deneyebilirsiniz." },
+        { status: 429, headers: getRateLimitHeaders(dailyLimit.remaining, dailyLimit.resetIn, 150) }
       )
     }
 

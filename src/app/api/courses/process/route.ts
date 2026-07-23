@@ -176,17 +176,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Yetkilendirme gerekli" }, { status: 401 })
     }
 
-    // ── Kullanıcı Bazlı Kota: Saatlik max 15 kurs işleme limiti (Kötüye Kullanım Koruması) ──
-    const userIdentifier = session?.user?.email || clientIp
+    // ── Hard Block: Ders işleme/üretim işlemi YALNIZCA YÖNETİCİLER (Admin) veya CRON tarafından yapılabilir ──
     if (!isCron && !isAdminSession(session)) {
-      const userRl = await rateLimit(`user_process:${userIdentifier}`, 15, 60 * 60_000)
-      if (!userRl.success) {
-        console.warn(`[PROCESS] 🚫 Kullanıcı bazlı saatlik kota aşıldı: ${userIdentifier}`)
-        return NextResponse.json(
-          { error: "Hesabınız için saatlik ders işleme limitine (15 ders/saat) ulaştınız. Lütfen biraz bekleyin." },
-          { status: 429, headers: getRateLimitHeaders(userRl.remaining, userRl.resetIn, 15) },
-        )
-      }
+      console.warn(`[PROCESS] 🔴 Yönetici olmayan kullanıcı ders işleme tetiklemeye çalıştı: ${session?.user?.email}`)
+      return NextResponse.json(
+        { error: "Bu işlem yalnızca yöneticiler (admin) tarafından gerçekleştirilebilir." },
+        { status: 403 }
+      )
     }
 
     const { slug, forceRetry = false, userInitiated = false, source: bodySource } = body

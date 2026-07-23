@@ -5,7 +5,7 @@ import { motion } from "framer-motion"
 import {
   Rocket, Clock, ClipboardList, ClipboardSignature, Target, CheckCircle, XCircle,
   BarChart2, AlertTriangle, Lightbulb, RotateCcw, BookOpen, Brain, ArrowRight,
-  RefreshCw, Timer, TrendingUp, Lock
+  RefreshCw, Timer, TrendingUp, Lock, ShieldCheck
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -624,6 +624,15 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
             </div>
           )}
         </motion.div>
+
+        {/* Güven ve Şeffaflık Notu */}
+        <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 text-xs text-blue-300 flex items-start gap-3">
+          <ShieldCheck className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+          <div>
+            <strong className="block text-blue-200 mb-1">Gerçekçi Sınav Garantisi</strong>
+            Bu sınavdaki sorular, günlük çalışmanızda görmediğiniz özel deneme sınavı havuzundan seçilmiştir. Elde ettiğiniz bu skor, gerçek sınav performansınızı en doğru yansıtan göstergedir.
+          </div>
+        </div>
 
         {/* Performans Analizi */}
         <div className={`p-6 rounded-2xl border ${results.score >= 70 ? "bg-emerald-500/5 border-emerald-500/20" : results.score >= 50 ? "bg-amber-500/5 border-amber-500/20" : "bg-red-500/5 border-red-500/20"}`}>
