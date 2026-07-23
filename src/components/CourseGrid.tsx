@@ -106,7 +106,7 @@ export default function CourseGrid({ courses, stats, programName, programSubtitl
                           </div>
                         )
                       })()}
-                      <span className="text-xs font-semibold text-slate-600 bg-white/5 px-2 py-1 rounded">
+                      <span className="text-xs font-semibold text-slate-300 bg-white/10 px-2 py-1 rounded border border-white/10">
                         {getCourseCardBadge(programSlug, course.order)}
                       </span>
                       {course.sourceKindLabel && (
@@ -129,17 +129,17 @@ export default function CourseGrid({ courses, stats, programName, programSubtitl
                   </div>
 
                   {/* Course name */}
-                  <h3 className="text-base font-semibold mb-2 group-hover:text-sky-400 transition-colors leading-tight line-clamp-2 min-h-[2.5rem]">
+                  <h3 className="text-base font-semibold mb-2 text-slate-100 group-hover:text-sky-400 transition-colors leading-tight line-clamp-2 min-h-[2.5rem]">
                     {course.name}
                   </h3>
 
                   {/* Description */}
-                  <p className="text-xs text-slate-500 mb-4 line-clamp-2 min-h-[2rem]">
+                  <p className="text-xs text-slate-300 mb-4 line-clamp-2 min-h-[2rem]">
                     {course.description}
                   </p>
 
                   {/* Stats */}
-                  <div className="flex items-center gap-3 mb-4 text-[11px] text-slate-500">
+                  <div className="flex items-center gap-3 mb-4 text-[11px] text-slate-400">
                     <span>{course.sectionCount} Bölüm</span>
                     <span>•</span>
                     <span>{course.flashcardCount} Kart</span>
@@ -153,7 +153,7 @@ export default function CourseGrid({ courses, stats, programName, programSubtitl
                   </div>
 
                   {/* CTA */}
-                  <div className="flex items-center gap-1 text-xs font-semibold text-slate-500 group-hover:text-sky-400 transition-colors">
+                  <div className="flex items-center gap-1 text-xs font-semibold text-sky-400 group-hover:text-sky-300 transition-colors">
                     {course.isGroupLanding ? "KVKK Modüllerine Git" : getCourseCardCta(programSlug)} <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </div>
