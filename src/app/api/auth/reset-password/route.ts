@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     }
 
     // Yeni şifreyi hash'le
-    const hashedPassword = await bcrypt.hash(password, 10)
+    const hashedPassword = await bcrypt.hash(password, 12)
 
     // Kullanıcının şifresini güncelle ve tokenları temizle
     await prisma.user.update({

@@ -58,10 +58,11 @@ export async function POST(req: Request) {
         }
       })
     } else {
-      // İtiraz reddedildi, soruyu eski halinde bırak ama status güncelle
+      // İtiraz reddedildi, soruyu eski halinde bırak ve havuza geri döndür
       await prisma.question.update({
         where: { id: questionId },
         data: {
+          reported: false, // GERİ AL — soru havuza dönsün
           aiAuditStatus: "rejected",
           reportComment: `[REDDEDİLDİ]: ${auditResult.aiComment}`
         }

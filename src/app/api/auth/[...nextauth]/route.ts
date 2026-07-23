@@ -31,7 +31,7 @@ export const authOptions: NextAuthOptions = {
 
         // Eğer kullanıcı yoksa, yeni kullanıcı oluştur (Otomatik Kayıt)
         if (!user) {
-          const hashedPassword = await bcrypt.hash(credentials.password, 10)
+          const hashedPassword = await bcrypt.hash(credentials.password, 12)
           const newUser = await prisma.user.create({
             data: {
               email: credentials.email,

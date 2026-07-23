@@ -42,6 +42,16 @@ export function getRawPdfPageCount(buffer: Buffer): number {
   return -1
 }
 
+export function detectXObjectImageCount(buffer: Buffer): number {
+  try {
+    const content = buffer.toString("binary")
+    const imageMatches = content.match(/\/Subtype\s*\/Image\b/g)
+    return imageMatches ? imageMatches.length : 0
+  } catch (e) {
+    return 0
+  }
+}
+
 export async function getPdfPageCount(buffer: Buffer): Promise<number> {
   const libCount = await new Promise<number>((resolve, reject) => {
     const parser = new PDFParser()

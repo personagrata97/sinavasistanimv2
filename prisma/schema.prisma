@@ -177,6 +177,7 @@ model Question {
   explanation_en String?
   difficulty  String   @default("medium") // easy, medium, hard
   module      String?  // Hangi sınav modülüne ait (Section'dan miras)
+  examReserve Boolean  @default(false) // true ise sadece deneme sınavında kullanılır (%30 rezerv)
   reported    Boolean  @default(false) // Kullanıcı tarafından hatalı olarak bildirildi
   reportReason String? // Yanlış Şık, Müfredat Dışı, Kelime Hatası
   reportComment String? // Kullanıcının hata açıklaması

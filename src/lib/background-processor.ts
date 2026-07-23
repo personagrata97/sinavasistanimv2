@@ -1656,10 +1656,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       }))
                     }
 
-                    // PROGRESİF KAYIT AŞAMA 3: Sorular hazır olduğu an canlıya al
+                    // PROGRESİF KAYIT AŞAMA 3: Sorular hazır olduğu an canlıya al (%30 examReserve ayırması ile)
                     try {
                       await prisma.question.deleteMany({ where: { sectionId: section.id } });
-                      for (const q of questions) {
+                      const reserveCount = Math.round(questions.length * 0.3);
+                      for (let i = 0; i < questions.length; i++) {
+                        const q = questions[i];
+                        const isReserve = i < reserveCount;
                         await prisma.question.create({
                           data: {
                             courseId: course.id,
@@ -1669,11 +1672,12 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                             correct: q.correctOption || q.correctAnswer || q.correct,
                             explanation: q.explanation || "Açıklama bulunmuyor.",
                             difficulty: q.difficulty || "medium",
-                            module: detectedModule
+                            module: detectedModule,
+                            examReserve: isReserve
                           }
                         })
                       }
-                      console.log(`[BG] 💾 ${questions.length} Soru Anında CANLIYA ALINDI!`)
+                      console.log(`[BG] 💾 ${questions.length} Soru Anında CANLIYA ALINDI! (%30 Deneme Sınavı Rezervi Ayrıldı)`)
                     } catch (err) {
                       console.error(`[BG] ❌ Soru progresif kayıt hatası:`, err)
                     }

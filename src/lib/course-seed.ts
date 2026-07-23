@@ -108,7 +108,7 @@ async function ensureZelihaUser(): Promise<void> {
     return
   }
 
-  const hashedPassword = await bcrypt.hash(plainPassword, 10)
+  const hashedPassword = await bcrypt.hash(plainPassword, 12)
   await prisma.user.create({
     data: {
       email,

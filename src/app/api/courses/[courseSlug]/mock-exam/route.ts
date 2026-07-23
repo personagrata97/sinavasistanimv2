@@ -35,29 +35,70 @@ export async function GET(
     const takeCount = examParams?.questionCount ?? 25
 
     if (!course.blueprint) {
-      const allQuestions = await prisma.question.findMany({
-        where: { courseId: course.id, reported: false },
+      // 1. Önce examReserve: true olan soruları çek
+      let pool = await prisma.question.findMany({
+        where: { courseId: course.id, reported: false, examReserve: true },
         include: { section: { select: { title: true } } }
       })
-      for (let i = allQuestions.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [allQuestions[i], allQuestions[j]] = [allQuestions[j], allQuestions[i]]
+
+      // 2. Yeterli değilse genel havuzdan tamamla
+      if (pool.length < takeCount) {
+        const existingIds = new Set(pool.map(q => q.id))
+        const fallback = await prisma.question.findMany({
+          where: {
+            courseId: course.id,
+            reported: false,
+            id: { notIn: Array.from(existingIds) }
+          },
+          include: { section: { select: { title: true } } }
+        })
+        pool = [...pool, ...fallback]
       }
-      if (programSlug === "masak" && allQuestions.length < takeCount) {
+
+      if (programSlug === "masak" && pool.length < takeCount) {
         return NextResponse.json(
-          { error: `MASAK deneme sınavı için en az ${takeCount} soru gerekir. Mevcut: ${allQuestions.length}` },
+          { error: `MASAK deneme sınavı için en az ${takeCount} soru gerekir. Mevcut: ${pool.length}` },
           { status: 400 }
         )
       }
-      const randomQuestions = allQuestions.slice(0, takeCount)
-      const parsedRandomQuestions = randomQuestions.map(q => ({
+
+      // 3. Stratified Sampling (Zorluk Dengesi: %30 kolay, %40 orta, %30 zor)
+      const targetEasy = Math.round(takeCount * 0.3)
+      const targetMedium = Math.round(takeCount * 0.4)
+      const targetHard = Math.max(0, takeCount - targetEasy - targetMedium)
+
+      const byDifficulty: { easy: any[]; medium: any[]; hard: any[] } = { easy: [], medium: [], hard: [] }
+      pool.forEach(q => {
+        const diff = (q.difficulty || "medium").toLowerCase()
+        if (diff === "easy") byDifficulty.easy.push(q)
+        else if (diff === "hard") byDifficulty.hard.push(q)
+        else byDifficulty.medium.push(q)
+      })
+
+      const shuffle = (arr: any[]) => [...arr].sort(() => Math.random() - 0.5)
+
+      let selected = [
+        ...shuffle(byDifficulty.easy).slice(0, targetEasy),
+        ...shuffle(byDifficulty.medium).slice(0, targetMedium),
+        ...shuffle(byDifficulty.hard).slice(0, targetHard)
+      ]
+
+      // Eksik kalırsa havuzun geri kalanıyla tamamla
+      if (selected.length < takeCount && pool.length >= takeCount) {
+        const selectedIds = new Set(selected.map(q => q.id))
+        const remainingPool = shuffle(pool.filter(q => !selectedIds.has(q.id)))
+        selected = [...selected, ...remainingPool.slice(0, takeCount - selected.length)]
+      }
+
+      const parsedRandomQuestions = shuffle(selected).slice(0, takeCount).map(q => ({
         ...q,
         options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
       }))
+
       return NextResponse.json({
         questions: parsedRandomQuestions,
         isBlueprint: false,
-        totalQuestions: takeCount,
+        totalQuestions: parsedRandomQuestions.length,
         durationMinutes: examParams?.durationMinutes ?? examConfig?.durationMinutes ?? 45,
         passingScore: examParams?.passingScore ?? examConfig?.passingScore ?? 60,
         moduleBarrier: examParams?.moduleBarrier ?? examConfig?.moduleBarrier ?? 50,
@@ -67,16 +108,34 @@ export async function GET(
     let finalExamQuestions: any[] = []
 
     for (const module of course.blueprint.modules) {
-      const moduleQuestions = await prisma.question.findMany({
+      let moduleQuestions = await prisma.question.findMany({
         where: {
           courseId: course.id,
           module: module.moduleName,
-          reported: false
+          reported: false,
+          examReserve: true
         },
         take: module.questionCount,
         orderBy: { id: 'desc' },
         include: { section: { select: { title: true } } }
       })
+
+      if (moduleQuestions.length < module.questionCount) {
+        const existingIds = new Set(moduleQuestions.map(q => q.id))
+        const remainingCount = module.questionCount - moduleQuestions.length
+        const fallbackQuestions = await prisma.question.findMany({
+          where: {
+            courseId: course.id,
+            module: module.moduleName,
+            reported: false,
+            id: { notIn: Array.from(existingIds) }
+          },
+          take: remainingCount,
+          orderBy: { id: 'desc' },
+          include: { section: { select: { title: true } } }
+        })
+        moduleQuestions = [...moduleQuestions, ...fallbackQuestions]
+      }
 
       finalExamQuestions = [...finalExamQuestions, ...moduleQuestions]
     }

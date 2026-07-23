@@ -738,7 +738,7 @@ export async function getCourseQuestions(slug: string) {
     if (!course) return []
 
     const questions = await prisma.question.findMany({
-      where: { courseId: course.id },
+      where: { courseId: course.id, examReserve: false, reported: false },
       orderBy: { createdAt: "desc" },
       include: { section: { select: { title: true, notes: true, module: true, rawContent: true } } },
     })
@@ -772,7 +772,7 @@ export async function getCourseQuestions(slug: string) {
         correct: q.correct,
         explanation: q.explanation || "Açıklama mevcut değil.",
         difficulty: q.difficulty,
-        section: q.section,
+        section: (q as any).section,
         answered: !!uq,
         userAnswer: uq?.userAnswer || null,
         isCorrect: uq?.isCorrect || false,
