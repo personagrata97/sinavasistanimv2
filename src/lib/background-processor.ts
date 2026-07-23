@@ -4,6 +4,8 @@ import {
   shouldRunMarkdownOcr,
 } from "@/lib/pdf-engine"
 import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError, setActiveSectionIdForStatus } from "@/lib/ai-service"
+import { extractExamInventory } from "@/lib/ocr-post-processor"
+import { checkExamInventoryCoverage } from "@/lib/coverage-check"
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
 import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
 import {
@@ -1770,9 +1772,13 @@ export async function processInBackground(slug: string, course: any, forceRetry:
           const resolvedImportance = analysis.importance || section.importance || "Medium"
 
           // (Çift dil işlemleri artık Progressive Save öncesi yapılıyor)
-          // Veritabanı kayıtlarını oluştur
-          // 🔒 CANLIYA ÇIKIŞ KİLİDİ (Madde 1): Not yalnızca %100 onaylıysa (Kontrolör+Müfettiş)
-          // öğrenciye gösterilmek üzere yayınlanır. Onaylanmamış not DB'de notes=null kalır.
+          const { inventory: sectionInv } = extractExamInventory(effectiveRaw || section.rawContent || "")
+          let invStatsFormatted: string | undefined = undefined
+          if (sectionInv.length > 0) {
+            const invCov = checkExamInventoryCoverage(sectionInv, notes || "", JSON.stringify(questions), JSON.stringify(flashcards))
+            invStatsFormatted = invCov.statsFormatted
+          }
+
           await prisma.section.update({
             where: { id: section.id },
             data: {
@@ -1785,6 +1791,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
               module: detectedModule,
               processed: isSectionApproved,
               verificationScore: currentScore,
+              examInventory: sectionInv.length > 0 ? JSON.stringify(sectionInv) : undefined,
+              inventoryStats: invStatsFormatted,
               verificationIssues: lastVerification
                 ? JSON.stringify(
                     mergeVerificationIssues(sectionIssuesObj, {

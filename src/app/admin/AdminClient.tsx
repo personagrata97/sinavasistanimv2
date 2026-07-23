@@ -51,6 +51,7 @@ interface AdminClientProps {
     processed: boolean
     verificationScore: number | null
     verificationIssues: string | null
+    inventoryStats?: string | null
   }>
   stats: {
     totalUsers: number
@@ -1020,6 +1021,11 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                     }`}>
                                       Müfettiş: {mufettisPassed ? "GEÇTİ" : stages.kontrolorGroundTruth ? "BEKLİYOR" : "KALDI"}
                                     </span>
+                                    {sec.inventoryStats && (
+                                      <span className="text-[10px] px-2 py-0.5 rounded font-sans tracking-wide font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 mt-0.5">
+                                        📊 {sec.inventoryStats}
+                                      </span>
+                                    )}
                                   </div>
                                 )}
                               </Tooltip>

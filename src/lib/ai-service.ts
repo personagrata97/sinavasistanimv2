@@ -6,6 +6,7 @@ import { isGlossarySectionTitle } from "./glossary-utils"
 import { type DocumentType, requiresHeadingPreservation } from "./document-processing-profile"
 import { MAX_CHUNK_OCR_ATTEMPTS } from "./quota-guard"
 import { dedupFlashcards, dedupQuestions } from "@/lib/content-dedup"
+import { extractExamInventory, type ExamInventoryItem } from "./ocr-post-processor"
 
 /** PDF görsel okuma (extractPerfectMarkdownOCR, ocr_extraction_chunk) — 3.5 Flash, ~20 RPD/key */
 export const OCR_MODEL = "gemini-3.5-flash"
@@ -936,12 +937,28 @@ export async function extractPerfectMarkdownOCR(
   const { PDFDocument } = await import('pdf-lib');
   const fsPromises = await import('fs/promises');
 
-  const prompt = `Ekteki PDF dosyasının detaylıca okuyup kusursuz bir Markdown metnine çevir.
+  const prompt = `Ekteki PDF dosyasını detaylıca okuyup kusursuz bir Markdown metnine çevir.
 Kurallar:
 1. Hiçbir cümleyi, tabloyu veya listeyi atlama. Her detayı koru.
 2. Tabloları düzgün Markdown tablolarına dönüştür.
 3. Görseller veya şemalar varsa, bunları "[GÖRSEL İÇERİKLER]" başlığı altında olabildiğince detaylı metne dök.
-4. "İşte metin", "Tamamdır" gibi cevaplar yazma, sadece çevrilmiş markdown metnini ver.`;
+4. "İşte metin", "Tamamdır" gibi cevaplar yazma, sadece çevrilmiş markdown metnini ver.
+
+[SINAV ENVANTERİ]
+Bu sayfalardan sınavda sorulabilecek HER unsuru numaralı liste hâlinde çıkar.
+Her satır TEK bir sınanabilir birim olmalı. Kategori etiketi ve kısa arama ANAHTARI içermeli:
+- TANIM| terim = kaynaktaki resmi tanım cümlesi | ANAHTAR: arama_terimi
+- SAYI| neyin değeri = değer (örn: bildirim süresi = 10 gün) | ANAHTAR: 10 gün
+- ISTISNA| hangi kural + kimin için geçerli değil | ANAHTAR: istisna_konusu
+- AYRIM| kavram A ≠ kavram B (karıştırılma riski olanlar) | ANAHTAR: kavram_A
+- ADIM| prosedürün sıralı adımı | ANAHTAR: adım_tanımı
+- LISTE| madde madde sayılan grup (kurumlar, belge türleri vb.) | ANAHTAR: grup_adı
+- CEZA| yaptırım türü = miktarı/süresi | ANAHTAR: ceza_miktarı
+
+⛔ Yorum yapma, açıklama yazma, örnek uydurma.
+⛔ Sayfada geçmeyen hiçbir şeyi envantere ekleme.
+⛔ Sayfada geçen HİÇBİR sınanabilir unsuru atlama.
+[/SINAV ENVANTERİ]`;
 
   const pdfBytes = await fsPromises.readFile(pdfPath);
   const originalPdf = await PDFDocument.load(pdfBytes);
@@ -1820,6 +1837,16 @@ Aşağıdaki sayısal değerler/kanun numaraları kaynak metinde tespit edilmiş
 - Sadece ve sadece bu bölümün doğrudan başlığıyla ilgili içeriği işle.
 ` : "";
 
+  const { inventory } = extractExamInventory(content)
+  const inventoryInstruction = inventory.length > 0
+    ? `\n🎯 ZORUNLU KAPSAMA LİSTESİ (SINAV ENVANTERİ — ${inventory.length} Madde):\n` +
+      `Aşağıdaki ${inventory.length} maddenin TAMAMI bu notta eksiksiz işlenmek ZORUNDADIR. Hiçbirini atlama:\n` +
+      inventory.map((it, i) => `${i + 1}. [${it.cat}] ${it.text} (Anahtar: ${it.key})`).join("\n") +
+      `\n\n⚠️ KAPSAMA & ANLATIM TAVANI KURALLARI:\n` +
+      `1. ÇEKİRDEK KATMAN: Yukarıdaki maddelerin %100'ünü TİP_A/B/C/D formatında nota ekle. Bu listeyi nota doğrudan KOPYALAMA.\n` +
+      `2. ANLATIM KATMANI TAVANI (%30): Benzetme (💡) ve hikayeleri SADECE envanterdeki karmaşık/soyut maddeler için kullan. Anlatım/benzetme sayısı envanterdeki maddelerin %30'unu (max ${Math.ceil(inventory.length * 0.3)} adet) GEÇEMEZ.\n`
+    : ""
+
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName || courseName || sectionTitle)}
 ${sourceModeInstruction}${documentTypeInstruction}
@@ -1827,6 +1854,7 @@ ${glossaryInstruction}
 ${nextSectionInstruction}
 ${lowConfidenceBlock}
 ${numericGroundingInstruction}
+${inventoryInstruction}
 
 ${aiMode === "international" || aiMode === "international_audit" ? "⚠️ ÇOK ÖNEMLİ KURAL: Kaynak metin İNGİLİZCE olsa dahi, üreteceğin tüm ders notları, sözlükler, açıklamalar ve örnekler KESİNLİKLE TÜRKÇE olacaktır. Orijinal İngilizce terimleri parantez içinde belirtebilirsin." : ""}
 
@@ -2347,8 +2375,16 @@ export async function generateQuestions(
 
     const isProcedureOrMevzuat = documentType ? requiresHeadingPreservation(documentType) : false;
 
+    const { inventory: qInventory } = extractExamInventory(chunkContent)
+    const inventoryQuestionsInstruction = qInventory.length > 0
+      ? `\n🎯 ZORUNLU SINAV ENVANTERİ (Bu maddelerin TAMAMINI SINA):\n` +
+        qInventory.map((it, idx) => `${idx + 1}. [${it.cat}] ${it.text}`).join("\n") +
+        `\n⚠️ KURAL: Üreteceğin sorular doğrudan yukarıdaki envanter maddelerinde yer alan tanımları, süreleri, cezaları ve istisnaları hedeflemelidir.\n`
+      : ""
+
     const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]
 ${getExamIntelligence(aiMode, courseName)}
+${inventoryQuestionsInstruction}
 
 DERS: ${courseName}
 BÖLÜM: "${sectionTitle}"

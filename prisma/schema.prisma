@@ -117,6 +117,8 @@ model Section {
   topics      String?  // JSON array
   verificationScore  Int?     // AI doğrulama skoru (0-100), sadece admin'e gösterilir
   verificationIssues String?  // JSON: eksik konular, sorunlar, öneriler
+  examInventory      String?  // JSON: [{cat:"TANIM", text:"...", key:"..."}, ...]
+  inventoryStats     String?  // JSON: {total:47, coveredInNotes:47, coveredInQA:45}
   module      String?  // Hangi sınav modülüne ait (örn: "Modül 1", "Modül 2")
   processed   Boolean  @default(false)
   parentSectionId String?

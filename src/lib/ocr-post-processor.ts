@@ -8,6 +8,12 @@ export type VisualInventoryItem = {
   lineCount: number
 }
 
+export type ExamInventoryItem = {
+  cat: string
+  text: string
+  key: string
+}
+
 export type OcrPostProcessResult = {
   markdown: string
   visualCount: number
@@ -18,6 +24,47 @@ export type OcrPostProcessResult = {
     hasVisualSection: boolean
     charLength: number
   }
+}
+
+export function extractExamInventory(rawOcrMarkdown: string): {
+  inventory: ExamInventoryItem[]
+  cleanMarkdown: string
+} {
+  if (!rawOcrMarkdown) return { inventory: [], cleanMarkdown: "" }
+
+  const inventoryMatch = rawOcrMarkdown.match(/\[SINAV ENVANTERİ\]([\s\S]*?)(?:\[\/SINAV ENVANTERİ\]|$)/i)
+  if (!inventoryMatch || !inventoryMatch[1]) {
+    return { inventory: [], cleanMarkdown: rawOcrMarkdown }
+  }
+
+  const rawBlock = inventoryMatch[1]
+  const lines = rawBlock.split("\n").map(l => l.trim()).filter(l => l.length > 5)
+  const items: ExamInventoryItem[] = []
+
+  for (const line of lines) {
+    const cleanedLine = line.replace(/^[-*•\d+\.]\s*/, "").trim()
+    const parts = cleanedLine.split("|").map(p => p.trim())
+    if (parts.length >= 2) {
+      const cat = parts[0].toUpperCase()
+      let text = parts[1]
+      let key = text
+
+      if (parts.length >= 3 && parts[2].toLowerCase().includes("anahtar:")) {
+        key = parts[2].replace(/anahtar:/i, "").trim()
+      } else {
+        const termMatch = text.match(/^([^=:]+)/)
+        if (termMatch) key = termMatch[1].trim()
+      }
+
+      items.push({ cat, text, key: key || text })
+    }
+  }
+
+  const cleanMarkdown = rawOcrMarkdown
+    .replace(/\[SINAV ENVANTERİ\][\s\S]*?(?:\[\/SINAV ENVANTERİ\]|$)/gi, "")
+    .trim()
+
+  return { inventory: items, cleanMarkdown }
 }
 
 const VISUAL_SECTION_PATTERNS = [
