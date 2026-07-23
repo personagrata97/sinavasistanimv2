@@ -177,7 +177,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Hard Block: Ders işleme/üretim işlemi YALNIZCA YÖNETİCİLER (Admin) veya CRON tarafından yapılabilir ──
-    if (!isCron && !isAdminSession(session)) {
+    if (!isCron && !isAdminSession(session?.user)) {
       console.warn(`[PROCESS] 🔴 Yönetici olmayan kullanıcı ders işleme tetiklemeye çalıştı: ${session?.user?.email}`)
       return NextResponse.json(
         { error: "Bu işlem yalnızca yöneticiler (admin) tarafından gerçekleştirilebilir." },

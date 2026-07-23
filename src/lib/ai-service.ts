@@ -1286,8 +1286,9 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
       const sectionMatch = prompt.match(/BÖLÜM:\s*"?([^"\n]+)"?/) || prompt.match(/DERS:\s*"?([^"\n]+)"?/)
       const logContext = contextMatch ? contextMatch[1] : (sectionMatch ? sectionMatch[1] : mode)
       const logCourseSlug = logContext.substring(0, 150)
+      const courseNamePart = logContext.split(">")[0].trim()
       
-      if (isCancelled(logCourseSlug)) {
+      if (isCancelled(logCourseSlug) || isCancelled(courseNamePart)) {
          throw new Error("İşlem kullanıcı tarafından anında duraklatıldı (AbortSignal).");
       }
 
@@ -1309,6 +1310,9 @@ export async function callAI(prompt: string, retries = 2, mode: "generation" | "
         console.log(`[AI_ENGINE] ⏳ Uygun key yok (RPM/askı). ${waitSec}sn bekleniyor... (döngü ${consecutiveWaitCycles})`)
         updateActiveSectionMicroPhase(`⏳ Uygun key yok, ${waitSec}sn dinlendiriliyor...`).catch(() => {})
         await new Promise(r => setTimeout(r, waitSec * 1000))
+        if (isCancelled(logCourseSlug) || isCancelled(courseNamePart)) {
+          throw new Error("İşlem kullanıcı tarafından anında duraklatıldı (AbortSignal).");
+        }
         continue
       }
       consecutiveWaitCycles = 0

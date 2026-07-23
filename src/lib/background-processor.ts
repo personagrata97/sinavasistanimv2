@@ -364,14 +364,14 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   // resim ve şema açıklamaları ise eksiksiz yakalanır.
                   if (preOcrDigitalText) {
                     const visualBlock = extractVisualBlockOnly(pristineMarkdown)
-                    if (visualBlock) {
-                      section.rawContent = `${preOcrDigitalText.trim()}\n\n${visualBlock}`
-                      console.log(`[BG] 🔗 HİBRİT BİRLEŞTİRME: Dijital metin (${preOcrDigitalText.length} kar) + OCR görsel bloğu (${visualBlock.length} kar) birleştirildi. Mükerrerlik sıfır.`)
-                    } else {
-                      // OCR'da görsel bloğu yoksa dijital metni olduğu gibi koru
-                      section.rawContent = preOcrDigitalText
-                      console.log(`[BG] ℹ️ HİBRİT MOD: OCR'da görsel bloğu bulunamadı. Dijital metin olduğu gibi korundu.`)
-                    }
+                    // ✅ ENVANTER KORUMA: [SINAV ENVANTERİ] bloğu OCR çıktısındadır.
+                    // Hibrit modda dijital metni koruyoruz ama envanteri de TAŞIMAK ZORUNDAYIZ,
+                    // yoksa Sınav Envanteri mimarisi bu PDF için hiç çalışmaz.
+                    const invMatch = pristineMarkdown.match(/\[SINAV ENVANTERİ\][\s\S]*?(?:\[\/SINAV ENVANTERİ\]|$)/i)
+                    const invBlock = invMatch ? invMatch[0] : ""
+                    const parts = [preOcrDigitalText.trim(), visualBlock, invBlock].filter(Boolean)
+                    section.rawContent = parts.join("\n\n")
+                    console.log(`[BG] 🔗 HİBRİT BİRLEŞTİRME: Dijital metin (${preOcrDigitalText.length} kar) + görsel bloğu (${visualBlock ? visualBlock.length : 0} kar) + envanter (${invBlock ? "VAR" : "YOK"}) birleştirildi.`)
                   } else {
                     // Taranmış/scanned sayfa: OCR çıktısının tamamını kullan (mevcut davranış)
                     section.rawContent = ocrPost.markdown
