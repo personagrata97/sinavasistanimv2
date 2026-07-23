@@ -81,11 +81,7 @@ export default function CourseGrid({ courses, stats, programName, programSubtitl
                   <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-500/30 to-transparent" />
                 </div>
               )}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-              >
+              <div>
               <Link href={
                 course.isGroupLanding && course.groupPath
                   ? `/program/${programSlug || "spl-duzey-3"}/${course.groupPath}`
@@ -158,7 +154,7 @@ export default function CourseGrid({ courses, stats, programName, programSubtitl
                   </div>
                 </div>
               </Link>
-            </motion.div>
+            </div>
             </Fragment>
           )
         })}
