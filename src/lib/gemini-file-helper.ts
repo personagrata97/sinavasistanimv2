@@ -3,6 +3,8 @@
 // merkezi bir yardımcı fonksiyon sağlar. Daha önce upload route, process route ve
 // refineSectionNotesAction'da aynı kod 3 kez tekrarlanıyordu.
 
+import { resolvePdfPath } from "./pdf-engine"
+
 export async function ensureGeminiFileUris(
   pdfPath: string,
   existingUrisJson: string | null,
@@ -16,8 +18,9 @@ export async function ensureGeminiFileUris(
   }
 
   let updated = false
+  const targetPath = resolvePdfPath(pdfPath) || pdfPath
 
-  if (!pdfPath || geminiKeys.length === 0) {
+  if (!targetPath || geminiKeys.length === 0) {
     return { uriMap, updated }
   }
 
@@ -49,7 +52,7 @@ export async function ensureGeminiFileUris(
       if (!uriMap[String(i)] || isStale) {
         console.log(`[FILE_URI] 📄 Key #${i + 1} için PDF eksik/stale, Gemini'ye yükleniyor...`)
         try {
-          const uploadResult = await fileManager.uploadFile(pdfPath, {
+          const uploadResult = await fileManager.uploadFile(targetPath, {
             mimeType: "application/pdf",
             displayName: `${courseSlug}-${Date.now()}-key${i + 1}`,
           })

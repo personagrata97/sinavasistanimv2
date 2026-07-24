@@ -12,6 +12,7 @@ import {
   shouldRunMarkdownOcr,
   prepareSearchablePdfSectionContent,
   detectSectionsMasterVisionAndSemantic,
+  resolvePdfPath,
 } from "@/lib/pdf-engine"
 import {
   buildSingleSectionFromPages,
@@ -459,7 +460,8 @@ export async function POST(req: NextRequest) {
 
     // Read PDF buffer
     if (!course.pdfPath) throw new Error("PDF Path not found");
-    const pdfBuffer = await readFile(course.pdfPath)
+    const targetPdfPath = resolvePdfPath(course.pdfPath) || course.pdfPath;
+    const pdfBuffer = await readFile(targetPdfPath)
     const totalPages = course.totalPages
 
     // ========== PHASE 1 & 2: Extract text & detect sections (hızlı, senkron) ==========
@@ -885,7 +887,4 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ==================== BACKGROUND PROCESSING ====================
-// processInBackground artık @/lib/background-processor.ts dosyasında.
-// Circular dependency'yi kırmak için oraya taşındı (job-processor ↔ route.ts).
-export { processInBackground } from "@/lib/background-processor"
+

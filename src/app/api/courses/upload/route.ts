@@ -115,8 +115,8 @@ export async function POST(req: NextRequest) {
       geminiFileUri = uriMap["0"] || null
       console.log(`[UPLOAD] 📊 ${Object.keys(uriMap).length} key'e başarıyla yüklendi`)
 
-      if (geminiKeys.length > 0 && Object.keys(uriMap).length < geminiKeys.length) {
-        throw new Error(`Anahtar Parite Hatası: ${geminiKeys.length} API anahtarı tanımlı ancak sadece ${Object.keys(uriMap).length} tanesi için dosya yüklenebildi.`)
+      if (geminiKeys.length > 0 && Object.keys(uriMap).length === 0) {
+        throw new Error(`Hiçbir API anahtarına dosya yüklenemedi. (0/${geminiKeys.length})`)
       }
     } catch (gErr: any) {
       console.error("[UPLOAD] ❌ Gemini File API yükleme/parite hatası:", gErr.message)

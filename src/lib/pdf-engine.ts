@@ -1,6 +1,22 @@
+import path from "path"
+import fs from "fs"
 import PDFParser from "pdf2json"
 import axios from "axios"
 import { logDirectGeminiApiCall, getAvailableGeminiKey, suspendGeminiKey, withApiRetry, getActiveFileUri } from "@/lib/ai-service"
+
+export function resolvePdfPath(rawPath: string | null | undefined): string | null {
+  if (!rawPath) return null
+  if (fs.existsSync(rawPath)) return rawPath
+
+  const idePath = rawPath.replace("/.gemini/antigravity/", "/.gemini/antigravity-ide/")
+  if (fs.existsSync(idePath)) return idePath
+
+  const fileName = path.basename(rawPath)
+  const uploadsPath = path.join(process.cwd(), "uploads", fileName)
+  if (fs.existsSync(uploadsPath)) return uploadsPath
+
+  return rawPath
+}
 
 async function executeWithRotation<T>(
   modelId: string,
