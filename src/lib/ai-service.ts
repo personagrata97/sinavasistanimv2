@@ -988,9 +988,9 @@ Her satır TEK bir sınanabilir birim olmalı. Kategori etiketi ve kısa arama A
     throw new Error("Geçersiz sayfa aralığı.");
   }
 
-  // Kısa belgeler (≤20 sayfa): örtüşme yok, daha büyük parça — 16 sayfa = 2 OCR çağrısı
+  // Kısa belgeler (≤8 sayfa): örtüşme yok, 9-20 sayfa arası: 2 sayfa örtüşme (tablo kesilmelerini önler)
   const CHUNK_SIZE = totalPagesToExtract <= 20 ? 8 : 5;
-  const PAGE_OVERLAP = totalPagesToExtract <= 20 ? 0 : 2;
+  const PAGE_OVERLAP = totalPagesToExtract <= 8 ? 0 : 2;
   const MIN_OCR_ATTEMPT_GAP_MS = 3000;
   const stride = CHUNK_SIZE - PAGE_OVERLAP;
   let finalMarkdown = "";

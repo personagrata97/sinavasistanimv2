@@ -30,6 +30,78 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
   const [confirmState, setConfirmState] = useState<{ isOpen: boolean; targetPhase: "mufettis" | "flashcards" | null }>({ isOpen: false, targetPhase: null });
   const [alertState, setAlertState] = useState<{ isOpen: boolean; message: string; isError?: boolean; reloadOnClose?: boolean }>({ isOpen: false, message: "" });
 
+  const [isReOcrring, setIsReOcrring] = useState(false);
+  const [isExcluding, setIsExcluding] = useState(false);
+  const [isEditingRaw, setIsEditingRaw] = useState(false);
+  const [rawText, setRawText] = useState("");
+  const [loadingRaw, setLoadingRaw] = useState(false);
+
+  const handleReOcr = async () => {
+    setIsReOcrring(true);
+    try {
+      const res = await fetch("/api/admin/sections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sectionId: section.id, action: "re-ocr" }),
+      });
+      if (!res.ok) throw new Error("Re-OCR işlemi başarısız");
+      setAlertState({
+        isOpen: true,
+        message: "Bölüm yeniden OCR yapılmak üzere sıfırlandı. Ana ekrandan 'Zorla' butonuna basarak yeniden başlatabilirsiniz.",
+        reloadOnClose: true,
+      });
+    } catch (e: any) {
+      setAlertState({ isOpen: true, message: e.message, isError: true });
+    } finally {
+      setIsReOcrring(false);
+    }
+  };
+
+  const handleToggleExclude = async () => {
+    setIsExcluding(true);
+    try {
+      const res = await fetch("/api/admin/sections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sectionId: section.id, action: "toggle-exclude" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "İşlem başarısız");
+      setAlertState({
+        isOpen: true,
+        message: data.message,
+        reloadOnClose: true,
+      });
+    } catch (e: any) {
+      setAlertState({ isOpen: true, message: e.message, isError: true });
+    } finally {
+      setIsExcluding(false);
+    }
+  };
+
+  const handleSaveRawContent = async () => {
+    setLoadingRaw(true);
+    try {
+      const res = await fetch("/api/admin/sections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sectionId: section.id, action: "update-raw", rawContent: rawText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Güncelleme başarısız");
+      setIsEditingRaw(false);
+      setAlertState({
+        isOpen: true,
+        message: "Kaynak metin başarıyla güncellendi.",
+        reloadOnClose: true,
+      });
+    } catch (e: any) {
+      setAlertState({ isOpen: true, message: e.message, isError: true });
+    } finally {
+      setLoadingRaw(false);
+    }
+  };
+
   const triggerRollback = (targetPhase: "mufettis" | "flashcards") => {
     setConfirmState({ isOpen: true, targetPhase });
   };
@@ -349,6 +421,44 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
               </div>
             </div>
           )}
+          {/* BULGU 2: Yönetici Müdahale Araçları */}
+          <div className="mt-4 p-4 rounded-xl border border-indigo-500/20 bg-indigo-500/5 text-left">
+            <h4 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              YÖNETİCİ MÜDAHALE ARAÇLARI (Tıkanıklık Çözme)
+            </h4>
+            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+              Bölüm tıkanmış veya takılmışsa kalite kapısını bozmadan aşağıdaki araçlarla müdahale edebilirsiniz:
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleReOcr}
+                disabled={isReOcrring}
+                className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isReOcrring ? "animate-spin" : ""}`} />
+                1. Sayfaları Yeniden OCR'la
+              </button>
+              <button
+                onClick={() => {
+                  setRawText("");
+                  setIsEditingRaw(true);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs font-semibold transition-colors flex items-center gap-1.5"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                2. Kaynak Metni Düzelt (rawContent)
+              </button>
+              <button
+                onClick={handleToggleExclude}
+                disabled={isExcluding}
+                className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <X className="w-3.5 h-3.5" />
+                3. Bölümü Kapsam Dışı Bırak
+              </button>
+            </div>
+          </div>
         </div>
 
         {hasKontrolorIssues && (
@@ -771,6 +881,43 @@ export function SectionQualityModal({ section, onClose, actions }: SectionQualit
           }
         }}
       />
+      {/* Edit Raw Content Modal */}
+      {isEditingRaw && (
+        <Modal
+          onClose={() => setIsEditingRaw(false)}
+          title="Kaynak Metni Elle Düzenle (rawContent)"
+          maxWidth="md"
+          zIndex={999999}
+        >
+          <div className="space-y-4 text-left p-2">
+            <p className="text-xs text-slate-400">
+              OCR eksik okuduysa veya tabloda yarım satır kaldıysa kaynak metni aşağıya ekleyip/düzeltip kaydedebilirsiniz.
+            </p>
+            <textarea
+              rows={12}
+              value={rawText}
+              onChange={(e) => setRawText(e.target.value)}
+              placeholder="Kaynak metni buraya yazın..."
+              className="w-full p-3 rounded-xl bg-slate-900 border border-white/10 text-white text-xs font-mono focus:outline-none focus:border-blue-500"
+            />
+            <div className="flex justify-end gap-2 font-sans">
+              <button
+                onClick={() => setIsEditingRaw(false)}
+                className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 transition-colors"
+              >
+                İptal
+              </button>
+              <button
+                onClick={handleSaveRawContent}
+                disabled={loadingRaw}
+                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white disabled:opacity-50 transition-colors"
+              >
+                {loadingRaw ? "Kaydediliyor..." : "Kaydet"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Modal>
   )
 }

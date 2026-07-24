@@ -983,6 +983,39 @@ export default function AdminClient({ users, reportedQuestions, sectionsQuality,
                                   </div>
                                 </>
                               )}
+                              {(() => {
+                                const pBlockers = Array.isArray(issuesObj.persistentBlockers) ? (issuesObj.persistentBlockers as string[]) : []
+                                const bHint = typeof issuesObj.blockerHint === "string" ? issuesObj.blockerHint : undefined
+                                const reqReview = Boolean(issuesObj.requiresManualReview)
+                                const reqReason = typeof issuesObj.reason === "string" ? issuesObj.reason : undefined
+
+                                return (
+                                  <>
+                                    {pBlockers.length > 0 && (
+                                      <div className="mt-2.5 p-2.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs">
+                                        <div className="font-bold flex items-center gap-1 text-rose-200">
+                                          ⛔ 3 Turdur Takılan Eksikler (Tıkanıklık):
+                                        </div>
+                                        <ul className="list-disc list-inside mt-1 font-mono text-[11px] text-rose-300">
+                                          {pBlockers.map((b: string, bIdx: number) => (
+                                            <li key={bIdx}>{b}</li>
+                                          ))}
+                                        </ul>
+                                        {bHint && (
+                                          <div className="mt-1 text-[10px] text-rose-300/80 italic">
+                                            💡 {bHint}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                    {reqReview && (
+                                      <div className="mt-2.5 p-2 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold">
+                                        ⚠️ {reqReason || "12 denemede %100 alınamadı — yönetici incelemesi gerekli"}
+                                      </div>
+                                    )}
+                                  </>
+                                )
+                              })()}
                             </td>
                             <td className="py-4 px-4 text-center">
                               <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${sec.processed

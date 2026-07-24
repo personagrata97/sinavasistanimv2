@@ -3,9 +3,26 @@ import {
   isPendingOcrContent,
   shouldRunMarkdownOcr,
 } from "@/lib/pdf-engine"
-import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError, setActiveSectionIdForStatus } from "@/lib/ai-service"
+import { analyzeSectionContent, generateCourseNotes, generateFlashcards, generateQuestions, setFileUrisMap, auditNotesAgainstSourceSpecific, validateQuestionsWithSolver, validateFlashcardsWithSolver, needsBilingualStudyItems, translateFlashcardsToEnglish, translateQuestionsToEnglish, validateBilingualPairs, ApiQuotaExhaustedError, OcrChunkRateLimitError, setActiveSectionIdForStatus, normalizeForComparison } from "@/lib/ai-service"
 import { extractExamInventory } from "@/lib/ocr-post-processor"
 import { checkExamInventoryCoverage } from "@/lib/coverage-check"
+
+function findPersistentBlockers(history: any[]): string[] {
+  if (!history || history.length < 3) return []
+  const last3 = history.slice(-3)
+  const first = last3[0].missingTopics || []
+  if (!Array.isArray(first) || first.length === 0) return []
+
+  return first.filter((topic: string) =>
+    typeof topic === "string" && topic.length > 0 &&
+    last3.every(h => Array.isArray(h.missingTopics) && h.missingTopics.some((t: string) =>
+      typeof t === "string" && (
+        normalizeForComparison(t).includes(normalizeForComparison(topic)) ||
+        normalizeForComparison(topic).includes(normalizeForComparison(t))
+      )
+    ))
+  )
+}
 import { resolveRequiresQuestions } from "@/lib/glossary-utils"
 import { getExamConfig, getCourseBySlug } from "@/lib/course-data"
 import {
@@ -521,6 +538,19 @@ export async function processInBackground(slug: string, course: any, forceRetry:
             let patchAttempts = 0;
             for (let vAttempt = startingAttempt; vAttempt <= loopTarget; vAttempt++) {
               if (await shouldStop()) break;
+
+              const ABSOLUTE_MAX_ATTEMPTS = 12
+              const totalAttempts = attemptHistory.length + 1
+              if (totalAttempts > ABSOLUTE_MAX_ATTEMPTS) {
+                console.warn(`[BG] ⛔ ${section.title}: Mutlak deneme tavanı (${ABSOLUTE_MAX_ATTEMPTS}) aşıldı, otomatik deneme durduruldu.`)
+                await applySectionIssuesPatch({
+                  requiresManualReview: true,
+                  reason: `${ABSOLUTE_MAX_ATTEMPTS} denemede %100 alınamadı — yönetici incelemesi gerekli`,
+                  currentMicroPhase: `⛔ Mutlak deneme tavanı (${ABSOLUTE_MAX_ATTEMPTS}) aşıldı — yönetici incelemesi gerekli`
+                })
+                break
+              }
+
               try {
                 console.log(`[BG] Not Üretim Denemesi #${vAttempt}...`)
                 try {
@@ -847,6 +877,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                   published: false,
                 }
 
+                const blockers = findPersistentBlockers(attemptHistory)
+
                 // CANLI RAPOR GÜNCELLEMESİ
                 try {
                   await applySectionIssuesPatch(
@@ -858,6 +890,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       isCheckingAgain: currentScore < 95 && vAttempt < 5,
                       attemptHistory: attemptHistory,
                       stages: kontrolorStages,
+                      persistentBlockers: blockers,
+                      blockerHint: blockers.length > 0 ? "Bu eksikler 3 turdur giderilemedi. Kaynak metinde gerçekten var mı kontrol edin (OCR hatası olabilir)." : undefined,
                       currentMicroPhase: verification.score === 100
                         ? `${sIdx + 1 + alreadyDone}/${totalSections}. Kontrolör onayı tamam — Müfettiş denetimi sırada`
                         : `${sIdx + 1 + alreadyDone}/${totalSections}. Kalite Kontrolörü incelemesi tamamlandı (Tur #${vAttempt})`,
