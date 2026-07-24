@@ -621,8 +621,8 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                     const isShortSection = rawBlockCount <= 6;
                     const allowedDensity = isShortSection ? 0.60 : 0.20;
                     
-                    if (kontrolorStructuralScore >= 75 && defectDensity <= allowedDensity && totalDefects > 0) {
-                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI: ${totalDefects} Toplam Hata/Öneri (${missingCount} eksik + ${contradictionCount} çelişki + ${suggestionCount} öneri), Yoğunluk: %${(defectDensity*100).toFixed(1)} (Eşik: %${(allowedDensity*100).toFixed(0)}), Pedagojik Puan: %${kontrolorStructuralScore}. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
+                    if (kontrolorStructuralScore >= 60 && defectDensity <= allowedDensity && totalDefects > 0 && totalDefects <= 15) {
+                      console.log(`[BG] 🧠 KARAR MATRİSİ ONAYLANDI (Genişletilmiş Kapı): ${totalDefects} Toplam Hata/Öneri (${missingCount} eksik + ${contradictionCount} çelişki + ${suggestionCount} öneri), Yoğunluk: %${(defectDensity*100).toFixed(1)} (Eşik: %${(allowedDensity*100).toFixed(0)}), Pedagojik Puan: %${kontrolorStructuralScore}. Not Donduruluyor ve Cerrahi Yama (AST) Başlıyor...`);
                       isSurgicalPatch = true;
                     } else {
                       console.log(`[BG] ⛔ KARAR MATRİSİ REDDEDİLDİ: Puan (${kontrolorStructuralScore}) çok düşük veya Hata Yoğunluğu (%${(defectDensity*100).toFixed(1)}) çok yüksek (Eşik: %${(allowedDensity*100).toFixed(0)}). Sıfırdan yazıma dönülüyor.`);
@@ -653,17 +653,15 @@ export async function processInBackground(slug: string, course: any, forceRetry:
                       const fullCourseName = `${course.program?.name || ""} > ${course.name}`.replace(/^\s*>\s*/, "");
                       const patchResult = await generateAndInjectPatch(notes, allFactsToPatch, fullCourseName, effectiveRaw, section.title);
 
-                      if (patchResult.success) {
+                      if (patchResult.success || patchResult.partialSuccess) {
                         notes = patchResult.newMarkdown;
-                        // 🔒 MADDE 1/6 KİLİDİ: Yamalı not ARTIK doğrudan onaylanmaz/break edilmez.
-                        // isSurgicalPatch true kaldığı için aşağıda generateCourseNotes atlanır (yamalı
-                        // notes korunur) ve akış normal Kontrolör + Müfettiş derin denetimine düşer.
-                        // Böylece yama yolu da tam %100 kapısından (Kontrolör + Ground Truth + Müfettiş)
-                        // geçer; eksik denetimle canlıya sızma engellenir. (Ayrıca tekrarlı doğrulama
-                        // API çağrısı da kaldırıldı.)
-                        console.log(`[BG] 🩹 Cerrahi Yama uygulandı. Yamalı not şimdi tam denetimden (Kontrolör + Müfettiş) geçecek...`);
+                        if (!patchResult.success) {
+                          console.log(`[BG] 🩹 Kısmi yama uygulandı: ${patchResult.patchedCount}/${allFactsToPatch.length} bilgi yerleştirildi. Kalan ${patchResult.failedFacts.length} bilgi sonraki denetimde ele alınacak.`);
+                        } else {
+                          console.log(`[BG] 🩹 Cerrahi Yama tam uygulandı (%100). Yamalı not şimdi tam denetimden (Kontrolör + Müfettiş) geçecek...`);
+                        }
                       } else {
-                        console.log(`[BG] ⚠️ Cerrahi Yama başarısız oldu (Evsiz bilgi çözülemedi vb.). Sıfırdan yazıma dönülüyor...`);
+                        console.log(`[BG] ⚠️ Cerrahi Yama başarısız oldu (Yarıdan az bilgi yerleşebildi). Sıfırdan yazıma dönülüyor...`);
                         isSurgicalPatch = false;
                         if (patchAttempts < 1) {
                           patchAttempts++;
