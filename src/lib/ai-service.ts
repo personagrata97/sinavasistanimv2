@@ -185,7 +185,17 @@ const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 const geminiKeys = (process.env.GEMINI_API_KEYS || geminiKey || "").split(",").filter(k => k.trim())
 let currentKeyIndex = geminiKeys.length > 0 ? Math.floor(Math.random() * geminiKeys.length) : 0 // Aktif key index'i (Rastgele başlangıç)
 const suspendedKeys = new Map<number, number>() // keyIndex → suspendedAt timestamp
+const permanentlyDisabledKeys = new Set<number>() // 401 / Kapalı key'ler kalıcı olarak devre dışı
 const SUSPENDED_KEY_TTL_MS = 65 * 1000 // 65 saniye — Google'ın dakikalık sayacı ~60sn'de sıfırlanır
+
+export function disableGeminiKeyPermanently(apiKey: string): void {
+  const trimmed = apiKey.trim()
+  const keyIndex = geminiKeys.findIndex((k) => k.trim() === trimmed)
+  if (keyIndex >= 0) {
+    permanentlyDisabledKeys.add(keyIndex)
+    console.warn(`[AI_ENGINE] ⛔ Key #${keyIndex + 1} Google tarafından kapatılmış (401/Invalid), oturum boyunca atlanacak.`)
+  }
+}
 
 // ==================== PROAKTİF RPM + GÜNLÜK (RPD) SAYACI ====================
 // Her (key + MODEL) için dakika ve gün bazında istek sayısını tutar — 429 yemeden ÖNCE limiti aşmayı engeller.
@@ -421,6 +431,9 @@ function getNextGeminiKey(modelId: string): string | null {
   for (let i = 0; i < geminiKeys.length; i++) {
     const idx = (currentKeyIndex + i) % geminiKeys.length
     
+    // Kalıcı kapalı key'leri atla
+    if (permanentlyDisabledKeys.has(idx)) continue
+
     // Askıdaki key'leri kontrol et
     if (suspendedKeys.has(idx)) {
       if ((Date.now() - suspendedKeys.get(idx)!) > SUSPENDED_KEY_TTL_MS) {
@@ -542,6 +555,7 @@ export async function withApiRetry<T>(
       const is503 = msg.includes("503") || msg.includes("Service Unavailable") || msg.includes("500") || msg.includes("502") || msg.includes("fetch failed") || msg.includes("socket hang up") || msg.toLowerCase().includes("timeout") || msg.includes("ENOTFOUND") || msg.includes("ETIMEDOUT") || msg.includes("EAI_AGAIN")
       const is429 = msg.includes("429") || msg.includes("quota")
       const is403 = msg.includes("403") || msg.includes("Forbidden") || msg.includes("PERMISSION_DENIED")
+      const is401 = msg.includes("401") || msg.includes("ACCOUNT_STATE_INVALID") || msg.includes("Unauthorized") || msg.includes("disabled") || msg.includes("API key not valid")
       
       console.warn(`[AI_ENGINE] ⚠️ ${operationName} hatası (Deneme ${attempt}/${maxRetries}): ${msg.substring(0, 100)}`)
       
@@ -550,8 +564,10 @@ export async function withApiRetry<T>(
         throw e
       }
       
-      if (is503 || is429 || is403) {
-        if (!is503 && currentKey) {
+      if (is503 || is429 || is403 || is401) {
+        if (is401 && currentKey) {
+          disableGeminiKeyPermanently(currentKey)
+        } else if (!is503 && currentKey) {
           suspendGeminiKey(currentKey)
         }
         const prevKeyIndex = currentKey ? geminiKeys.findIndex(k => k.trim() === currentKey!.trim()) : -1;
@@ -566,7 +582,7 @@ export async function withApiRetry<T>(
           model: modelId,
           operation: "KEY_ROTATION",
           stage: operationName,
-          status: is503 ? "SERVER_ERROR_503" : is429 ? "RATE_LIMIT_429" : "FORBIDDEN_403",
+          status: is401 ? "UNAUTHORIZED_401" : is503 ? "SERVER_ERROR_503" : is429 ? "RATE_LIMIT_429" : "FORBIDDEN_403",
           errorDetail: `Hata nedeniyle rotasyon yapıldı: ${msg.substring(0, 200)}`,
         }).catch(err => console.error("[AI_ENGINE] Rotation log write failed:", err));
 
