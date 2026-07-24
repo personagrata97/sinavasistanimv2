@@ -141,8 +141,24 @@ export function setActiveSectionIdForStatus(id: string | null) {
   activeSectionIdForStatus = id
 }
 
+let lastMicroPhaseWriteTime = 0
+let pendingMicroPhaseTimeout: NodeJS.Timeout | null = null
+
 export async function updateActiveSectionMicroPhase(phase: string) {
   if (!activeSectionIdForStatus) return
+  
+  const now = Date.now()
+  const DEBOUNCE_MS = 2000 // 2 saniye debounce — DB yazma yükünü %70+ azaltır
+  
+  if (now - lastMicroPhaseWriteTime < DEBOUNCE_MS) {
+    if (pendingMicroPhaseTimeout) clearTimeout(pendingMicroPhaseTimeout)
+    pendingMicroPhaseTimeout = setTimeout(() => {
+      updateActiveSectionMicroPhase(phase).catch(() => {})
+    }, DEBOUNCE_MS - (now - lastMicroPhaseWriteTime))
+    return
+  }
+
+  lastMicroPhaseWriteTime = now
   try {
     const section = await prisma.section.findUnique({
       where: { id: activeSectionIdForStatus },
@@ -1846,9 +1862,13 @@ Aşağıdaki sayısal değerler/kanun numaraları kaynak metinde tespit edilmiş
     ? `\n🎯 ZORUNLU KAPSAMA LİSTESİ (SINAV ENVANTERİ — ${inventory.length} Madde):\n` +
       `Aşağıdaki ${inventory.length} maddenin TAMAMI bu notta eksiksiz işlenmek ZORUNDADIR. Hiçbirini atlama:\n` +
       inventory.map((it, i) => `${i + 1}. [${it.cat}] ${it.text} (Anahtar: ${it.key})`).join("\n") +
-      `\n\n⚠️ KAPSAMA & ANLATIM TAVANI KURALLARI:\n` +
-      `1. ÇEKİRDEK KATMAN: Yukarıdaki maddelerin %100'ünü TİP_A/B/C/D formatında nota ekle. Bu listeyi nota doğrudan KOPYALAMA.\n` +
-      `2. ANLATIM KATMANI TAVANI (%30): Benzetme (💡) ve hikayeleri SADECE envanterdeki karmaşık/soyut maddeler için kullan. Anlatım/benzetme sayısı envanterdeki maddelerin %30'unu (max ${Math.ceil(inventory.length * 0.3)} adet) GEÇEMEZ.\n`
+      `\n\n⚠️ KAPSAMA VE KATEGORİ BAZLI VURGU DAĞITIMI KURALLARI:\n` +
+      `1. ÇEKİRDEK KATMAN (%100 KAPSAMA): Yukarıdaki maddelerin TAMAMINI nota ekle. Hiçbir bilgi atlanamaz veya silinemez.\n` +
+      `2. KATEGORİ BAZLI DERİNLİK VE BÜTÇE DAĞITIMI:\n` +
+      `   - [CEZA, SAYI, ISTISNA, AYRIM] (Yüksek Soru Potansiyeli): Tam derinlikte işle (Markdown Tablo + İstisna Koşulları + soyutsa Benzetme 💡 + Mini Quiz).\n` +
+      `   - [TANIM, ADIM] (Orta Soru Potansiyeli): Şema veya tablo formatında anlat; benzetmeyi sadece kavram aşırı soyutsa kullan.\n` +
+      `   - [LISTE] (Düşük Birim-Değer Potansiyeli): Sadece öz Markdown Tablosu/Listesi olarak ver. Bu maddeler için KESİNLİKLE hikaye veya benzetme uydurma.\n` +
+      `3. ANLATIM TAVANI (%30 SINIRI): Benzetme (💡) ve hikaye sayısı envanterdeki maddelerin %30'unu (max ${Math.ceil(inventory.length * 0.3)} adet) geçemez.\n`
     : ""
 
   const prompt = `[LOG_CONTEXT: ${courseName} > ${sectionTitle}]

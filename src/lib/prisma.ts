@@ -24,7 +24,15 @@ export const prisma =
       url: dbUrl 
     });
     
-    return new PrismaClient({ adapter });
+    const client = new PrismaClient({ adapter });
+
+    // ✅ WAL MODU: Yazma sırasında okumaların bloklanmasını önler
+    // ✅ BUSY_TIMEOUT: Kilit varsa hemen hata vermek yerine 5 sn bekler
+    client.$executeRawUnsafe("PRAGMA journal_mode = WAL;").catch(() => {});
+    client.$executeRawUnsafe("PRAGMA busy_timeout = 5000;").catch(() => {});
+    client.$executeRawUnsafe("PRAGMA synchronous = NORMAL;").catch(() => {});
+
+    return client;
   })();
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma_v2 = prisma
