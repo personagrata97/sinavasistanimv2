@@ -199,9 +199,12 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
       }
     })
 
+    const choiceCount = questions[0]?.options?.length || 4
+    const netCorrect = Math.max(0, correct - (examConfig?.negativeMarking ? wrong / (choiceCount - 1) : 0))
+
     const score = SCORE_DISPLAY_MODE === "scaled" && examConfig
-      ? estimateScaledScore(correct, questions.length, examConfig)
-      : Math.round((correct / questions.length) * 100)
+      ? estimateScaledScore(netCorrect, questions.length, examConfig)
+      : Math.round((netCorrect / questions.length) * 100)
 
     const moduleScores: Record<string, number> = {}
     let allModulesPassed = true
@@ -598,17 +601,37 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
     const timeUsedMin = Math.floor(results.timeUsed / 60)
     const timeUsedSec = results.timeUsed % 60
 
+    const scaleMin = SCORE_DISPLAY_MODE === "scaled" ? (scaledRange?.min ?? 0) : 0
+    const scaleMax = SCORE_DISPLAY_MODE === "scaled" ? (scaledRange?.max ?? 100) : 100
+    const normalized = scaleMax > scaleMin
+      ? Math.round(((results.score - scaleMin) / (scaleMax - scaleMin)) * 100)
+      : Math.round((results.correct / results.total) * 100)
+    const passMark = scaleMax > scaleMin
+      ? Math.round(((PASSING_SCORE - scaleMin) / (scaleMax - scaleMin)) * 100)
+      : PASSING_SCORE
+
+    const durum =
+      normalized >= passMark + 15 ? "guclu"
+      : normalized >= passMark     ? "orta"
+      : normalized >= passMark - 10 ? "riskli"
+      :                             "yetersiz"
+
     return (
       <div className="max-w-2xl mx-auto space-y-6" role="region" aria-label="Sınav sonuçları">
         <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
           className={`p-8 rounded-2xl text-center border ${results.passed ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/20"}`}
         >
           <div className={`text-6xl font-bold mb-2 ${results.passed ? "text-emerald-400" : "text-red-400"}`}>{results.score}</div>
-          <div className="text-sm text-slate-400 mb-4">
+          <div className="text-sm text-slate-400 mb-2">
             {SCORE_DISPLAY_MODE === "scaled"
               ? `Tahmini ölçekli puan${scaledRange ? ` (${scaledRange.min}-${scaledRange.max})` : ""}`
               : "100 üzerinden"}
           </div>
+          {SCORE_DISPLAY_MODE === "scaled" && (
+            <p className="text-[11px] text-slate-500 mb-4 max-w-md mx-auto">
+              Bu puan, doğru sayına göre hesaplanmış kaba bir tahmindir. Gerçek sınavda ölçekli puan, soru zorlukları ve o dönemki aday dağılımına göre belirlenir; sonucun bu tahminden farklı olabilir. Kendini değerlendirirken doğru sayını ve zayıf konularını esas al.
+            </p>
+          )}
           <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold ${results.passed ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
             {results.passed ? <><CheckCircle className="w-4 h-4 inline-block mr-1" /> GEÇTİN!</> : <><XCircle className="w-4 h-4 inline-block mr-1" /> KALDIN</>}
             {!results.passed && ` (Geçme: ${PASSING_SCORE}${usesModuleBarrier && !results.allModulesPassed ? ` + Her modül min ${MODULE_BARRIER}` : ""})`}
@@ -635,20 +658,20 @@ export default function MockExamTab({ slug, programSlug, courseName, pastExamRes
         </div>
 
         {/* Performans Analizi */}
-        <div className={`p-6 rounded-2xl border ${results.score >= 70 ? "bg-emerald-500/5 border-emerald-500/20" : results.score >= 50 ? "bg-amber-500/5 border-amber-500/20" : "bg-red-500/5 border-red-500/20"}`}>
+        <div className={`p-6 rounded-2xl border ${durum === "guclu" || durum === "orta" ? "bg-emerald-500/5 border-emerald-500/20" : durum === "riskli" ? "bg-amber-500/5 border-amber-500/20" : "bg-red-500/5 border-red-500/20"}`}>
           <h3 className="text-base font-bold mb-3 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-indigo-400" /> Performans Analizi</h3>
           <div className="flex items-center gap-4 mb-4">
-            <div className={`text-2xl font-bold flex items-center gap-2 ${results.score >= 80 ? "text-emerald-400" : results.score >= 60 ? "text-amber-400" : results.score >= 50 ? "text-orange-400" : "text-red-400"}`}>
-              {results.score >= 80 ? <><CheckCircle className="w-6 h-6" /> Güçlü</> : results.score >= 60 ? <><CheckCircle className="w-6 h-6" /> Orta</> : results.score >= 50 ? <><AlertTriangle className="w-6 h-6" /> Riskli</> : <><XCircle className="w-6 h-6" /> Yetersiz</>}
+            <div className={`text-2xl font-bold flex items-center gap-2 ${durum === "guclu" || durum === "orta" ? "text-emerald-400" : durum === "riskli" ? "text-amber-400" : "text-red-400"}`}>
+              {durum === "guclu" ? <><CheckCircle className="w-6 h-6" /> Güçlü</> : durum === "orta" ? <><CheckCircle className="w-6 h-6" /> Orta</> : durum === "riskli" ? <><AlertTriangle className="w-6 h-6" /> Riskli</> : <><XCircle className="w-6 h-6" /> Yetersiz</>}
             </div>
             <div className="text-xs text-slate-500">
               Geçme: {PASSING_SCORE}{SCORE_DISPLAY_MODE === "percent" ? " puan" : " (ölçekli)"} | Senin puanın: {results.score}
             </div>
           </div>
           <div className="text-xs text-slate-300 p-4 rounded-lg bg-white/[0.03] space-y-2">
-            {results.score >= 80 ? <p><CheckCircle className="w-4 h-4 inline-block mr-1 text-emerald-400" /> <strong>Çok iyi durumdasın.</strong> Eksik olduğun birkaç konuya göz at ve 1-2 gün sonra seviyeni korumak için tekrar dene.</p>
-            : results.score >= 60 ? <p><AlertTriangle className="w-4 h-4 inline-block mr-1 text-amber-400" /> <strong>Geçiyorsun ama riskli.</strong> Zayıf konuların notlarını hızlıca tekrarla ve flashcard çöz. Hedef: 70+</p>
-            : results.score >= 50 ? <p><AlertTriangle className="w-4 h-4 inline-block mr-1 text-orange-400" /> <strong>Kıl payı.</strong> Eksik hissettiğin konuların özetlerine çalışıp 1-2 deneme daha yaparak pratik kazanmalısın.</p>
+            {durum === "guclu" ? <p><CheckCircle className="w-4 h-4 inline-block mr-1 text-emerald-400" /> <strong>Çok iyi durumdasın.</strong> Eksik olduğun birkaç konuya göz at ve 1-2 gün sonra seviyeni korumak için tekrar dene.</p>
+            : durum === "orta" ? <p><CheckCircle className="w-4 h-4 inline-block mr-1 text-emerald-400" /> <strong>Başarılısın.</strong> Zayıf konuların notlarını hızlıca tekrarla ve bilgi kartı çöz. Hedefini koru!</p>
+            : durum === "riskli" ? <p><AlertTriangle className="w-4 h-4 inline-block mr-1 text-amber-400" /> <strong>Kıl payı / Riskli.</strong> Eksik hissettiğin konuların özetlerine çalışıp 1-2 deneme daha yaparak pratik kazanmalısın.</p>
             : <p><XCircle className="w-4 h-4 inline-block mr-1 text-red-400" /> <strong>Eksiklerini tamamlamalısın.</strong> Yanlış yaptığın konuları notlardan oku ve o konulara ait soruları tekrar çözüp seviyeni artır.</p>}
           </div>
         </div>

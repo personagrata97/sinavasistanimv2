@@ -173,7 +173,7 @@ function CoverageTab({ slug }: { slug: string }) {
                     </div>
                   </div>
                   <div className="text-center p-2 rounded-lg bg-black/20">
-                    <div className="text-[10px] text-slate-600 font-bold uppercase">Flashcard</div>
+                    <div className="text-[10px] text-slate-600 font-bold uppercase">Bilgi Kartı</div>
                     <div className="text-xs font-bold mt-0.5 text-slate-300">{item.status === 'processing' ? "—" : `${item.masteredFlashcards}/${item.totalFlashcards}`}</div>
                   </div>
                 </div>

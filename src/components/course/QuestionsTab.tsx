@@ -716,7 +716,15 @@ function QuestionsTab({ slug, courseName, isProfessional }: { slug: string, cour
                 {filteredQuestions.length} soruyu başarıyla inceledin.
               </p>
               {(() => {
-                const pct = Math.round((score.correct / (score.correct + score.wrong)) * 100)
+                const answered = score.correct + score.wrong
+                if (answered === 0) {
+                  return (
+                    <div className="text-sm text-slate-400 mb-4">
+                      Bu turda hiç soru cevaplamadın — istersen baştan başlayabilirsin.
+                    </div>
+                  )
+                }
+                const pct = Math.round((score.correct / answered) * 100)
                 return (
                   <div className={`text-lg font-bold mb-4 ${
                     pct >= 80 ? "text-emerald-400" : pct >= 60 ? "text-amber-400" : "text-red-400"
